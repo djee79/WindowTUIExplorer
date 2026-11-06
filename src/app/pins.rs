@@ -194,22 +194,25 @@ impl App {
         let Some(pin) = self.pins.pins.get(idx).cloned() else {
             return;
         };
+        // Frecency: whatever opens a pin counts (launcher, picker, 'key, Locations).
+        self.record_use(&pin);
         match pin.kind {
             PinKind::Machine => return self.open_machine_pin(&pin),
             PinKind::Sync => return self.open_sync_pin(idx, false),
             PinKind::Backup => return self.open_backup_pin(idx),
+            PinKind::App | PinKind::Web => {
+                return match crate::launcher::launch_of(&pin) {
+                    Some(l) => self.worker.launch(format!("started {}", pin.name), l),
+                    None => self.set_status(
+                        format!("{} needs a command or url (^e edits it)", pin.name),
+                        true,
+                    ),
+                };
+            }
             _ => {}
         }
         let Some(target) = pin.target() else {
-            let when = "M5";
-            self.set_status(
-                format!(
-                    "{} is a {} pin; those run in {when}",
-                    pin.name,
-                    pin.kind.label()
-                ),
-                false,
-            );
+            self.set_status(format!("{}: no valid path (^e edits it)", pin.name), true);
             return;
         };
         match pin.kind {
@@ -220,17 +223,18 @@ impl App {
                 }
                 self.navigate(target, None);
             }
-            PinKind::File => {
+            _ => {
                 self.set_status(format!("opening {}…", pin.name), false);
                 self.worker.open(target);
             }
-            _ => self.set_status(
-                format!(
-                    "{} is an app pin; apps run from the launcher (M5)",
-                    pin.name
-                ),
-                false,
-            ),
+        }
+    }
+
+    /// Counts one use of `pin` for frecency, saved through the worker.
+    pub(super) fn record_use(&mut self, pin: &Pin) {
+        if let Some(key) = crate::frecency::pin_key(pin) {
+            self.usage.record(&key, crate::frecency::now_secs());
+            self.worker.save_usage(self.usage.clone());
         }
     }
 
@@ -514,6 +518,7 @@ impl App {
     pub(super) fn reopen_picker(&mut self, reopen: Option<Reopen>) {
         match reopen {
             Some(Reopen::Pins(q)) => self.open_pin_picker(&q),
+            Some(Reopen::Launcher(q)) => self.open_launcher(&q),
             Some(Reopen::Tags) => self.open_tag_picker(),
             Some(Reopen::Machines(q)) => self.open_machine_picker(&q),
             None => {}

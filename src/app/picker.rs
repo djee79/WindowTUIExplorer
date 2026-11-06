@@ -30,6 +30,7 @@ pub enum PickerPending {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reopen {
     Pins(String),
+    Launcher(String),
     Tags,
     Machines(String),
 }
@@ -69,8 +70,48 @@ impl App {
             local: false,
             reachable: None,
             server: None,
+            score: 0,
         }));
         let picker = Picker::new("Pins", Source::Pins, items, self.worker.waker(), query);
+        self.show_picker(picker);
+    }
+
+    /// `<leader><leader>` / `Ctrl-Space`: the launcher, over every pin (apps, web apps,
+    /// folders, files, presets, machines, views), ranked by wtm's tiers then frecency.
+    pub(super) fn open_launcher(&mut self, query: &str) {
+        if !self.pins_loaded {
+            self.set_status("pins are still loading".into(), false);
+            return;
+        }
+        self.request(Loc::Root, false);
+        let mapped = self.mapped_servers();
+        let mut items: Vec<PickItem> = self
+            .pins
+            .pins
+            .iter()
+            .enumerate()
+            .map(|(id, p)| self.pin_pick_item(id, p, &mapped))
+            .collect();
+        items.extend(self.pins.views.iter().enumerate().map(|(id, v)| PickItem {
+            id,
+            name: v.name.clone(),
+            detail: v.query.clone(),
+            kind: ItemKind::View,
+            key: v.key_char(),
+            tags: Vec::new(),
+            unc: false,
+            local: false,
+            reachable: None,
+            server: None,
+            score: 0,
+        }));
+        let picker = Picker::new(
+            "Launcher",
+            Source::Launcher,
+            items,
+            self.worker.waker(),
+            query,
+        );
         self.show_picker(picker);
     }
 
@@ -100,6 +141,7 @@ impl App {
                 local: false,
                 reachable: None,
                 server: None,
+                score: 0,
             })
             .collect();
         let picker = Picker::new("Tags", Source::Tags, items, self.worker.waker(), "");
@@ -158,6 +200,8 @@ impl App {
             local: place.local,
             reachable,
             server,
+            score: crate::frecency::pin_key(p)
+                .map_or(0, |k| self.usage.score(&k, crate::frecency::now_secs())),
         }
     }
 
@@ -195,6 +239,7 @@ impl App {
         let p = self.picker.as_ref()?;
         Some(match p.source {
             Source::Pins => Reopen::Pins(p.editor.text()),
+            Source::Launcher => Reopen::Launcher(p.editor.text()),
             Source::Tags => Reopen::Tags,
             Source::Machines => Reopen::Machines(p.editor.text()),
         })
@@ -334,6 +379,19 @@ impl App {
             let query: Vec<String> = tags.iter().map(|t| format!("#{t}")).collect();
             self.close_picker();
             self.open_pin_picker(&format!("{} ", query.join(" ")));
+            return;
+        }
+        // The launcher with nothing matching: run what was typed (wtm), as Win+R would.
+        if let Some(p) = self.picker.as_ref()
+            && p.source == Source::Launcher
+            && p.view.is_empty()
+            && !p.running
+        {
+            let text = p.query.text.clone();
+            if let Some(l) = crate::launcher::typed(&text) {
+                self.close_picker();
+                self.worker.launch(format!("ran {}", text.trim()), l);
+            }
             return;
         }
         let Some((kind, id, _)) = self.picker_selected() else {

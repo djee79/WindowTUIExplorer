@@ -598,6 +598,7 @@ impl App {
             local: false,
             reachable: self.machine_status(&r.host).0,
             server: Some(r.host.to_lowercase()),
+            score: 0,
         }
     }
 

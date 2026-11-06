@@ -395,6 +395,7 @@ impl App {
             Action::Net(arg) => self.net_command(&arg),
             Action::Sync(name, skip) => self.sync_command(&name, skip),
             Action::SyncPicker => self.sync_command("", false),
+            Action::Launcher => self.open_launcher(""),
             Action::OpenWith => self.open_menu(),
             Action::Reveal => self.open_targets_with("reveal"),
             Action::Properties => self.open_targets_with("properties"),

@@ -841,3 +841,36 @@ Manual checklist:
 - [ ] `O` on a PDF: the Windows section lists the same apps as Explorer's Open with; picking
       one opens the file in it (also a file on a share).
 - [ ] With 3 PDFs selected, a Windows app opens all three.
+
+## M5 launcher, slice 1: launcher picker, frecency, app and web pins (code complete 2026-11-06, manual check pending)
+
+Ported from wtm (`src/bar.rs`: `usage_score`, `run_command`, `expand_env`, the ranking
+and browse view).
+
+- `<leader><leader>` (and `Ctrl-Space` where the terminal delivers it): the launcher, a
+  picker over every pin and view. Same filters as the pin picker (`#tag`, `is:`, `on:`).
+- Ranking with a query: wtm's tiers (name prefix › tag prefix › substring › fuzzy), then
+  frecency, then A→Z. With no query: "frequent" (the 5 most used, when ≥ 2 were used and
+  there are groups), then the untagged, then each first tag A→Z, under headers. The pin
+  picker also sorts by frecency within a tier now.
+- Frecency (`frecency.rs`): `%LOCALAPPDATA%\sentier\usage.tsv` in wtm's format
+  (`count\tlast\tkey`), score = min(count, 100) × 8 / 4 / 2 / 1 by recency (< 1 h, < 1 d,
+  < 7 d). Keyed by what the pin opens (`command args` like wtm, the URL, the path), so
+  renames keep history. Every pin open counts (launcher, pickers, `'key`, Locations).
+- App pins run through `ShellExecuteW("open", command, args, dir)` with `%ENV%` expanded
+  in each (`ExpandEnvironmentStringsW`): `.exe`, `.bat`, `.lnk`, documents.
+- Web pins: `<browser> --app=<url>` (+ `--profile-directory=` from `profile`), browser
+  `edge` (default) / `chrome` / `brave` / `vivaldi` / a path, found through PATH and
+  `App Paths`.
+- Nothing matches: Enter runs the typed text (`notepad x.txt`, a URL, a quoted path).
+- `Ctrl-e` / `Ctrl-x` / `Ctrl-t` from the launcher come back to the launcher.
+
+Not yet (slice 2): `:import-wtm` (and the first-run offer), "+ pin URL…", the Start Menu
+scan, the `evars.bat` context action. Recording every visited folder (for `<leader>fr`)
+comes with the M6 pickers.
+
+Manual checklist:
+- [ ] `Space Space`: pins listed under frequent / headers; typing narrows instantly.
+- [ ] A web pin opens a chromeless Edge window; `browser = "chrome"` uses Chrome.
+- [ ] An app pin with `%APPDATA%` in its command runs.
+- [ ] Does `Ctrl-Space` arrive in WezTerm on Windows? (else `Space Space`).

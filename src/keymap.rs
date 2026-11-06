@@ -348,6 +348,8 @@ pub enum Action {
     /// `gx` / `gw`: the current folder in Explorer / a new WezTerm tab.
     ExplorerHere,
     TerminalHere,
+    /// `<leader><leader>` / `<C-Space>`: the launcher.
+    Launcher,
     /// `<leader>rs`: the pins picker filtered to sync presets.
     SyncPicker,
     /// `g<Space>`: the `:cd ` prompt, ready for a path (Yazi's `g<Space>`).
@@ -443,6 +445,7 @@ const NAMED: &[(&str, Action)] = &[
     ("paste-overwrite", Action::PasteOverwrite),
     ("jobs", Action::Jobs),
     ("sync-picker", Action::SyncPicker),
+    ("launcher", Action::Launcher),
     ("open-with", Action::OpenWith),
     ("reveal", Action::Reveal),
     ("properties", Action::Properties),
@@ -662,6 +665,12 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("g.", ToggleHidden, "toggle hidden/system files"),
         ("g?", Help, "help"),
         ("<leader>l", Locations, "Locations"),
+        (
+            "<leader><leader>",
+            Launcher,
+            "launcher (apps, web apps, pins)",
+        ),
+        ("<C-Space>", Launcher, ""),
         ("<leader>p", PinPicker, "pins picker"),
         ("<leader>t", TagPicker, "tags: pick, filter, rename"),
         ("<leader>m", MachinePicker, "machines picker"),

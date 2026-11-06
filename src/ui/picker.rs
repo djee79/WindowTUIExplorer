@@ -102,9 +102,44 @@ fn draw_results(f: &mut Frame, area: Rect, app: &mut App) {
     } else {
         0
     };
-    let visible: Vec<_> = p.view.iter().skip(p.offset).take(rows_h).cloned().collect();
-    for (i, item) in visible.iter().enumerate() {
-        let row = p.offset + i;
+    // Section headers (the launcher's browse view) take a line each: scroll further
+    // until the cursor's line fits under them.
+    let headers = p.headers.clone();
+    let header_at = |row: usize| {
+        headers
+            .iter()
+            .find(|(r, _)| *r == row)
+            .map(|(_, t)| t.clone())
+    };
+    let lines_to = |from: usize, to: usize| {
+        (from..=to)
+            .map(|r| 1 + usize::from(header_at(r).is_some()))
+            .sum::<usize>()
+    };
+    while p.offset < p.cursor && lines_to(p.offset, p.cursor) > rows_h {
+        p.offset += 1;
+    }
+    let mut budget = rows_h;
+    let mut visible = Vec::new();
+    for (row, item) in p.view.iter().enumerate().skip(p.offset) {
+        let need = 1 + usize::from(header_at(row).is_some());
+        if need > budget {
+            break;
+        }
+        budget -= need;
+        visible.push((row, item.clone()));
+    }
+    for (row, item) in visible {
+        if let Some(title) = header_at(row) {
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {title} "), theme::bold(ACCENT)),
+                Span::styled(
+                    "─".repeat(w.saturating_sub(width(&title) + 3)),
+                    theme::fg(theme::BORDER),
+                ),
+            ]));
+        }
+        let item = &item;
         let hits: HashSet<u32> = if p.query.text.is_empty() {
             HashSet::new()
         } else {

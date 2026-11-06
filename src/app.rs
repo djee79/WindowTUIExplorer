@@ -290,6 +290,8 @@ pub struct App {
     pub open_menu: Option<OpenMenu>,
     /// What Windows has per extension (asked once per session).
     pub open_registered: HashMap<String, crate::open::Registered>,
+    /// Frecency of everything opened (launcher ranking), from usage.tsv.
+    pub usage: crate::frecency::Usage,
     sync_token: u64,
     /// File operations: the open rename / delete prompt's subject, how many are running,
     /// the name to put the cursor on when the listing comes back, and a program to run
@@ -410,6 +412,7 @@ impl App {
             open_last: Default::default(),
             open_menu: None,
             open_registered: HashMap::new(),
+            usage: Default::default(),
             sync_token: 0,
             op_draft: None,
             ops_running: 0,
@@ -439,6 +442,7 @@ impl App {
         app.worker.load_preset_runs();
         app.worker.find_7z();
         app.worker.load_open_config();
+        app.worker.load_usage();
         app.set_cwd(start, None);
         app
     }
@@ -1040,6 +1044,8 @@ impl App {
                 last,
             } => self.on_open_config(*cfg, problems, resolved, last),
             AppEvent::Ran { what, result } => self.on_ran(what, result),
+            // Launches recorded before the file was read stay.
+            AppEvent::UsageLoaded(usage) => self.usage.merge(usage),
             AppEvent::Registered { ext, registered } => self.on_registered(ext, registered),
             AppEvent::SmbAnswer { open, up } => self.on_smb_answer(open, up),
             AppEvent::PresetRuns(runs) => {
@@ -2605,6 +2611,73 @@ mod pin_tests {
         );
         press(&mut app, "<Esc><Esc>");
         assert_eq!(app.pins.pins.len(), 1);
+    }
+
+    /// `<leader><leader>`: every pin, the most used first with no query (under
+    /// "frequent", then groups by first tag); opening counts a use; with no match, Enter
+    /// runs the typed text.
+    #[test]
+    fn launcher_browses_ranks_and_counts_uses() {
+        let (mut app, _rt) = loaded();
+        let text = r#"
+            [[pin]]
+            kind = "app"
+            name = "E3D HIT"
+            command = 'C:\nope\evars.bat'
+            tags = ["aveva"]
+            [[pin]]
+            kind = "web"
+            name = "Grafana"
+            url = "https://grafana.example"
+            tags = ["monitoring"]
+            [[pin]]
+            kind = "folder"
+            name = "Work"
+            path = 'C:\work'
+        "#;
+        let Ok((store, notes)) = crate::pins::parse(text) else {
+            panic!()
+        };
+        assert!(notes.is_empty(), "{notes:?}");
+        app.pins = store;
+        let now = crate::frecency::now_secs();
+        for key in [
+            r"c:\nope\evars.bat",
+            r"c:\nope\evars.bat",
+            "https://grafana.example",
+        ] {
+            app.usage.record(key, now);
+        }
+
+        press(&mut app, "<Space><Space>");
+        assert_eq!(app.mode, Mode::Picker);
+        settle(&mut app);
+        assert_eq!(
+            picker_names(&app),
+            ["E3D HIT", "Grafana", "Work", "E3D HIT", "Grafana"]
+        );
+        let screen = render(&mut app, 160, 30);
+        for want in ["Launcher", "frequent", "untagged", "#aveva", "#monitoring"] {
+            assert!(screen.contains(want), "{want}: {screen}");
+        }
+
+        // Searching: tiers, no headers.
+        press(&mut app, "wo");
+        settle(&mut app);
+        assert_eq!(picker_names(&app), ["Work"]);
+        assert!(app.picker.as_ref().is_some_and(|p| p.headers.is_empty()));
+        // Opening it counts a use.
+        press(&mut app, "<CR>");
+        assert_eq!(app.cwd.display(), r"C:\work");
+        assert!(app.usage.score(r"c:\work", now) > 0);
+
+        // Nothing matches: Enter runs the text (here a program that doesn't exist).
+        press(&mut app, "<C-Space>");
+        press(&mut app, "sentier-no-such-program-xyz");
+        settle(&mut app);
+        assert!(picker_names(&app).is_empty());
+        press(&mut app, "<CR>");
+        assert_eq!(app.mode, Mode::Normal);
     }
 }
 

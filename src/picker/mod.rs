@@ -65,6 +65,8 @@ pub struct PickItem {
     /// The last probe: Some(true) reachable, Some(false) failed, None not checked.
     pub reachable: Option<bool>,
     pub server: Option<String>,
+    /// Frecency (launcher ranking, "frequent"); 0 when never used or not tracked.
+    pub score: u64,
 }
 
 impl PickItem {
@@ -106,6 +108,40 @@ impl PickItem {
     }
 }
 
+/// The launcher with no query (wtm's browse view): the five most used ("frequent", when
+/// at least two have been used and there are groups), then the untagged, then each
+/// first tag A→Z under its header. Within a group: most used, then A→Z. A frequent item
+/// also stays in its group, as in wtm.
+pub fn browse_order(mut items: Vec<Arc<PickItem>>) -> (Vec<Arc<PickItem>>, Vec<(usize, String)>) {
+    let group = |i: &PickItem| i.tags.first().cloned().unwrap_or_default();
+    items.sort_by_cached_key(|i| (group(i), std::cmp::Reverse(i.score), i.name.to_lowercase()));
+    let has_groups = items.iter().any(|i| !i.tags.is_empty());
+    let mut out: Vec<Arc<PickItem>> = Vec::new();
+    let mut headers: Vec<(usize, String)> = Vec::new();
+    let mut top: Vec<Arc<PickItem>> = items.iter().filter(|i| i.score > 0).cloned().collect();
+    top.sort_by_cached_key(|i| (std::cmp::Reverse(i.score), i.name.to_lowercase()));
+    top.truncate(5);
+    if has_groups && top.len() >= 2 {
+        headers.push((0, "frequent".to_string()));
+        out.extend(top);
+    }
+    let mut last: Option<String> = None;
+    for it in items {
+        let g = group(&it);
+        if has_groups && last.as_deref() != Some(g.as_str()) {
+            let title = if g.is_empty() {
+                "untagged".to_string()
+            } else {
+                format!("#{g}")
+            };
+            headers.push((out.len(), title));
+            last = Some(g);
+        }
+        out.push(it);
+    }
+    (out, headers)
+}
+
 /// What a picker lists, which decides what its keys do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
@@ -115,6 +151,9 @@ pub enum Source {
     Tags,
     /// Machines (`<leader>m`): pinned, recent, inventory CSV, `source_cmd`.
     Machines,
+    /// The launcher (`<leader><leader>`): every pin, ranked with frecency; with no
+    /// query, the most used on top, then groups by first tag.
+    Launcher,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,6 +185,8 @@ pub struct Picker {
     pub completion: Option<Completion>,
     /// The most used tags with their counts, for the tag bar and `]t`.
     pub tag_bar: Vec<(String, usize)>,
+    /// Section headers before rows (row index, title): the launcher's empty-query view.
+    pub headers: Vec<(usize, String)>,
     is_counts: Vec<(String, usize)>,
     servers: Vec<(String, usize)>,
     /// The filter part of the query the matcher was last filled for.
@@ -204,6 +245,7 @@ impl Picker {
             page: 10,
             completion: None,
             tag_bar,
+            headers: Vec::new(),
             is_counts,
             servers,
             applied: None,
@@ -264,9 +306,23 @@ impl Picker {
         let mut view: Vec<Arc<PickItem>> =
             snap.matched_items(..n).map(|i| i.data.clone()).collect();
         let text = self.query.text.to_lowercase();
+        self.headers.clear();
         if !text.is_empty() {
-            // Stable: within a tier, nucleo's score order stands.
-            view.sort_by_key(|i| i.tier(&text));
+            // Within a tier: frecency, then (launcher) A→Z; otherwise nucleo's order
+            // stands (the sort is stable).
+            if self.source == Source::Launcher {
+                view.sort_by_cached_key(|i| {
+                    (
+                        i.tier(&text),
+                        std::cmp::Reverse(i.score),
+                        i.name.to_lowercase(),
+                    )
+                });
+            } else {
+                view.sort_by_key(|i| (i.tier(&text), std::cmp::Reverse(i.score)));
+            }
+        } else if self.source == Source::Launcher {
+            (view, self.headers) = browse_order(view);
         }
         self.view = view;
         self.cursor = self.cursor.min(self.view.len().saturating_sub(1));
@@ -406,7 +462,85 @@ mod tests {
                 .strip_prefix(r"\\")
                 .and_then(|r| r.split('\\').next())
                 .map(str::to_lowercase),
+            score: 0,
         }
+    }
+
+    fn scored(name: &str, tags: &[&str], score: u64) -> PickItem {
+        PickItem {
+            score,
+            ..item(0, name, "", PinKind::App, tags)
+        }
+    }
+
+    fn row_names(v: &[Arc<PickItem>]) -> Vec<&str> {
+        v.iter().map(|i| i.name.as_str()).collect()
+    }
+
+    #[test]
+    fn launcher_ranks_tier_then_frecency_then_name() {
+        let items = vec![
+            scored("grafana staging", &[], 0),
+            scored("grafana", &[], 50),
+            scored("my grafana", &[], 900),
+            scored("graphs", &[], 10),
+            scored("zebra", &["grafana"], 0),
+        ];
+        let mut p = Picker::new("Launcher", Source::Launcher, items, Arc::new(|| {}), "gra");
+        let end = Instant::now() + Duration::from_secs(5);
+        while (p.view.len() < 5 || p.running) && Instant::now() < end {
+            p.tick();
+        }
+        // Name prefix (by frecency, then A→Z) › tag prefix › substring (even if used most).
+        assert_eq!(
+            row_names(&p.view),
+            [
+                "grafana",
+                "graphs",
+                "grafana staging",
+                "zebra",
+                "my grafana"
+            ]
+        );
+        assert!(p.headers.is_empty(), "no headers while searching");
+    }
+
+    #[test]
+    fn launcher_browse_view_has_frequent_then_groups() {
+        let items: Vec<Arc<PickItem>> = vec![
+            scored("E3D HIT", &["aveva", "acme"], 40),
+            scored("Admin", &["aveva"], 0),
+            scored("Grafana", &["monitoring"], 300),
+            scored("notes", &[], 0),
+            scored("Teams", &[], 5),
+        ]
+        .into_iter()
+        .map(Arc::new)
+        .collect();
+        let (view, headers) = browse_order(items);
+        assert_eq!(
+            row_names(&view),
+            [
+                "Grafana", "E3D HIT", "Teams", "Teams", "notes", "E3D HIT", "Admin", "Grafana"
+            ]
+        );
+        assert_eq!(
+            headers,
+            [
+                (0, "frequent".to_string()),
+                (3, "untagged".to_string()),
+                (5, "#aveva".to_string()),
+                (7, "#monitoring".to_string())
+            ]
+        );
+        // No tags at all: one flat list, no headers.
+        let flat: Vec<Arc<PickItem>> = vec![scored("b", &[], 0), scored("a", &[], 3)]
+            .into_iter()
+            .map(Arc::new)
+            .collect();
+        let (view, headers) = browse_order(flat);
+        assert_eq!(row_names(&view), ["a", "b"]);
+        assert!(headers.is_empty());
     }
 
     fn picker(query: &str) -> Picker {

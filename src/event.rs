@@ -89,6 +89,8 @@ pub enum AppEvent {
         ext: String,
         registered: crate::open::Registered,
     },
+    /// The frecency store, read at startup.
+    UsageLoaded(crate::frecency::Usage),
     /// Something was started, shown or copied (`what`), or why not.
     Ran {
         what: String,

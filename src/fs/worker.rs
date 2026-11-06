@@ -1059,6 +1059,42 @@ impl Worker {
         });
     }
 
+    /// An app or web pin, or typed text: ShellExecute with `%ENV%` expanded. A browser
+    /// (`find`) is located through PATH / App Paths first.
+    pub fn launch(&self, what: String, l: crate::launcher::Launch) {
+        self.blocking_ran(what, move || {
+            let command = if l.find {
+                crate::open::run::resolve(&l.command)
+                    .ok_or_else(|| format!("{} isn't installed (App Paths)", l.command))?
+            } else {
+                l.command.clone()
+            };
+            crate::platform::shell_execute(&command, &l.args, &l.dir).map_err(|e| e.to_string())
+        });
+    }
+
+    /// The frecency store: one `UsageLoaded`.
+    pub fn load_usage(&self) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let usage = crate::frecency::store_path()
+                .map(|p| crate::frecency::load(&p))
+                .unwrap_or_default();
+            let _ = tx.send(AppEvent::UsageLoaded(usage));
+        });
+    }
+
+    /// Writes the whole frecency store (small: one line per thing ever opened).
+    pub fn save_usage(&self, usage: crate::frecency::Usage) {
+        self.rt.spawn_blocking(move || {
+            if let Some(p) = crate::frecency::store_path()
+                && let Err(e) = crate::frecency::save(&p, &usage)
+            {
+                tracing::warn!(error = %e, "saving usage.tsv");
+            }
+        });
+    }
+
     /// Explorer with `path` selected.
     pub fn reveal(&self, path: String) {
         let what = format!("revealed {}", short_name(&path));

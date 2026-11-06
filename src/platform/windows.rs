@@ -928,6 +928,61 @@ pub fn default_app_name(ext: &str) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
+// ------------------------------------------------------------------ launcher (M5)
+
+/// `%APPDATA%\x` → `C:\Users\me\AppData\Roaming\x` (Windows' own expansion, wtm's
+/// `expand_env`). Unknown variables stay as written.
+pub fn expand_env(s: &str) -> String {
+    use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
+    if !s.contains('%') {
+        return s.to_string();
+    }
+    let src = HSTRING::from(s);
+    let mut buf = vec![0u16; 4096];
+    // SAFETY: src is NUL-terminated and outlives the call; buf is a valid slice.
+    let n = unsafe { ExpandEnvironmentStringsW(&src, Some(&mut buf)) } as usize;
+    if n == 0 || n > buf.len() {
+        return s.to_string();
+    }
+    String::from_utf16_lossy(&buf[..n - 1])
+}
+
+/// wtm's `run_command`: `ShellExecuteW("open", command, args, dir)`, every field with
+/// `%ENV%` expanded. Runs `.exe`, `.bat`, `.lnk`, documents and URLs alike.
+pub fn shell_execute(command: &str, args: &str, dir: &str) -> io::Result<()> {
+    // SAFETY: no reserved pointer; flags are valid COINIT values.
+    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+    let file = HSTRING::from(expand_env(command));
+    let params = HSTRING::from(expand_env(args));
+    let cwd = HSTRING::from(expand_env(dir));
+    let verb = HSTRING::from("open");
+    // SAFETY: all strings are NUL-terminated wide strings that outlive the call.
+    let res = unsafe {
+        ShellExecuteW(
+            None,
+            &verb,
+            &file,
+            if args.is_empty() {
+                PCWSTR::null()
+            } else {
+                PCWSTR(params.as_ptr())
+            },
+            if dir.is_empty() {
+                PCWSTR::null()
+            } else {
+                PCWSTR(cwd.as_ptr())
+            },
+            SW_SHOWNORMAL,
+        )
+    };
+    let code = res.0 as isize;
+    if code > 32 {
+        Ok(())
+    } else {
+        Err(io::Error::other(shell_execute_error(code)))
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
