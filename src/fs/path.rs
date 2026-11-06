@@ -79,6 +79,11 @@ impl FsPath {
         matches!(self.root, FsRoot::Share { .. })
     }
 
+    /// `C:\` or `\\server\share` itself, with no components below it.
+    pub fn is_volume_root(&self) -> bool {
+        self.parts.is_empty()
+    }
+
     /// Display form: `C:\`, `C:\dir`, `\\server\share`, `\\server\share\dir`. Never `\\?\`.
     pub fn display(&self) -> String {
         let mut s = match &self.root {
@@ -227,10 +232,17 @@ impl Loc {
     }
 
     /// The child named `name` as it appears in this location's listing.
+    ///
+    /// The Locations root lists drives by letter (`C:`) and saved shares by their full
+    /// root (`\\server\share`), so both join back to the location they name.
     pub fn join(&self, name: &str) -> Result<Loc, PathError> {
         match self {
             Loc::Root => match split_drive(name) {
                 Some((letter, tail)) if tail.is_empty() || tail == "\\" => build_drive(letter, ""),
+                _ if name.starts_with(r"\\") => match Loc::parse(name)? {
+                    Loc::Fs(p) if p.is_network() && p.is_volume_root() => Ok(Loc::Fs(p)),
+                    _ => Err(PathError::Invalid(format!("not a share root: {name}"))),
+                },
                 _ => Err(PathError::Invalid(format!("not a location: {name}"))),
             },
             Loc::Server(server) => {
@@ -316,6 +328,21 @@ impl fmt::Display for Loc {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.display())
     }
+}
+
+/// Splits typed path text for Tab completion into the directory part and the name prefix
+/// being completed: `C:\wo` → (`C:\`, `wo`), `\\srv\` → (`\\srv\`, ``), `D:` → (`D:`, ``).
+///
+/// This is text editing on what the user typed, not path logic: the directory part is
+/// then resolved with [`Loc::resolve`] like any other input.
+pub fn split_for_completion(input: &str) -> (&str, &str) {
+    if let Some(i) = input.rfind(['\\', '/']) {
+        return (&input[..=i], &input[i + 1..]);
+    }
+    if split_drive(input).is_some_and(|(_, tail)| tail.is_empty()) {
+        return (input, "");
+    }
+    ("", input)
 }
 
 /// Trims whitespace and the quotes Explorer's "Copy as path" adds.
@@ -551,6 +578,43 @@ mod tests {
             Loc::Root.join("d:").map(|l| l.display()),
             Ok(r"D:\".to_string())
         );
+    }
+
+    #[test]
+    fn completion_split_table() {
+        let cases: &[(&str, (&str, &str))] = &[
+            ("", ("", "")),
+            ("wo", ("", "wo")),
+            (r"C:\wo", (r"C:\", "wo")),
+            (r"C:\work\", (r"C:\work\", "")),
+            ("C:/a/b", ("C:/a/", "b")),
+            (r"\\srv\", (r"\\srv\", "")),
+            (r"\\srv\pro", (r"\\srv\", "pro")),
+            ("D:", ("D:", "")),
+            (r"..\x", (r"..\", "x")),
+            ("~", ("", "~")),
+        ];
+        for (input, want) in cases {
+            assert_eq!(split_for_completion(input), *want, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn root_joins_saved_shares_by_full_root() {
+        let ok: &[(&str, &str)] = &[
+            (r"\\srv\share", r"\\srv\share"),
+            (r"\\SRV\Share\", r"\\SRV\Share"),
+        ];
+        for (name, want) in ok {
+            assert_eq!(
+                Loc::Root.join(name).map(|l| l.display()).as_deref(),
+                Ok(*want)
+            );
+        }
+        // Only share roots: not a server node, not a path below a share.
+        for bad in [r"\\srv", r"\\srv\share\dir", r"\\"] {
+            assert!(Loc::Root.join(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

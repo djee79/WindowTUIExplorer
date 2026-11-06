@@ -3,21 +3,10 @@
 //! Everything in this module may block. Call it from the worker
 //! (`spawn_blocking`), never from the UI thread.
 
-#[cfg(windows)]
 mod windows;
-#[cfg(windows)]
 pub use self::windows::*;
 
-// Dev-host shim: lets `cargo test` build on a non-Windows machine.
-// It is not a port; the app is only meaningful on Windows.
-#[cfg(not(windows))]
-mod shim;
-#[cfg(not(windows))]
-pub use self::shim::*;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// Only the Win32 side constructs most variants.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub enum DriveKind {
     Fixed,
     Removable,
@@ -44,6 +33,15 @@ impl DriveKind {
 pub struct DriveInfo {
     pub letter: char,
     pub kind: DriveKind,
+}
+
+/// One share as `NetShareEnum` reports it.
+#[derive(Debug, Clone)]
+pub struct ShareInfo {
+    /// The share name, without server or separators (`project`).
+    pub name: String,
+    /// The administrator's description, often empty.
+    pub remark: String,
 }
 
 #[derive(Debug, Clone, Copy)]

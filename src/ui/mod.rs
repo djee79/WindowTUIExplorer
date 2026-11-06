@@ -2,8 +2,10 @@
 
 mod columns;
 mod help;
+mod locations;
 mod statusbar;
 mod theme;
+mod whichkey;
 
 use crate::app::{App, Mode};
 use ratatui::Frame;
@@ -29,11 +31,18 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         f.area(),
     );
     statusbar::draw_header(f, header, app);
-    columns::draw(f, body, app);
+    if app.at_root() {
+        locations::draw(f, body, app);
+    } else {
+        columns::draw(f, body, app);
+    }
     statusbar::draw_status(f, status, app);
-    statusbar::draw_hints(f, hints);
+    statusbar::draw_hints(f, hints, app);
     if app.mode == Mode::Help {
-        help::draw(f, body);
+        help::draw(f, body, app);
+    }
+    if app.which_key_visible() {
+        whichkey::draw(f, body, app);
     }
 }
 

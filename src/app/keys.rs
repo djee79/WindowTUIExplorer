@@ -1,0 +1,626 @@
+//! Key dispatch, the actions bindings run, and the prompts.
+//!
+//! Normal mode is driven by [`crate::keymap::Keymap`]: keys accumulate until they match a
+//! binding. A pure prefix (`g`, `<leader>`) waits, and after the keymap timeout the
+//! which-key popup lists what can follow. A binding that is also a prefix of a longer one
+//! runs when the timeout passes, as in vim. Digits before a command are a count.
+//!
+//! Prompts (`:` command line, `/` `?` search, `f` filter) are a [`LineEditor`] plus
+//! what the prompt does with each change.
+
+use super::{App, Mode, Quit, Search};
+use crate::fs::path::{Loc, split_for_completion};
+use crate::keymap::{Action, Key, Lookup};
+use crate::prompt::{Edit, LineEditor};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::time::Instant;
+
+/// Most a count can repeat a navigation (`50h` shouldn't queue 50 listings).
+const MAX_NAV_REPEAT: usize = 32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptKind {
+    Command,
+    Search { backward: bool },
+    Filter,
+}
+
+#[derive(Debug, Clone)]
+pub struct Prompt {
+    pub kind: PromptKind,
+    pub editor: LineEditor,
+    /// A one-line note after the prompt: completion matches, "no match".
+    pub note: String,
+    /// The cursor row when the prompt opened (a cancelled search goes back there).
+    origin: usize,
+    /// The search before this one, restored when the search is cancelled.
+    saved_search: Option<Search>,
+    completion: Option<Completion>,
+}
+
+impl Prompt {
+    pub fn prefix(&self) -> &'static str {
+        match self.kind {
+            PromptKind::Command => ":",
+            PromptKind::Search { backward: false } => "/",
+            PromptKind::Search { backward: true } => "?",
+            PromptKind::Filter => "filter: ",
+        }
+    }
+}
+
+/// Tab completion of the path argument of `:cd` / `:e`, from the listing cache. A
+/// directory that isn't cached is listed through the worker like any other, and the
+/// completion fills in when it arrives.
+#[derive(Debug, Clone)]
+struct Completion {
+    /// The line before the path argument, e.g. `cd `.
+    head: String,
+    /// The directory part as typed (`C:\wo` → `C:\`), kept verbatim in the result.
+    dir_text: String,
+    dir: Loc,
+    prefix: String,
+    candidates: Vec<String>,
+    loaded: bool,
+    idx: usize,
+    /// The line as completion last wrote it. Any other edit starts a new completion.
+    applied: String,
+}
+
+fn home() -> Result<String, String> {
+    std::env::var("USERPROFILE").map_err(|_| "USERPROFILE is not set".to_string())
+}
+
+/// `~` and `~\rest` → the home directory (input sugar for `:cd` and bindings).
+fn expand_home(text: &str) -> Result<String, String> {
+    let text = text.trim();
+    match text.strip_prefix('~') {
+        Some("") => home(),
+        Some(rest) if rest.starts_with(['\\', '/']) => Ok(format!("{}{rest}", home()?)),
+        _ => Ok(text.to_string()),
+    }
+}
+
+impl App {
+    pub(super) fn on_key(&mut self, key: KeyEvent) {
+        self.dirty = true;
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            self.quit = Some(Quit::Plain);
+            return;
+        }
+        match self.mode {
+            Mode::Help => self.mode = Mode::Normal,
+            Mode::Prompt => self.on_prompt_key(key),
+            Mode::Normal => self.on_normal_key(key),
+        }
+    }
+
+    // ---------------------------------------------------------------- normal mode
+
+    fn on_normal_key(&mut self, ev: KeyEvent) {
+        let key = Key::from_event(&ev);
+        if self.keys_pending.is_empty() {
+            // `0` starts nothing on its own; after a digit it's part of the count.
+            if let Some(d) = key.is_digit()
+                && (d != 0 || self.count.is_some())
+            {
+                let c = self.count.unwrap_or(0).saturating_mul(10) + d as usize;
+                self.count = Some(c.min(999_999));
+                return;
+            }
+        } else {
+            match key.code {
+                KeyCode::Esc => {
+                    self.clear_keys();
+                    return;
+                }
+                // which-key: back up a level.
+                KeyCode::Backspace => {
+                    self.keys_pending.pop();
+                    if self.keys_pending.is_empty() {
+                        self.clear_keys();
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if self.keys_pending.is_empty() && key.code == KeyCode::Esc && self.count.is_some() {
+            self.count = None;
+            return;
+        }
+        self.keys_pending.push(key);
+        let found = match self.keymap.lookup(&self.keys_pending) {
+            Lookup::None => None,
+            Lookup::Prefix => Some(None),
+            Lookup::Exact { action, longer } => Some((!longer).then(|| action.clone())),
+        };
+        match found {
+            None => {
+                if self.keys_pending.len() > 1 {
+                    let seq = crate::keymap::fmt_keys(&self.keys_pending, self.keymap.leader);
+                    self.set_status(format!("{seq}: no mapping"), false);
+                }
+                self.clear_keys();
+            }
+            // Wait for more keys (or the timeout).
+            Some(None) => {
+                self.keys_since.get_or_insert_with(Instant::now);
+            }
+            Some(Some(action)) => {
+                let count = self.count.take();
+                self.clear_keys();
+                self.run(action, count);
+            }
+        }
+    }
+
+    fn clear_keys(&mut self) {
+        self.keys_pending.clear();
+        self.keys_since = None;
+        self.which_key = false;
+        self.count = None;
+    }
+
+    /// From `tick`: once the timeout passes, run a binding that was waiting on a longer
+    /// one, or open the which-key popup for a pure prefix.
+    pub(super) fn key_timeout(&mut self, now: Instant) {
+        let Some(t) = self.keys_since else { return };
+        if self.which_key || now.duration_since(t) < self.keymap.timeout {
+            return;
+        }
+        if let Lookup::Exact { action, .. } = self.keymap.lookup(&self.keys_pending) {
+            let (action, count) = (action.clone(), self.count.take());
+            self.clear_keys();
+            self.run(action, count);
+        } else {
+            self.which_key = true;
+            self.dirty = true;
+        }
+    }
+
+    // -------------------------------------------------------------------- actions
+
+    pub(super) fn run(&mut self, action: Action, count: Option<usize>) {
+        let n = count.unwrap_or(1).max(1);
+        let ni = n.min(isize::MAX as usize) as isize;
+        let half = (self.page / 2).max(1) as isize;
+        let page = self.page.max(1) as isize;
+        match action {
+            Action::Down => self.move_cursor(ni),
+            Action::Up => self.move_cursor(-ni),
+            Action::Parent => {
+                for _ in 0..n.min(MAX_NAV_REPEAT) {
+                    self.go_parent();
+                }
+            }
+            Action::Open => self.open_selected(),
+            Action::Top => self.set_cursor(count.map_or(0, |c| c.saturating_sub(1))),
+            Action::Bottom => self.set_cursor(count.map_or(usize::MAX, |c| c.saturating_sub(1))),
+            Action::HalfPageDown => self.move_cursor(half.saturating_mul(ni)),
+            Action::HalfPageUp => self.move_cursor(-half.saturating_mul(ni)),
+            Action::PageDown => self.move_cursor(page.saturating_mul(ni)),
+            Action::PageUp => self.move_cursor(-page.saturating_mul(ni)),
+            // The UI's scroll-off clamp turns these into vim's exact positions.
+            Action::ScrollMiddle => self.offset = self.cursor.saturating_sub(self.page / 2),
+            Action::ScrollTop => self.offset = self.cursor,
+            Action::ScrollBottom => self.offset = (self.cursor + 1).saturating_sub(self.page),
+            Action::SearchForward => self.open_prompt(PromptKind::Search { backward: false }),
+            Action::SearchBackward => self.open_prompt(PromptKind::Search { backward: true }),
+            Action::SearchNext => self.search_again(n, false),
+            Action::SearchPrev => self.search_again(n, true),
+            Action::Filter => self.open_prompt(PromptKind::Filter),
+            Action::Escape => {
+                self.search_hl = false;
+                if !self.filter.is_empty() {
+                    self.filter.clear();
+                    self.rebuild_view();
+                }
+            }
+            Action::Back => self.history(n, true),
+            Action::Forward => self.history(n, false),
+            Action::PreviousDir => match self.prev_dir.clone() {
+                Some(p) => self.navigate(p, None),
+                None => self.set_status("no previous directory".into(), false),
+            },
+            Action::Locations => self.navigate(Loc::Root, None),
+            Action::Downloads => self.cd("~\\Downloads"),
+            Action::VolumeRoot => match self.cwd.as_fs().map(|p| Loc::Fs(p.volume_root())) {
+                Some(root) => self.navigate(root, None),
+                None => self.set_status("not on a drive or share".into(), false),
+            },
+            Action::ToggleHidden => {
+                self.show_hidden = !self.show_hidden;
+                self.rebuild_view();
+                let state = if self.show_hidden { "shown" } else { "hidden" };
+                self.set_status(format!("hidden/system files {state}"), false);
+            }
+            Action::Refresh => self.refresh(),
+            Action::Delete if self.at_root() => self.forget_selected_share(),
+            Action::Delete => self.set_status(
+                "dd (to the Recycle Bin) arrives with file operations (M6)".into(),
+                false,
+            ),
+            Action::CommandLine => self.open_prompt(PromptKind::Command),
+            Action::Help => self.mode = Mode::Help,
+            Action::Quit | Action::QuitNoWrite => self.quit = Some(Quit::Plain),
+            Action::QuitWriteCwd => self.quit = Some(Quit::WithCwd),
+            Action::Cd(path) => self.cd(&path),
+            Action::GotoLine(line) => self.set_cursor(line.saturating_sub(1)),
+            Action::SetNumber(on) => self.number = on,
+            Action::SetRelativeNumber(on) => self.relative_number = on,
+        }
+    }
+
+    fn cd(&mut self, text: &str) {
+        let target =
+            expand_home(text).and_then(|t| Loc::resolve(&self.cwd, &t).map_err(|e| e.to_string()));
+        match target {
+            Ok(loc) => self.navigate(loc, None),
+            Err(e) => self.set_status(format!("cd: {e}"), true),
+        }
+    }
+
+    fn history(&mut self, n: usize, back: bool) {
+        let mut target = None;
+        for _ in 0..n.min(MAX_HISTORY_STEPS) {
+            let (from, to) = if back {
+                (&mut self.back, &mut self.forward)
+            } else {
+                (&mut self.forward, &mut self.back)
+            };
+            let Some(loc) = from.pop() else { break };
+            to.push(target.replace(loc).unwrap_or_else(|| self.cwd.clone()));
+        }
+        match target {
+            Some(loc) => self.set_cwd(loc, None),
+            None => {
+                let which = if back { "back" } else { "forward" };
+                self.set_status(format!("nothing further {which} in history"), false);
+            }
+        }
+    }
+
+    // --------------------------------------------------------------------- search
+
+    /// First row from `start` matching the current search, in `backward` order,
+    /// wrapping around. Returns (row, wrapped).
+    fn find(&self, start: usize, backward: bool, include_start: bool) -> Option<(usize, bool)> {
+        let search = self.search.as_ref()?;
+        let listing = self.view_listing.as_ref()?;
+        let len = self.view.len();
+        if len == 0 {
+            return None;
+        }
+        let first = usize::from(!include_start);
+        (first..first + len).find_map(|off| {
+            let off = off % len;
+            let row = if backward {
+                (start + len - off) % len
+            } else {
+                (start + off) % len
+            };
+            let name = &listing.entries[self.view[row]].name;
+            search.matches(name).then(|| {
+                let wrapped = if backward { row > start } else { row < start };
+                (row, wrapped)
+            })
+        })
+    }
+
+    /// `n` / `N`: `reverse` flips the search's own direction.
+    fn search_again(&mut self, n: usize, reverse: bool) {
+        let Some(search) = self.search.clone() else {
+            self.set_status("no previous search".into(), true);
+            return;
+        };
+        self.search_hl = true;
+        let backward = search.backward != reverse;
+        let mut wrapped_any = false;
+        for _ in 0..n.min(self.view.len().max(1)) {
+            match self.find(self.cursor, backward, false) {
+                Some((row, wrapped)) => {
+                    wrapped_any |= wrapped;
+                    self.set_cursor(row);
+                }
+                None => {
+                    self.set_status(format!("pattern not found: {}", search.query), true);
+                    return;
+                }
+            }
+        }
+        if wrapped_any {
+            let msg = if backward {
+                "search hit TOP, continuing at BOTTOM"
+            } else {
+                "search hit BOTTOM, continuing at TOP"
+            };
+            self.set_status(msg.into(), false);
+        }
+    }
+
+    pub fn is_search_match(&self, name: &str) -> bool {
+        self.search_hl && self.search.as_ref().is_some_and(|s| s.matches(name))
+    }
+
+    // -------------------------------------------------------------------- prompts
+
+    fn open_prompt(&mut self, kind: PromptKind) {
+        let text = match kind {
+            PromptKind::Filter => self.filter.clone(),
+            _ => String::new(),
+        };
+        self.prompt = Some(Prompt {
+            kind,
+            editor: LineEditor::new(&text),
+            note: String::new(),
+            origin: self.cursor,
+            saved_search: self.search.clone(),
+            completion: None,
+        });
+        self.mode = Mode::Prompt;
+    }
+
+    fn on_prompt_key(&mut self, ev: KeyEvent) {
+        let Some(mut p) = self.prompt.take() else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        match (p.kind, ev.code) {
+            (PromptKind::Command, KeyCode::Tab) => {
+                self.complete(&mut p, true);
+                self.prompt = Some(p);
+                return;
+            }
+            (PromptKind::Command, KeyCode::BackTab) => {
+                self.complete(&mut p, false);
+                self.prompt = Some(p);
+                return;
+            }
+            // The filter keeps the list live under it: arrows move the cursor.
+            (PromptKind::Filter, KeyCode::Down) => {
+                self.move_cursor(1);
+                self.prompt = Some(p);
+                return;
+            }
+            (PromptKind::Filter, KeyCode::Up) => {
+                self.move_cursor(-1);
+                self.prompt = Some(p);
+                return;
+            }
+            _ => {}
+        }
+        let word = self.selected().map(|e| e.name.clone()).unwrap_or_default();
+        match p.editor.handle(&ev, &word) {
+            Edit::Moved | Edit::Ignored => {}
+            Edit::Changed => self.prompt_changed(&mut p),
+            Edit::Submit => {
+                self.mode = Mode::Normal;
+                self.prompt_submit(p);
+                return;
+            }
+            Edit::Cancel => {
+                self.mode = Mode::Normal;
+                self.prompt_cancel(p);
+                return;
+            }
+        }
+        self.prompt = Some(p);
+    }
+
+    fn prompt_changed(&mut self, p: &mut Prompt) {
+        let text = p.editor.text();
+        match p.kind {
+            PromptKind::Filter => {
+                self.filter = text;
+                self.rebuild_view();
+            }
+            PromptKind::Search { backward } => {
+                // Incremental: jump to the first match from where the search started.
+                self.search = Some(Search {
+                    query: text.clone(),
+                    backward,
+                });
+                self.search_hl = true;
+                let hit = self.find(p.origin, backward, true);
+                p.note = match (hit, text.is_empty()) {
+                    (_, true) => String::new(),
+                    (Some(_), _) => String::new(),
+                    (None, _) => "no match".to_string(),
+                };
+                self.set_cursor(hit.map_or(p.origin, |(row, _)| row));
+            }
+            PromptKind::Command => {
+                p.completion = None;
+                p.note.clear();
+            }
+        }
+    }
+
+    fn prompt_submit(&mut self, p: Prompt) {
+        let text = p.editor.text();
+        match p.kind {
+            PromptKind::Command => {
+                if text.trim().is_empty() {
+                    return;
+                }
+                match Action::parse(&text) {
+                    Ok(action) => self.run(action, None),
+                    Err(e) => self.set_status(format!(":{}: {e}", text.trim()), true),
+                }
+            }
+            PromptKind::Search { .. } if text.is_empty() => {
+                // `/` + Enter repeats the last search, as in vim.
+                self.search = p.saved_search;
+                self.search_again(1, false);
+            }
+            PromptKind::Search { .. } => {
+                if self.find(p.origin, false, true).is_none() {
+                    self.set_status(format!("pattern not found: {text}"), true);
+                }
+            }
+            PromptKind::Filter => {}
+        }
+    }
+
+    fn prompt_cancel(&mut self, p: Prompt) {
+        match p.kind {
+            PromptKind::Filter => {
+                self.filter.clear();
+                self.rebuild_view();
+            }
+            PromptKind::Search { .. } => {
+                self.search = p.saved_search;
+                self.set_cursor(p.origin);
+            }
+            PromptKind::Command => {}
+        }
+    }
+
+    // ----------------------------------------------------------------- completion
+
+    fn complete(&mut self, p: &mut Prompt, forward: bool) {
+        let line = p.editor.text();
+        if let Some(c) = p.completion.as_mut()
+            && c.applied == line
+            && !c.candidates.is_empty()
+        {
+            let len = c.candidates.len();
+            c.idx = if forward {
+                (c.idx + 1) % len
+            } else {
+                (c.idx + len - 1) % len
+            };
+            apply_completion(p);
+            return;
+        }
+        let Some((cmd, arg)) = line.split_once(' ') else {
+            p.note = "Tab completes the path after :cd and :e".to_string();
+            return;
+        };
+        if !matches!(cmd, "cd" | "e" | "edit") {
+            p.note = "Tab completes the path after :cd and :e".to_string();
+            return;
+        }
+        let arg = arg.trim_start();
+        let head = line[..line.len() - arg.len()].to_string();
+        let (dir_text, prefix) = split_for_completion(arg);
+        let dir = if dir_text.is_empty() {
+            Ok(self.cwd.clone())
+        } else {
+            expand_home(dir_text)
+                .and_then(|t| Loc::resolve(&self.cwd, &t).map_err(|e| e.to_string()))
+        };
+        let dir = match dir {
+            Ok(d) => d,
+            Err(e) => {
+                p.note = e;
+                return;
+            }
+        };
+        p.completion = Some(Completion {
+            head,
+            dir_text: dir_text.to_string(),
+            dir: dir.clone(),
+            prefix: prefix.to_string(),
+            candidates: Vec::new(),
+            loaded: false,
+            idx: 0,
+            applied: line,
+        });
+        if !self.fill_completion(p) {
+            p.note = format!("listing {}…", dir.display());
+            self.request(dir, false);
+        }
+    }
+
+    /// Fills candidates from the cached listing. False if it isn't cached yet.
+    fn fill_completion(&self, p: &mut Prompt) -> bool {
+        let Some(c) = p.completion.as_mut() else {
+            return true;
+        };
+        let state = self.dirs.get(&c.dir);
+        let Some(listing) = state.and_then(|s| s.listing.clone()) else {
+            if let Some(err) = state.and_then(|s| s.error.as_ref()) {
+                c.loaded = true;
+                p.note = format!("can't complete: {err}");
+                return true;
+            }
+            return false;
+        };
+        let pre = c.prefix.to_lowercase();
+        c.candidates = listing
+            .entries
+            .iter()
+            .filter(|e| e.is_container() && (self.show_hidden || !e.is_hidden()))
+            .filter(|e| e.name.to_lowercase().starts_with(&pre))
+            .map(|e| e.name.clone())
+            .collect();
+        c.loaded = true;
+        c.idx = 0;
+        if c.candidates.is_empty() {
+            p.note = "no match".to_string();
+        } else {
+            apply_completion(p);
+        }
+        true
+    }
+
+    /// From `on_listed`: a directory a completion was waiting for has arrived.
+    pub(super) fn completion_listed(&mut self, loc: &Loc) {
+        let Some(mut p) = self.prompt.take() else {
+            return;
+        };
+        if p.completion
+            .as_ref()
+            .is_some_and(|c| !c.loaded && c.dir == *loc)
+        {
+            self.fill_completion(&mut p);
+            self.dirty = true;
+        }
+        self.prompt = Some(p);
+    }
+
+    /// The directory an open completion is waiting on, so it isn't cancelled.
+    pub(super) fn completion_dir(&self) -> Option<Loc> {
+        let c = self.prompt.as_ref()?.completion.as_ref()?;
+        (!c.loaded).then(|| c.dir.clone())
+    }
+}
+
+const MAX_HISTORY_STEPS: usize = super::MAX_HISTORY;
+
+fn apply_completion(p: &mut Prompt) {
+    let Some(c) = p.completion.as_mut() else {
+        return;
+    };
+    let Some(name) = c.candidates.get(c.idx) else {
+        return;
+    };
+    let mut dir = c.dir_text.clone();
+    if !dir.is_empty() && !dir.ends_with(['\\', '/']) {
+        dir.push('\\');
+    }
+    let text = format!("{}{dir}{name}\\", c.head);
+    p.editor.set_text(&text);
+    p.note = format!(
+        "{}/{} (Tab next, S-Tab previous)",
+        c.idx + 1,
+        c.candidates.len()
+    );
+    c.applied = text;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn home_expansion() {
+        let Ok(h) = home() else { return };
+        assert_eq!(expand_home("~"), Ok(h.clone()));
+        assert_eq!(expand_home("~\\Downloads"), Ok(format!("{h}\\Downloads")));
+        assert_eq!(expand_home(r"C:\~x"), Ok(r"C:\~x".to_string()));
+        assert_eq!(expand_home("~user"), Ok("~user".to_string()));
+    }
+}

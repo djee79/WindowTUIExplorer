@@ -13,6 +13,9 @@ pub enum EntryKind {
     File,
     /// A drive in the Locations root.
     Drive(DriveKind),
+    /// A share: in a server node's listing (named `share`), or a saved share in the
+    /// Locations root (named `\\server\share`).
+    Share,
 }
 
 #[derive(Debug, Clone)]
@@ -25,9 +28,26 @@ pub struct Entry {
     pub modified: Option<SystemTime>,
     pub created: Option<SystemTime>,
     pub attrs: Attrs,
+    /// Extra text for virtual entries: a drive's volume label or mapped UNC target, a
+    /// share's remark. Empty for files and directories.
+    pub detail: String,
 }
 
 impl Entry {
+    /// An entry for a virtual listing (drives, shares): no size, dates or attributes.
+    pub fn virtual_entry(name: String, kind: EntryKind, detail: String) -> Entry {
+        Entry {
+            name,
+            kind,
+            is_link: false,
+            size: 0,
+            modified: None,
+            created: None,
+            attrs: Attrs::default(),
+            detail,
+        }
+    }
+
     /// Something you can enter with `l`.
     pub fn is_container(&self) -> bool {
         !matches!(self.kind, EntryKind::File)
@@ -126,6 +146,7 @@ mod tests {
             modified: None,
             created: None,
             attrs: Attrs::default(),
+            detail: String::new(),
         };
         let mut v = vec![
             mk("b.txt", EntryKind::File),

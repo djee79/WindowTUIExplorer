@@ -97,13 +97,65 @@ Manual checklist for M1 "done":
 5. `~\Downloads` display needs a home-abbreviation rule in `path.rs`. The top bar's `12 ms`
    needs a defined measurement (probe RTT?). M1 shows only the dot and the server name.
 
-## Next: M2 (network)
+## M2 (network): code complete 2026-11-06, manual check pending
 
-- `platform`: `NetShareEnum` (server node listing), `WNetGetConnectionW` (mapped drive → UNC).
-- The Locations root as its own screen per `docs/screens/02-locations.txt` (pinned folders /
-  drives / shares sections, reachability dots, 60 s re-probe with a 2 s `metadata()` timeout).
-  Root entries will need an explicit target `Loc` (servers can't be joined by name; see
-  the comment in the `path.rs` round-trip test).
-- Saved shares: a share is added the first time you browse it. This needs persistence, so
-  decide where (pins.toml is M3).
-- Test against a dead host and confirm the UI stays responsive.
+- `examples/probe_netapi.rs` measured it: `NetShareEnum` on a dead host parks the thread
+  for **21 s** (error 53). Every network call therefore runs on the blocking pool under a
+  timeout the supervisor gives up on; late results are dropped.
+- `platform`: `shares()` (NetShareEnum level 1, admin/IPC/temporary shares filtered),
+  `mapped_target()` (WNetGetConnectionW; works for disconnected mappings), `volume_label()`
+  (local disks only: on a mapped drive it would go to the server).
+- Server node `\\srv` lists its shares (3 s timeout; access denied says to type the share).
+- Locations root is its own screen (`ui/locations.rs`, per 02-locations): DRIVES (label, or
+  `→ \\srv\share` + `mapped` / `disconnected`) and SHARES sections, dots, detail panel,
+  legend. PINNED FOLDERS joins in M3.
+- Reachability: `Worker::probe` = `metadata()` + free space, 2 s timeout. Runs when the root
+  opens, for new entries, every 60 s while it's on screen, and on `R`.
+- Opening an entry whose last probe failed stays put, says why, and re-probes.
+- Saved shares: `%APPDATA%\sentier\shares.txt`, one `\\server\share` per line (plain text,
+  no new crate, atomic write). A share is added when a listing under it first succeeds;
+  `dd` on a share in Locations removes it. Shares browsed before the file loads are merged.
+
+Manual checklist for M2:
+- [ ] `cargo run -- \\10.255.255.1\x`: `⚠ unreachable (timed out)` after ~3 s; keys keep
+      working throughout; `R` retries; `q` quits at once.
+- [ ] Browse a real share, `h` → its server lists shares, `h` → Locations shows it saved.
+- [ ] Mapped drives show `→ \\srv\share`; a disconnected one shows `× … disconnected`.
+- [ ] Add `\\10.255.255.1\x` to shares.txt by hand: its dot turns × after ~2 s, Enter
+      stays put, the UI never stalls.
+
+## Spec update adopted 2026-11-06 + keymap pass (code complete, manual check pending)
+
+CLAUDE.md and docs/screens now come from Claude Design (the copy in docs/sentier-screens/
+can be deleted). New since M1: vim-first keymap, pin tags (M3), previews (new M2b), Yazi-style
+`s`/`S` search (new M2a), relative line numbers (M1). The non-Windows `platform/shim.rs`
+is gone ("no cfg-gated Linux code").
+
+Keymap pass:
+- `src/keymap.rs`: vim notation (`<C-d>`, `<leader>`, `<S-CR>`), actions, the default
+  normal-mode table with descs, and `%APPDATA%\sentier\keymap.toml` (`leader`,
+  `timeout_ms`, `[normal] prepend/append/keymap`; problems go to the status bar + log;
+  tables for later modes such as `[picker.insert]` are ignored). Loaded by the worker under
+  the network timeout (APPDATA may be redirected to a share).
+- `src/app/keys.rs`: sequence dispatch with counts, which-key after 300 ms (`Esc` cancels,
+  Backspace backs up a level), all actions, prompts, search, history, completion.
+- `src/prompt.rs`: the line editor (readline basics in insert, `h l w b e 0 $ x i a I A dw
+  cw ciw C D u` in normal).
+- Keys now: `hjkl` + counts, `gg G {n}G :{n}`, `^d ^u ^f ^b`, `zz zt zb`, `/ ? n N`
+  (smartcase, wrapscan, hlsearch until `Esc`), `f` filter, `H L ^o` history, `''`, `-`,
+  `~ gl gd g\`, `g.`, `g?`, `<leader>l`, `R`, `dd` (Locations only), `:`, `q ZZ ZQ`
+  (`Q` kept as a ZZ alias because spec section 10 still says Q).
+- `:` commands: `cd`/`e <path>` with Tab/S-Tab completion from the listing cache (`:e` on a
+  file shows it selected in its folder), `q q! wq x`, `{n}`, `set nu|nonu|rnu|nornu`.
+  Future ones (`pin`, `sync`, `rename`…) say which milestone brings them.
+- Hybrid line-number gutter in the current column (`:set` toggles; `numbers` in
+  config.toml waits for config.rs).
+- Keyboard enhancement (kitty protocol) is pushed when crossterm says it's supported.
+  `examples/probe_keys.rs` answers the spec's "verify under WezTerm/ConPTY" question.
+
+`o` is bound to the same open as `l`/Enter until open.toml arrives (M5 is now "launcher +
+open-with": rules/openers, the `O` menu, `gR`, SHAssocEnumHandlers, inline Neovim).
+
+Not yet (their milestones): `O` / `gR` open-with (M5), `m`/`M`/`'{key}` pins, `Tab v V` selection, `yy x p P`, `y*`
+path copies, `s`/`S` search, `]p [p zp`, pickers and `<leader>` entries other than `l`,
+counts on operators.

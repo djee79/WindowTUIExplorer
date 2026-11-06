@@ -1,8 +1,9 @@
 //! Everything the UI loop reacts to arrives as an [`AppEvent`] on one channel.
 
 use crate::fs::Listing;
-use crate::fs::path::Loc;
-use crate::fs::worker::ListError;
+use crate::fs::path::{FsPath, Loc};
+use crate::fs::worker::{ListError, Probe};
+use crate::keymap::Keymap;
 use crate::platform::DiskSpace;
 use ratatui::crossterm::event::Event as TermEvent;
 use std::sync::Arc;
@@ -37,6 +38,17 @@ pub enum AppEvent {
         loc: Loc,
         result: Result<(), String>,
     },
+    /// A Locations reachability probe finished (or timed out).
+    Probed {
+        loc: Loc,
+        result: Result<Probe, ListError>,
+    },
+    /// The saved shares were read at startup.
+    SharesLoaded(Result<Vec<FsPath>, String>),
+    /// Writing the saved shares failed.
+    SharesSaveFailed(String),
+    /// keymap.toml was read: the built keymap plus any problems to report, or a read error.
+    KeymapLoaded(Result<(Keymap, Vec<String>), String>),
 }
 
 pub fn channel() -> (EventTx, EventRx) {

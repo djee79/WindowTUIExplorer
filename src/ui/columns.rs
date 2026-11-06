@@ -34,7 +34,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     draw_preview(f, preview, app);
 }
 
-fn panel<'a>(title: String, focused: bool) -> Block<'a> {
+pub(super) fn panel<'a>(title: String, focused: bool) -> Block<'a> {
     let title_style = if focused {
         theme::bold(theme::ACCENT)
     } else {
@@ -113,7 +113,7 @@ fn draw_current(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
     let w = inner.width as usize;
-    let cols = Cols::fit(w);
+    let cols = Cols::fit(w, gutter_width(count, app.number, app.relative_number));
     let header = Rect { height: 1, ..inner };
     f.render_widget(Paragraph::new(cols.header(w)).style(theme::dim()), header);
 
@@ -145,7 +145,25 @@ fn draw_current(f: &mut Frame, area: Rect, app: &mut App) {
         .enumerate()
         .skip(app.offset)
         .take(body.height as usize)
-        .map(|(row, &i)| cols.row(&listing.entries[i], w, row == app.cursor))
+        .map(|(row, &i)| {
+            let e = &listing.entries[i];
+            let number = (cols.gutter > 0).then(|| {
+                gutter_cell(
+                    row,
+                    app.cursor,
+                    cols.gutter,
+                    app.number,
+                    app.relative_number,
+                )
+            });
+            cols.row(
+                e,
+                w,
+                row == app.cursor,
+                app.is_search_match(&e.name),
+                number,
+            )
+        })
         .collect();
     f.render_widget(Paragraph::new(lines), body);
 
@@ -207,7 +225,7 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Loading / error placeholder for a panel without a usable listing.
-fn draw_state(f: &mut Frame, area: Rect, app: &App, state: &DirState, primary: bool) {
+pub(super) fn draw_state(f: &mut Frame, area: Rect, app: &App, state: &DirState, primary: bool) {
     let mut lines = Vec::new();
     if let Some(err) = &state.error {
         let color = match err {
@@ -271,7 +289,7 @@ fn draw_simple_rows(
 /// `name\` for directories, `name →` for links, truncated to `max` cells.
 fn display_name(e: &Entry, max: usize) -> String {
     let suffix = match (e.kind, e.is_link) {
-        (EntryKind::Dir, false) => "\\",
+        (EntryKind::Dir, false) | (EntryKind::Share, _) => "\\",
         (EntryKind::Dir, true) => "\\ →",
         (_, true) => " →",
         _ => "",
@@ -284,6 +302,7 @@ fn entry_style(e: &Entry) -> Style {
     let color: Color = match e.kind {
         _ if e.is_hidden() => DIMMED,
         EntryKind::Drive(_) => theme::ACCENT,
+        EntryKind::Share => NET,
         EntryKind::Dir if e.is_link => NET,
         EntryKind::Dir => DIR,
         EntryKind::File if e.is_link => NET,
@@ -296,14 +315,56 @@ fn entry_style(e: &Entry) -> Style {
 struct Cols {
     size: bool,
     date: bool,
+    /// Width of the line-number field (0 = `nonu nornu`). It sits after the 1-cell
+    /// selection-marker column and is followed by a space.
+    gutter: usize,
+}
+
+/// The number for `row` in neovim's style. Hybrid (`nu rnu`): the cursor row shows its
+/// absolute number left-aligned, others their distance right-aligned. `rnu` alone shows
+/// 0 on the cursor row; `nu` alone shows absolute numbers everywhere.
+pub(super) fn gutter_cell(
+    row: usize,
+    cursor: usize,
+    w: usize,
+    number: bool,
+    relative: bool,
+) -> Span<'static> {
+    let text = match (number, relative, row == cursor) {
+        (true, true, true) => format!("{:<w$}", row + 1),
+        (_, true, _) => format!("{:>w$}", row.abs_diff(cursor)),
+        _ => format!("{:>w$}", row + 1),
+    };
+    let style = if row == cursor {
+        theme::bold(theme::ACCENT)
+    } else {
+        theme::fg(DIMMED)
+    };
+    Span::styled(text, style)
+}
+
+/// Gutter width for a list of `len` rows: at least 3 cells, like vim's `numberwidth`.
+pub(super) fn gutter_width(len: usize, number: bool, relative: bool) -> usize {
+    if !number && !relative {
+        return 0;
+    }
+    len.max(1).to_string().len().max(3)
 }
 
 impl Cols {
-    fn fit(w: usize) -> Cols {
+    fn fit(w: usize, gutter: usize) -> Cols {
+        let lead = if gutter > 0 { gutter + 1 } else { 0 };
+        let rest = w.saturating_sub(lead);
         Cols {
-            size: w >= 24,
-            date: w >= 24 + DATE_W + 2,
+            size: rest >= 24,
+            date: rest >= 24 + DATE_W + 2,
+            gutter,
         }
+    }
+
+    /// Cells before the name: the marker column plus the gutter.
+    fn lead(&self) -> usize {
+        1 + if self.gutter > 0 { self.gutter + 1 } else { 0 }
     }
 
     fn right_width(&self) -> usize {
@@ -326,14 +387,27 @@ impl Cols {
             right.push_str(&format!("  {:<DATE_W$}", "Modified"));
         }
         right.push(' ');
-        let pad = w.saturating_sub(5 + right.len());
-        Line::from(format!(" Name{}{right}", " ".repeat(pad)))
+        let lead = " ".repeat(self.lead());
+        let pad = w.saturating_sub(self.lead() + 4 + right.len());
+        Line::from(format!("{lead}Name{}{right}", " ".repeat(pad)))
     }
 
-    fn row(&self, e: &Entry, w: usize, is_cursor: bool) -> Line<'static> {
-        let name = display_name(e, w.saturating_sub(self.right_width() + 2));
-        let pad = w.saturating_sub(1 + width(&name) + self.right_width());
+    fn row(
+        &self,
+        e: &Entry,
+        w: usize,
+        is_cursor: bool,
+        search_hit: bool,
+        number: Option<Span<'static>>,
+    ) -> Line<'static> {
+        let name = display_name(e, w.saturating_sub(self.right_width() + self.lead() + 1));
+        let pad = w.saturating_sub(self.lead() + width(&name) + self.right_width());
         let mut name_style = entry_style(e);
+        if search_hit {
+            name_style = name_style
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::UNDERLINED);
+        }
         let mut meta_style = if e.is_hidden() {
             theme::fg(DIMMED)
         } else {
@@ -348,21 +422,30 @@ impl Cols {
             date_style = sel(date_style);
             fill = fill.bg(SEL_BG);
         }
-        let mut spans = vec![
-            Span::styled(" ", fill),
-            Span::styled(name, name_style),
-            Span::styled(" ".repeat(pad), fill),
-        ];
+        // Marker column (selection, M4) and line number stay off the cursor highlight,
+        // like neovim's sign column and CursorLineNr.
+        let mut spans = vec![Span::raw(" ")];
+        if let Some(n) = number {
+            spans.push(n);
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled(name, name_style));
+        spans.push(Span::styled(" ".repeat(pad), fill));
         if self.size {
             let size = match e.kind {
                 EntryKind::File => human_size(e.size),
                 EntryKind::Drive(kind) => truncate(kind.label(), SIZE_W),
+                EntryKind::Share => "share".to_string(),
                 EntryKind::Dir => String::new(),
             };
             spans.push(Span::styled(format!("{size:>SIZE_W$}"), meta_style));
         }
         if self.date {
-            let date = e.modified.map(fmt_minute).unwrap_or_default();
+            // Virtual entries have no dates; a share's remark goes there instead.
+            let date = match e.kind {
+                EntryKind::Share => truncate(&e.detail, DATE_W),
+                _ => e.modified.map(fmt_minute).unwrap_or_default(),
+            };
             spans.push(Span::styled(format!("  {date:<DATE_W$}"), date_style));
         }
         spans.push(Span::styled(" ", fill));
@@ -376,13 +459,13 @@ fn fmt_minute(t: SystemTime) -> String {
         .to_string()
 }
 
-fn fmt_second(t: SystemTime) -> String {
+pub(super) fn fmt_second(t: SystemTime) -> String {
     DateTime::<Local>::from(t)
         .format("%Y-%m-%d %H:%M:%S")
         .to_string()
 }
 
-fn info_line(label: &str, value: String) -> Line<'static> {
+pub(super) fn info_line(label: &str, value: String) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!(" {label:<10}"), theme::dim()),
         Span::styled(value, theme::fg(FG)),
@@ -449,7 +532,7 @@ fn attr_letters(e: &Entry) -> String {
 
 /// Keeps `cursor` in view with SCROLLOFF rows of context, moving `offset` as little as
 /// possible.
-fn scrolled_offset(cursor: usize, offset: usize, len: usize, height: usize) -> usize {
+pub(super) fn scrolled_offset(cursor: usize, offset: usize, len: usize, height: usize) -> usize {
     if height == 0 {
         return 0;
     }

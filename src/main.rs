@@ -3,7 +3,10 @@
 mod app;
 mod event;
 mod fs;
+mod keymap;
+mod locations;
 mod platform;
+mod prompt;
 mod ui;
 
 use anyhow::{Context, Result, bail};
@@ -12,13 +15,18 @@ use event::AppEvent;
 use fs::path::Loc;
 use fs::worker::{Timeouts, Worker};
 use ratatui::crossterm::cursor::Show;
+use ratatui::crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    supports_keyboard_enhancement,
 };
 use ratatui::{DefaultTerminal, Terminal, backend::CrosstermBackend};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const USAGE: &str = "\
 sentier: a terminal file explorer for Windows
@@ -28,7 +36,7 @@ usage: sentier [options] [path]
   path               start here (C:\\dir, \\\\server\\share\\dir, relative, ...)
 
 options:
-  --cwd-file <file>  on Q, write the current directory to <file>
+  --cwd-file <file>  on ZZ (or Q, :wq), write the current directory to <file>
   -h, --help         show this help
   -V, --version      show the version
 ";
@@ -161,12 +169,31 @@ fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
     Some(guard)
 }
 
+/// Set when the kitty keyboard protocol was pushed, so teardown pops it.
+static KEYBOARD_ENHANCED: AtomicBool = AtomicBool::new(false);
+
 fn setup_terminal() -> Result<DefaultTerminal> {
     enable_raw_mode().context("enabling raw mode")?;
     if let Err(e) = execute!(std::io::stdout(), EnterAlternateScreen) {
         restore_terminal();
         return Err(e).context("entering the alternate screen");
     }
+    // Distinct Ctrl-Space / Shift-Enter / Ctrl-i where the terminal can say so. Every
+    // binding that needs this has a plain-key equivalent (CLAUDE.md "Terminal key
+    // caveats"), so not having it is fine. examples/probe_keys.rs shows what arrives.
+    if matches!(supports_keyboard_enhancement(), Ok(true))
+        && execute!(
+            std::io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )
+        .is_ok()
+    {
+        KEYBOARD_ENHANCED.store(true, Ordering::Relaxed);
+    }
+    tracing::info!(
+        keyboard_enhancement = KEYBOARD_ENHANCED.load(Ordering::Relaxed),
+        "terminal ready"
+    );
     match Terminal::new(CrosstermBackend::new(std::io::stdout())) {
         Ok(t) => Ok(t),
         Err(e) => {
@@ -178,6 +205,9 @@ fn setup_terminal() -> Result<DefaultTerminal> {
 
 /// Leaves raw mode and the alternate screen. Safe to call more than once.
 fn restore_terminal() {
+    if KEYBOARD_ENHANCED.swap(false, Ordering::Relaxed) {
+        let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+    }
     let _ = disable_raw_mode();
     let _ = execute!(std::io::stdout(), LeaveAlternateScreen, Show);
 }

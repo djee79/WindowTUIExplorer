@@ -12,9 +12,11 @@
 //! on the blocking pool until the OS gives up, and its result is dropped. The UI never
 //! waits on it.
 
-use super::path::Loc;
-use super::{Entry, EntryKind, Listing, sort_entries};
+use super::path::{FsPath, Loc};
+use super::{Entry, EntryKind, Listing, natural_cmp, sort_entries};
 use crate::event::{AppEvent, EventTx};
+use crate::keymap;
+use crate::locations;
 use crate::platform::{self, DriveKind};
 use std::fmt;
 use std::io;
@@ -30,6 +32,17 @@ const BATCH_SIZE: usize = 512;
 const BATCH_INTERVAL: Duration = Duration::from_millis(100);
 /// How often the UI hears "N entries so far" for a big directory.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(150);
+/// Locations reachability probe timeout (CLAUDE.md feature 2).
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// A successful reachability probe.
+#[derive(Debug, Clone, Copy)]
+pub struct Probe {
+    /// How long `metadata()` on the root took.
+    pub rtt: Duration,
+    /// Free bytes on the volume, if that answered too.
+    pub free: Option<u64>,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Timeouts {
@@ -53,7 +66,6 @@ pub enum ListError {
     NotFound,
     AccessDenied,
     NotADirectory,
-    Unsupported(String),
     Other(String),
 }
 
@@ -65,7 +77,6 @@ impl fmt::Display for ListError {
             ListError::NotFound => f.write_str("not found"),
             ListError::AccessDenied => f.write_str("access denied"),
             ListError::NotADirectory => f.write_str("not a directory"),
-            ListError::Unsupported(m) => f.write_str(m),
             ListError::Other(m) => f.write_str(m),
         }
     }
@@ -138,17 +149,24 @@ impl Worker {
     }
 
     /// Lists `loc`. Sends `ListProgress` events while reading and one `Listed` at the end.
+    /// For the Locations root use [`Worker::list_root`], which also needs the saved shares.
     pub fn list(&self, loc: Loc) -> Request {
+        self.spawn_list(loc, Vec::new())
+    }
+
+    /// Lists the Locations root: drives (with labels and mapped targets), then `shares`.
+    pub fn list_root(&self, shares: Vec<FsPath>) -> Request {
+        self.spawn_list(Loc::Root, shares)
+    }
+
+    fn spawn_list(&self, loc: Loc, shares: Vec<FsPath>) -> Request {
         let req = self.new_request();
         let (id, cancel, tx, timeouts) =
             (req.id, req.cancel.clone(), self.tx.clone(), self.timeouts);
         self.rt.spawn(async move {
             let result = match &loc {
-                Loc::Root => list_root(timeouts).await,
-                Loc::Server(_) => Err(ListError::Unsupported(
-                    "listing a server's shares is not supported yet; type \\\\server\\share"
-                        .to_string(),
-                )),
+                Loc::Root => list_root(timeouts, shares).await,
+                Loc::Server(server) => list_server(server.clone(), timeouts.network).await,
                 Loc::Fs(p) => {
                     let timeout = timeout_for(&loc, timeouts).await;
                     list_dir(id, &loc, p.to_os_path(), timeout, &cancel, &tx).await
@@ -185,6 +203,90 @@ impl Worker {
         });
     }
 
+    /// Reachability probe for a Locations entry: `metadata()` on its root under a 2 s
+    /// timeout, plus free space when that answers. Sends one `Probed`.
+    ///
+    /// On a dead host the blocking call stays parked for ~21 s (measured by
+    /// `examples/probe_netapi.rs`); the timeout reports long before that, and the
+    /// parked thread's late result is dropped.
+    pub fn probe(&self, loc: Loc) {
+        let Some(path) = loc.as_fs().map(|p| p.os_string()) else {
+            return;
+        };
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let call = tokio::task::spawn_blocking(move || {
+                let start = Instant::now();
+                std::fs::metadata(&path)?;
+                let rtt = start.elapsed();
+                let free = platform::disk_space(&path).ok().map(|s| s.free);
+                Ok::<_, io::Error>(Probe { rtt, free })
+            });
+            let result = match tokio::time::timeout(PROBE_TIMEOUT, call).await {
+                Ok(Ok(Ok(p))) => Ok(p),
+                Ok(Ok(Err(e))) => Err(ListError::from(e)),
+                Ok(Err(e)) => Err(ListError::Other(e.to_string())),
+                Err(_) => Err(ListError::TimedOut),
+            };
+            let _ = tx.send(AppEvent::Probed { loc, result });
+        });
+    }
+
+    /// Loads the saved shares. Sends one `SharesLoaded`.
+    ///
+    /// `%APPDATA%` can be a redirected folder on a file server, so config reads get the
+    /// network timeout like any other network I/O.
+    pub fn load_shares(&self) {
+        let (tx, timeout) = (self.tx.clone(), self.timeouts.network);
+        self.rt.spawn(async move {
+            let call = tokio::task::spawn_blocking(|| match locations::store_path() {
+                Some(path) => locations::load(&path).map_err(|e| e.to_string()),
+                None => Ok(Vec::new()),
+            });
+            let result = match tokio::time::timeout(timeout, call).await {
+                Ok(r) => r.unwrap_or_else(|e| Err(e.to_string())),
+                Err(_) => Err("timed out reading %APPDATA%".to_string()),
+            };
+            let _ = tx.send(AppEvent::SharesLoaded(result));
+        });
+    }
+
+    /// Reads and builds `keymap.toml`. Sends one `KeymapLoaded`; no file sends nothing.
+    pub fn load_keymap(&self) {
+        let (tx, timeout) = (self.tx.clone(), self.timeouts.network);
+        self.rt.spawn(async move {
+            let call = tokio::task::spawn_blocking(|| {
+                let path = keymap::store_path()?;
+                match std::fs::read_to_string(&path) {
+                    Ok(text) => Some(Ok(keymap::from_toml(&text))),
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                    Err(e) => Some(Err(format!("keymap.toml: {e}"))),
+                }
+            });
+            let result = match tokio::time::timeout(timeout, call).await {
+                Ok(Ok(Some(r))) => r,
+                Ok(Ok(None)) => return,
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(_) => Err("keymap.toml: timed out reading %APPDATA%".to_string()),
+            };
+            let _ = tx.send(AppEvent::KeymapLoaded(result));
+        });
+    }
+
+    /// Saves the saved shares. Reports only failures, as `SharesSaveFailed`.
+    pub fn save_shares(&self, shares: Vec<FsPath>) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let call = tokio::task::spawn_blocking(move || match locations::store_path() {
+                Some(path) => locations::save(&path, &shares).map_err(|e| e.to_string()),
+                None => Err("APPDATA is not set".to_string()),
+            });
+            if let Err(e) = call.await.unwrap_or_else(|e| Err(e.to_string())) {
+                let _ = tx.send(AppEvent::SharesSaveFailed(e));
+            }
+        });
+    }
+
     /// Opens a file with its associated program (ShellExecute "open").
     pub fn open(&self, loc: Loc) {
         let Some(path) = loc.as_fs().map(|p| p.os_string()) else {
@@ -218,25 +320,66 @@ async fn timeout_for(loc: &Loc, t: Timeouts) -> Duration {
     t.local
 }
 
-async fn list_root(t: Timeouts) -> Result<Vec<Entry>, ListError> {
-    let call = tokio::task::spawn_blocking(platform::drives);
-    let drives = match tokio::time::timeout(t.network, call).await {
+/// Drives first (in letter order), then saved shares (in natural order). Not sorted with
+/// `sort_entries`: the Locations screen shows these as two sections.
+async fn list_root(t: Timeouts, shares: Vec<FsPath>) -> Result<Vec<Entry>, ListError> {
+    let call = tokio::task::spawn_blocking(|| {
+        platform::drives()
+            .into_iter()
+            .map(|d| {
+                // The label read goes to the volume, so only local disks are asked; a
+                // mapped drive's target comes from the mapping table and never stalls.
+                let detail = match d.kind {
+                    DriveKind::Network => platform::mapped_target(d.letter),
+                    DriveKind::Fixed | DriveKind::RamDisk => platform::volume_label(d.letter),
+                    _ => None,
+                };
+                Entry::virtual_entry(
+                    format!("{}:", d.letter),
+                    EntryKind::Drive(d.kind),
+                    detail.unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>()
+    });
+    let mut entries = match tokio::time::timeout(t.network, call).await {
         Ok(Ok(d)) => d,
         Ok(Err(e)) => return Err(ListError::Other(e.to_string())),
         Err(_) => return Err(ListError::TimedOut),
     };
-    Ok(drives
+    let mut saved: Vec<Entry> = shares
+        .iter()
+        .map(|p| Entry::virtual_entry(p.display(), EntryKind::Share, String::new()))
+        .collect();
+    saved.sort_by(|a, b| natural_cmp(&a.name, &b.name));
+    entries.extend(saved);
+    Ok(entries)
+}
+
+/// A server node: its browsable disk shares through `NetShareEnum`.
+async fn list_server(server: String, timeout: Duration) -> Result<Vec<Entry>, ListError> {
+    let call = tokio::task::spawn_blocking(move || platform::shares(&server));
+    let shares = match tokio::time::timeout(timeout, call).await {
+        Ok(Ok(Ok(s))) => s,
+        Ok(Ok(Err(e))) => {
+            return Err(match ListError::from(e) {
+                ListError::AccessDenied => ListError::Other(
+                    "this server won't list its shares (access denied); \
+                     type \\\\server\\share to open one directly"
+                        .to_string(),
+                ),
+                other => other,
+            });
+        }
+        Ok(Err(e)) => return Err(ListError::Other(e.to_string())),
+        Err(_) => return Err(ListError::TimedOut),
+    };
+    let mut entries: Vec<Entry> = shares
         .into_iter()
-        .map(|d| Entry {
-            name: format!("{}:", d.letter),
-            kind: EntryKind::Drive(d.kind),
-            is_link: false,
-            size: 0,
-            modified: None,
-            created: None,
-            attrs: Default::default(),
-        })
-        .collect())
+        .map(|s| Entry::virtual_entry(s.name, EntryKind::Share, s.remark))
+        .collect();
+    sort_entries(&mut entries);
+    Ok(entries)
 }
 
 async fn list_dir(
@@ -346,5 +489,20 @@ fn make_entry(de: &std::fs::DirEntry) -> Option<Entry> {
         modified: meta.modified().ok(),
         created: meta.created().ok(),
         attrs,
+        detail: String::new(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `:e <file>` and a file as the start path rely on this: listing a file must come
+    /// back as NotADirectory (Win32 ERROR_DIRECTORY, 267), not as a generic error.
+    #[test]
+    fn read_dir_of_a_file_is_not_a_directory() {
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let err = std::fs::read_dir(&file).err().map(ListError::from);
+        assert_eq!(err, Some(ListError::NotADirectory), "{err:?}");
+    }
 }
