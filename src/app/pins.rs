@@ -13,7 +13,7 @@ use crate::pins::{self, KeyOwner, Pin, PinKind, PinStore};
 
 #[derive(Debug, Clone)]
 pub struct PinDraft {
-    pin: Pin,
+    pub(super) pin: Pin,
     /// Editing this pin (rename / tags / unpin), None for a new one.
     editing: Option<usize>,
     /// The key: from `m{key}`, the pin being edited, or the key step.

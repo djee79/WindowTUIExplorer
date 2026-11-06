@@ -22,11 +22,7 @@ use crate::fs::path::{FsPath, Loc};
 /// What the open file-operation prompt is about.
 #[derive(Debug, Clone)]
 pub enum OpDraft {
-    Rename {
-        from: FsPath,
-    },
-    /// `D`: waiting for `yes`.
-    Delete(FileOp),
+    Rename { from: FsPath },
 }
 
 /// A program to run in this terminal with the TUI suspended.
@@ -143,11 +139,13 @@ impl App {
         };
         let admin = self.admin_prefix().unwrap_or_default();
         if permanent {
-            self.op_draft = Some(OpDraft::Delete(FileOp::Delete(shown)));
-            self.open_prompt_with(PromptKind::TypeYes, "");
-            if let Some(p) = self.prompt.as_mut() {
-                p.note = format!("{admin}delete {what} PERMANENTLY (no undo). Type yes and Enter");
-            }
+            // A red popup with No pre-selected: `y` deletes, Enter alone keeps them.
+            let why = format!("{admin}delete {what} PERMANENTLY? There is no undo.");
+            self.confirm = Some(Confirm::FileOp {
+                op: FileOp::Delete(shown),
+                why,
+            });
+            self.open_prompt_with(PromptKind::Confirm, "");
             return;
         }
         let (op, why) = if remote {
@@ -206,16 +204,6 @@ impl App {
                     FileOp::NewFile(full)
                 };
                 self.confirm_admin_or_run(op);
-            }
-            PromptKind::TypeYes => {
-                if !text.trim().eq_ignore_ascii_case("yes") {
-                    self.op_draft = None;
-                    self.set_status("not deleted (type yes to delete)".into(), false);
-                    return Ok(());
-                }
-                if let Some(OpDraft::Delete(op)) = self.op_draft.take() {
-                    self.run_op(op);
-                }
             }
             _ => {}
         }

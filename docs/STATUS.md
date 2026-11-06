@@ -920,3 +920,16 @@ you already are:
   empty command line lists them (`cd · pin · import-wtm · …`); typing narrows to
   `pin url [URL] — pin a web app`. Every listed command is checked to parse.
 - **`g?` help** has a ": commands" section from the same table.
+
+## Yes/no questions are popups (Yazi-style) (2026-11-06)
+
+User feedback: typing `yes` for `D` was annoying; wanted a popup to confirm, like Yazi.
+
+- Every y/n question (delete, Recycle Bin, paste-replace, backup, wtm import, tag and
+  view changes, unpin, admin-share changes) is a centred popup (`ui/dialog.rs`): title,
+  the question, what it touches (first 8, "… and N more"), `[ Yes ]  [ No ]`.
+- Keys: `y` yes, `n` / `Esc` / `q` no, `h` `l` `Tab` ← → pick a button, Enter presses the
+  highlighted one. Other keys do nothing (a stray key is no longer an answer).
+- Destructive ones (`D`, `dd` on a share, paste-replace, deleting a view or a tag) are
+  red and start on **No**: a stray Enter keeps everything; `y` (or `l` + Enter) confirms.
+- `D` no longer asks to type `yes` (the `TypeYes` prompt is gone).

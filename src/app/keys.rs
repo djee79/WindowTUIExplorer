@@ -54,8 +54,6 @@ pub enum PromptKind {
     NewDir,
     /// One field of a sync / backup preset (`:sync new`, `:backup new`, `^e`).
     Preset(PresetField),
-    /// `D`: type `yes` to delete permanently.
-    TypeYes,
 }
 
 /// The fields a preset prompt asks for, between the name and the tags.
@@ -115,6 +113,8 @@ pub struct Prompt {
     /// The search before this one, restored when the search is cancelled.
     saved_search: Option<Search>,
     completion: Option<Completion>,
+    /// A yes/no popup: the button Enter presses (`h`/`l`/Tab switch).
+    pub yes: bool,
 }
 
 impl Prompt {
@@ -138,7 +138,6 @@ impl Prompt {
             PromptKind::Rename => "rename to: ",
             PromptKind::NewFile => "new file: ",
             PromptKind::NewDir => "new folder: ",
-            PromptKind::TypeYes => "",
             PromptKind::Preset(f) => f.prefix(),
         }
     }
@@ -565,6 +564,7 @@ impl App {
             origin: self.cursor,
             saved_search: self.search.clone(),
             completion: None,
+            yes: true,
         };
         match kind {
             PromptKind::ConfirmUnpin | PromptKind::Confirm => p.note = self.pin_prompt_note(kind),
@@ -576,6 +576,12 @@ impl App {
         }
         self.prompt = Some(p);
         self.mode = Mode::Prompt;
+        // A destructive question starts on No: a stray Enter keeps everything.
+        if self.dialog_view().is_some_and(|d| d.danger)
+            && let Some(p) = self.prompt.as_mut()
+        {
+            p.yes = false;
+        }
     }
 
     fn on_prompt_key(&mut self, ev: KeyEvent) {
@@ -583,13 +589,35 @@ impl App {
             self.mode = Mode::Normal;
             return;
         };
-        // A yes/no question: `y` confirms, any other key is a no.
+        // A yes/no popup: `y` yes, `n` / Esc / `q` no, `h` `l` Tab ← → pick a button and
+        // Enter presses it. Other keys do nothing (a stray key isn't an answer).
         if matches!(p.kind, PromptKind::ConfirmUnpin | PromptKind::Confirm) {
-            self.mode = Mode::Normal;
-            if ev.code == KeyCode::Char('y') && !ev.modifiers.contains(KeyModifiers::CONTROL) {
-                self.prompt_submit(p);
-            } else {
-                self.prompt_cancel(p);
+            let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
+            let answer = match ev.code {
+                KeyCode::Char('y' | 'Y') if !ctrl => Some(true),
+                KeyCode::Char('n' | 'N' | 'q') if !ctrl => Some(false),
+                KeyCode::Esc => Some(false),
+                KeyCode::Enter => Some(p.yes),
+                KeyCode::Char('h' | 'l') | KeyCode::Left | KeyCode::Right => {
+                    p.yes = !p.yes;
+                    None
+                }
+                KeyCode::Tab | KeyCode::BackTab => {
+                    p.yes = !p.yes;
+                    None
+                }
+                _ => None,
+            };
+            match answer {
+                Some(true) => {
+                    self.mode = Mode::Normal;
+                    self.prompt_submit(p);
+                }
+                Some(false) => {
+                    self.mode = Mode::Normal;
+                    self.prompt_cancel(p);
+                }
+                None => self.prompt = Some(p),
             }
             return;
         }
@@ -731,7 +759,6 @@ impl App {
             | PromptKind::GotoPage => p.note.clear(),
             PromptKind::NewFile => p.note = r"end in \ for a folder; sub\name makes sub too".into(),
             PromptKind::NewDir => p.note = r"sub\name makes both".into(),
-            PromptKind::TypeYes => {}
             PromptKind::Preset(f) => p.note = self.preset_note(f, &text),
             PromptKind::MachineUser => {
                 let choices = self.machine_user_choices();
@@ -795,7 +822,7 @@ impl App {
                 }
             }
             PromptKind::MachineUser => self.machine_user_picked(&text),
-            PromptKind::Rename | PromptKind::NewFile | PromptKind::NewDir | PromptKind::TypeYes => {
+            PromptKind::Rename | PromptKind::NewFile | PromptKind::NewDir => {
                 if let Err(note) = self.fileop_submit(p.kind, &text) {
                     let mut p = p;
                     p.note = note;
@@ -833,9 +860,7 @@ impl App {
             | PromptKind::Preset(_) => self.pin_cancel(p.kind),
             PromptKind::GotoPage => {}
             PromptKind::MachineUser => self.machine_user_host = None,
-            PromptKind::Rename | PromptKind::NewFile | PromptKind::NewDir | PromptKind::TypeYes => {
-                self.fileop_cancel()
-            }
+            PromptKind::Rename | PromptKind::NewFile | PromptKind::NewDir => self.fileop_cancel(),
         }
     }
 

@@ -306,6 +306,16 @@ fn prompt_spans(p: &Prompt) -> Vec<Span<'static>> {
 pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     let sep = || Span::styled("  ·  ", theme::dim());
     let mut left: Vec<Span> = vec![Span::raw(" ")];
+    // A yes/no popup is up: the status line just says how to answer it.
+    if let (Mode::Prompt, Some(d)) = (app.mode, app.dialog_view()) {
+        left.push(badge(" CONFIRM ", if d.danger { ERR } else { ACCENT }));
+        left.push(Span::styled(
+            "  y yes  ·  n / Esc no  ·  h l Tab choose  ·  Enter presses the highlighted one",
+            theme::dim(),
+        ));
+        bar(f, area, left, Vec::new());
+        return;
+    }
     if let (Mode::Prompt, Some(p)) = (app.mode, &app.prompt) {
         left.push(match p.editor.mode {
             EditMode::Insert => badge(" INSERT ", OK),

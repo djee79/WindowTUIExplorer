@@ -120,6 +120,19 @@ pub enum Quit {
     WithCwd,
 }
 
+/// A yes/no question shown as a popup (Yazi-style): what `ui/dialog.rs` draws.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DialogView {
+    pub title: String,
+    pub message: String,
+    /// The files, pins… it touches (the popup shows the first ones).
+    pub items: Vec<String>,
+    /// It destroys something: drawn red, and Enter means No until changed.
+    pub danger: bool,
+    /// The button Enter presses.
+    pub yes: bool,
+}
+
 /// The last `/` or `?` search, for `n` / `N` and match highlighting.
 #[derive(Debug, Clone)]
 pub struct Search {
@@ -4389,17 +4402,33 @@ mod job_tests {
             l.app.confirm_note()
         );
         press(&mut l.app, "n");
-        // D: only a typed yes deletes.
+        // dd shows a popup naming what goes; Esc keeps it.
+        l.goto("b.txt");
+        press(&mut l.app, "dd");
+        let screen = render(&mut l.app, 120, 30);
+        assert!(
+            screen.contains("Move to the Recycle Bin") && screen.contains("• b.txt"),
+            "{screen}"
+        );
+        assert!(screen.contains("Yes") && screen.contains("No"), "{screen}");
+        press(&mut l.app, "x");
+        assert_eq!(l.app.mode, Mode::Prompt, "a stray key isn't an answer");
+        press(&mut l.app, "<Esc>");
+        assert!(src.join("b.txt").exists());
+        // D: a red popup that starts on No; Enter alone keeps it, y deletes.
         l.goto("made");
         press(&mut l.app, "D");
-        assert!(
-            prompt_text(&l.app).2.contains("PERMANENTLY"),
-            "{:?}",
-            prompt_text(&l.app)
-        );
-        press(&mut l.app, "y<CR>");
-        assert!(src.join("made").exists(), "y alone isn't yes");
-        press(&mut l.app, "Dyes<CR>");
+        let d = l.app.dialog_view();
+        assert!(d.as_ref().is_some_and(|d| d.danger && !d.yes), "{d:?}");
+        assert!(d.is_some_and(|d| d.title == "Delete permanently"
+            && d.message.contains("PERMANENTLY")
+            && d.items == ["made"]));
+        press(&mut l.app, "<CR>");
+        assert!(src.join("made").exists(), "Enter on No keeps it");
+        // l (or Tab) moves to Yes; Enter presses it. Here: straight `y`.
+        press(&mut l.app, "Dl");
+        assert!(l.app.dialog_view().is_some_and(|d| d.yes));
+        press(&mut l.app, "<Esc>Dy");
         l.until(|a| a.ops_running == 0 && !a.view.is_empty() && !src.join("made").exists());
         assert!(status(&l.app).contains("deleted"), "{}", status(&l.app));
         let _ = std::fs::remove_dir_all(&dir);

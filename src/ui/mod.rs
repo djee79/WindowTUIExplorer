@@ -2,6 +2,7 @@
 
 mod columns;
 mod credentials;
+mod dialog;
 mod grep;
 mod help;
 mod jobs;
@@ -67,6 +68,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.mode == Mode::Credentials {
         credentials::draw(f, body, app);
+    }
+    if app.mode == Mode::Prompt
+        && let Some(d) = app.dialog_view()
+    {
+        dialog::draw(f, body, &d);
     }
     if app.which_key_visible() {
         whichkey::draw(f, body, app);

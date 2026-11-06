@@ -207,12 +207,17 @@ impl App {
         self.open_prompt_with(PromptKind::Confirm, "");
     }
 
+    /// The pending question with its key hint (the status line, tests).
     pub(super) fn confirm_note(&self) -> String {
-        let yes = "y = yes, anything else keeps it";
+        format!("{} y = yes, n = no", self.confirm_question())
+    }
+
+    /// The pending question alone (the popup's text).
+    pub fn confirm_question(&self) -> String {
         match &self.confirm {
             Some(Confirm::DeleteView { idx, .. }) => {
                 let name = self.pins.views.get(*idx).map_or("?", |v| v.name.as_str());
-                format!("delete view {name}? {yes}")
+                format!("delete view {name}?")
             }
             Some(Confirm::RenameTag { old, new, .. }) => {
                 let n = self.pins.tag_count(old);
@@ -221,22 +226,94 @@ impl App {
                 } else {
                     String::new()
                 };
-                format!("rename #{old} → #{new} on {}{merge}? {yes}", pins_word(n))
+                format!("rename #{old} → #{new} on {}{merge}?", pins_word(n))
             }
             Some(Confirm::DeleteTag { tag, .. }) => {
                 let n = self.pins.tag_count(tag);
-                format!("remove #{tag} from {}? {yes}", pins_word(n))
+                format!("remove #{tag} from {}?", pins_word(n))
             }
-            Some(Confirm::FileOp { why, .. }) => format!("{why} y = yes, anything else keeps it"),
+            Some(Confirm::FileOp { why, .. }) => why.clone(),
             Some(
                 Confirm::Paste { why, .. }
                 | Confirm::Backup { why, .. }
                 | Confirm::ImportWtm { why, .. },
-            ) => {
-                format!("{why} Go ahead? y = yes, anything else cancels")
-            }
+            ) => format!("{why} Go ahead?"),
             None => String::new(),
         }
+    }
+
+    /// The popup for the pending question (`Confirm`) or unpin: its title, text, the
+    /// items it touches, and whether it destroys something (red, No pre-selected).
+    pub fn dialog_view(&self) -> Option<super::DialogView> {
+        let p = self.prompt.as_ref()?;
+        let mut items: Vec<String> = Vec::new();
+        let name = |s: &str| {
+            s.trim_end_matches('\\')
+                .rsplit('\\')
+                .next()
+                .unwrap_or(s)
+                .to_string()
+        };
+        let (title, danger) = match p.kind {
+            PromptKind::ConfirmUnpin => {
+                let d = self.pin_draft.as_ref()?;
+                items.push(format!("{}  {}", d.pin.name, d.pin.detail()));
+                ("Unpin".to_string(), false)
+            }
+            PromptKind::Confirm => match self.confirm.as_ref()? {
+                Confirm::FileOp { op, .. } => {
+                    use crate::fs::ops::FileOp;
+                    match op {
+                        FileOp::Trash(ps) | FileOp::Delete(ps) => {
+                            items.extend(ps.iter().map(|s| name(s)));
+                        }
+                        FileOp::Rename { from, to } => {
+                            items.push(format!("{} → {}", name(from), name(to)));
+                        }
+                        FileOp::BulkRename(pairs) => items.extend(
+                            pairs
+                                .iter()
+                                .map(|(a, b)| format!("{} → {}", name(a), name(b))),
+                        ),
+                        FileOp::Mkdir(s) | FileOp::NewFile(s) => items.push(name(s)),
+                    }
+                    match op {
+                        FileOp::Trash(_) => ("Move to the Recycle Bin".to_string(), false),
+                        FileOp::Delete(_) => ("Delete permanently".to_string(), true),
+                        FileOp::Rename { .. } | FileOp::BulkRename(_) => ("Rename".into(), false),
+                        FileOp::Mkdir(_) | FileOp::NewFile(_) => ("Create".to_string(), false),
+                    }
+                }
+                Confirm::Paste { req, .. } => {
+                    items.extend(req.items.iter().map(|i| i.path.name()));
+                    let replace = req.overwrite == crate::jobs::robocopy::Overwrite::Always;
+                    (
+                        if replace { "Paste, replacing" } else { "Paste" }.to_string(),
+                        replace,
+                    )
+                }
+                Confirm::Backup { .. } => ("Backup".to_string(), false),
+                Confirm::ImportWtm { pins, .. } => {
+                    items.extend(pins.iter().map(|p| p.name.clone()));
+                    ("Import from wtm".to_string(), false)
+                }
+                Confirm::DeleteView { .. } => ("Delete view".to_string(), true),
+                Confirm::RenameTag { .. } => ("Rename tag".to_string(), false),
+                Confirm::DeleteTag { .. } => ("Remove tag".to_string(), true),
+            },
+            _ => return None,
+        };
+        let message = match p.kind {
+            PromptKind::ConfirmUnpin => "unpin it? (the folder itself is not touched)".to_string(),
+            _ => self.confirm_question(),
+        };
+        Some(super::DialogView {
+            title,
+            message,
+            items,
+            danger,
+            yes: p.yes,
+        })
     }
 
     pub(super) fn store_submit(&mut self, kind: PromptKind, text: &str) -> Result<(), String> {
