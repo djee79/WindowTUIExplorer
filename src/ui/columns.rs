@@ -82,6 +82,7 @@ fn draw_current(f: &mut Frame, area: Rect, app: &mut App) {
     let count = app.view.len();
     let search = app.search_state(&app.cwd);
     let title = match search {
+        Some(s) if s.content => format!("grep: {}", s.query),
         Some(s) => format!("search: {}", s.query),
         None => app.cwd.name(),
     };
@@ -110,6 +111,7 @@ fn draw_current(f: &mut Frame, area: Rect, app: &mut App) {
     }
     let in_results = search.is_some();
     let scored = search.is_some_and(|s| s.scored);
+    let content = search.is_some_and(|s| s.content);
     let running = search.is_some_and(|s| s.running());
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -133,6 +135,7 @@ fn draw_current(f: &mut Frame, area: Rect, app: &mut App) {
     let mut cols = Cols::fit(w, gutter_width(count, app.number, app.relative_number));
     cols.results = in_results;
     cols.scored = scored;
+    cols.content = content;
     let header = Rect { height: 1, ..inner };
     f.render_widget(Paragraph::new(cols.header(w)).style(theme::dim()), header);
 
@@ -219,7 +222,11 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
     if !entry.is_container() {
-        draw_file_info(f, inner, app, entry);
+        if app.search_state(&app.cwd).is_some_and(|s| s.content) {
+            super::grep::draw(f, inner, app, entry);
+        } else {
+            draw_file_info(f, inner, app, entry);
+        }
         return;
     }
     let Some(loc) = app.preview_loc() else { return };
@@ -341,6 +348,8 @@ struct Cols {
     /// Search results: "Path" instead of "Name", and the score where dates go.
     results: bool,
     scored: bool,
+    /// Content results: that number is a match count ("Matches").
+    content: bool,
 }
 
 /// The number for `row` in neovim's style. Hybrid (`nu rnu`): the cursor row shows its
@@ -383,6 +392,7 @@ impl Cols {
             date: rest >= 24 + DATE_W + 2,
             gutter,
             results: false,
+            content: false,
             scored: false,
         }
     }
@@ -409,7 +419,9 @@ impl Cols {
             right.push_str(&format!("{:>SIZE_W$}", "Size"));
         }
         if self.date {
-            let label = if self.results && self.scored {
+            let label = if self.results && self.content {
+                "Matches"
+            } else if self.results && self.scored {
                 "Score"
             } else {
                 "Modified"

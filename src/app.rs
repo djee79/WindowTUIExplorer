@@ -162,6 +162,8 @@ pub struct App {
     /// Recursive searches (`s`), newest last; each is a results folder.
     searches: Vec<SearchState>,
     next_search_id: u64,
+    /// The matches of the content-search result under the cursor (one file at a time).
+    grep_preview: Option<search::GrepPreview>,
 
     /// Saved `\\server\share` roots for the Locations root.
     pub shares: Vec<FsPath>,
@@ -214,6 +216,7 @@ impl App {
             prev_dir: None,
             searches: Vec::new(),
             next_search_id: 1,
+            grep_preview: None,
             shares: Vec::new(),
             shares_loaded: false,
             reach: HashMap::new(),
@@ -712,6 +715,7 @@ impl App {
                 elapsed,
                 cancelled,
             } => self.on_search_done(id, scanned, errors, elapsed, cancelled),
+            AppEvent::GrepPreview { loc, result } => self.on_grep_preview(loc, result),
         }
     }
 
@@ -804,6 +808,7 @@ impl App {
             if let Some(p) = self.preview_loc() {
                 self.request(p, false);
             }
+            self.request_grep_preview();
             self.cancel_unneeded();
             self.dirty = true;
         }
@@ -1331,7 +1336,10 @@ mod tests {
         };
         assert_ne!(id, first, "a new search");
         assert_eq!(**origin, loc(r"C:\work"), "same origin, not nested");
-        assert_eq!(app.current_search_query().as_deref(), Some("b1001 rev3"));
+        assert_eq!(
+            app.current_search_query(false).as_deref(),
+            Some("b1001 rev3")
+        );
 
         press(&mut app, "s<C-u>size:huge<CR>");
         assert!(

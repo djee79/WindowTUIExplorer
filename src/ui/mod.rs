@@ -1,6 +1,7 @@
 //! Drawing. Reads `App` state only; never does I/O.
 
 mod columns;
+mod grep;
 mod help;
 mod locations;
 mod statusbar;

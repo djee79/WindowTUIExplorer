@@ -5,7 +5,8 @@ use super::App;
 use crate::fs::path::Loc;
 use crate::fs::worker::CancelToken;
 use crate::fs::{Entry, EntryKind, Listing, natural_cmp};
-use crate::search::name::NameMatcher;
+use crate::search::SearchMatcher;
+use crate::search::content::MatchPreview;
 use crate::search::query::Query;
 use crate::search::walk::Hit;
 use std::collections::HashSet;
@@ -61,7 +62,12 @@ pub struct SearchState {
     pub current: String,
     pub last_progress: Instant,
     pub sort: SortMode,
-    /// Fuzzy scores mean something; glob / regex / filter-only results have none.
+    /// `S`: the hits are files whose contents matched; the score is their match count.
+    pub content: bool,
+    /// Kept for the match preview of content results.
+    matcher: Arc<SearchMatcher>,
+    /// Fuzzy scores and match counts mean something; glob / regex / filter-only name
+    /// results have none.
     pub scored: bool,
     pub truncated: bool,
     cancel: CancelToken,
@@ -77,6 +83,14 @@ impl SearchState {
 
     pub fn took(&self) -> Duration {
         self.elapsed.unwrap_or_else(|| self.started.elapsed())
+    }
+
+    /// Content results sort by match count where name results sort by score.
+    pub fn sort_label(&self) -> &'static str {
+        match self.sort {
+            SortMode::Score if self.content => "matches",
+            s => s.label(),
+        }
     }
 
     fn add(&mut self, hits: Vec<Hit>) {
@@ -151,21 +165,25 @@ impl App {
         self.search_state(loc).and_then(|s| s.listing.clone())
     }
 
-    /// The query of the results folder we're in, to prefill `s` for refining.
-    pub(super) fn current_search_query(&self) -> Option<String> {
-        self.search_state(&self.cwd).map(|s| s.query.clone())
+    /// The query of the results folder we're in, to prefill `s` / `S` for refining
+    /// (only a search of the same kind).
+    pub(super) fn current_search_query(&self, content: bool) -> Option<String> {
+        self.search_state(&self.cwd)
+            .filter(|s| s.content == content)
+            .map(|s| s.query.clone())
     }
 
-    /// `s` + Enter: start a walk from the real folder we're in. From inside results,
-    /// the hits found so far are re-filtered at once while the fresh walk runs.
-    pub(super) fn start_search(&mut self, text: &str) {
+    /// `s` / `S` + Enter: start a walk from the real folder we're in. Refining a name
+    /// search re-filters the hits found so far at once while the fresh walk runs.
+    pub(super) fn start_search(&mut self, text: &str, content: bool) {
+        let what = if content { "grep" } else { "search" };
         let query = match Query::parse(text) {
             Ok(q) => q,
-            Err(e) => return self.set_status(format!("search: {e}"), true),
+            Err(e) => return self.set_status(format!("{what}: {e}"), true),
         };
-        let matcher = match NameMatcher::new(&query) {
+        let matcher = match SearchMatcher::new(&query, content) {
             Ok(m) => Arc::new(m),
-            Err(e) => return self.set_status(format!("search: {e}"), true),
+            Err(e) => return self.set_status(format!("{what}: {e}"), true),
         };
         let origin = self.cwd.real().clone();
         let Some(root) = origin.as_fs().cloned() else {
@@ -176,7 +194,14 @@ impl App {
         };
         let id = self.next_search_id;
         self.next_search_id += 1;
-        let previous = self.search_state(&self.cwd).map(|s| s.hits.clone());
+        // Same kind of search as the results we're in: this refines them.
+        let refining = self
+            .search_state(&self.cwd)
+            .is_some_and(|s| s.content == content);
+        let previous = self
+            .search_state(&self.cwd)
+            .filter(|s| refining && !s.content)
+            .map(|s| s.hits.clone());
         let cancel = self.worker.search(id, &root, Arc::clone(&matcher));
         if let Some(hits) = previous.filter(|h| !h.is_empty()) {
             self.worker.rescore(id, hits, Arc::clone(&matcher));
@@ -196,7 +221,9 @@ impl App {
             current: String::new(),
             last_progress: now,
             sort: SortMode::Score,
+            content,
             scored: matcher.is_scored(),
+            matcher,
             truncated: false,
             cancel,
             listing: None,
@@ -215,7 +242,7 @@ impl App {
             id,
             origin: Box::new(origin),
         };
-        if matches!(self.cwd, Loc::Results { .. }) {
+        if refining {
             self.set_cwd(target, None);
         } else {
             self.navigate(target, None);
@@ -254,16 +281,17 @@ impl App {
         s.cancelled = cancelled;
         s.build();
         let msg = format!(
-            "search {}: {} found in {:.1} s{}{}",
+            "{} {}: {} found in {:.1} s{}{}",
+            if s.content { "grep" } else { "search" },
             if cancelled { "cancelled" } else { "done" },
             crate::ui::thousands(s.hits.len() as u64),
             elapsed.as_secs_f32(),
             if errors > 0 {
-                format!(" Â· {errors} unreadable")
+                format!(" · {errors} unreadable")
             } else {
                 String::new()
             },
-            if s.truncated { " Â· capped" } else { "" },
+            if s.truncated { " · capped" } else { "" },
         );
         let here = self.search_state(&self.cwd).is_some_and(|s| s.id == id);
         if here {
@@ -332,16 +360,98 @@ impl App {
         }
     }
 
-    /// `,s`: score â†’ path â†’ size â†’ modified.
+    /// `,s`: score → path → size → modified.
     pub(super) fn cycle_sort(&mut self) {
         let Loc::Results { id, .. } = self.cwd else {
             return self.set_status(",s sorts search results".into(), false);
         };
         let Some(s) = self.search_mut(id) else { return };
         s.sort = s.sort.next();
-        let label = s.sort.label();
+        let label = s.sort_label();
         s.build();
         self.rebuild_view();
         self.set_status(format!("sort: {label}"), false);
     }
+
+    // ------------------------------------------------------------ match preview
+
+    /// The file under the cursor in content results, and the matcher that found it.
+    fn grep_target(&self) -> Option<(Loc, Arc<SearchMatcher>)> {
+        let s = self.search_state(&self.cwd).filter(|s| s.content)?;
+        let e = self.selected().filter(|e| !e.is_container())?;
+        let loc = self.cwd.join(&e.name).ok()?;
+        Some((loc, Arc::clone(&s.matcher)))
+    }
+
+    /// From the debounced preview: read the matches of the file under the cursor, unless
+    /// they're already shown or on their way.
+    pub(super) fn request_grep_preview(&mut self) {
+        let Some((loc, matcher)) = self.grep_target() else {
+            return;
+        };
+        if self.grep_preview.as_ref().is_some_and(|p| p.loc == loc) {
+            return;
+        }
+        self.grep_preview = Some(GrepPreview {
+            loc: loc.clone(),
+            result: None,
+            current: 0,
+        });
+        self.worker.grep_preview(loc, matcher);
+    }
+
+    pub(super) fn on_grep_preview(&mut self, loc: Loc, result: Result<MatchPreview, String>) {
+        // A late answer for a file the cursor has left is dropped.
+        if let Some(p) = self.grep_preview.as_mut().filter(|p| p.loc == loc) {
+            p.result = Some(result);
+            p.current = 0;
+            self.dirty = true;
+        }
+    }
+
+    /// The match preview for `loc`, if it's the one held.
+    pub fn grep_preview_of(&self, loc: &Loc) -> Option<&GrepPreview> {
+        self.grep_preview.as_ref().filter(|p| &p.loc == loc)
+    }
+
+    /// `]m` / `[m`: step `n` matches through the preview (no wrap, like vim's `]m`).
+    pub(super) fn step_match(&mut self, n: usize, forward: bool) {
+        let here = self.grep_target().map(|(loc, _)| loc);
+        let Some(p) = self
+            .grep_preview
+            .as_mut()
+            .filter(|p| here.as_ref() == Some(&p.loc))
+        else {
+            return self.set_status(
+                "]m / [m step through the matches of a content search (S)".into(),
+                false,
+            );
+        };
+        let Some(Ok(preview)) = &p.result else { return };
+        let last = preview.matches.len().saturating_sub(1);
+        let target = if forward {
+            p.current.saturating_add(n).min(last)
+        } else {
+            p.current.saturating_sub(n)
+        };
+        let edge = target == p.current;
+        p.current = target;
+        let total = preview.matches.len();
+        let more = if preview.truncated { "+" } else { "" };
+        let msg = match (edge, forward) {
+            (true, true) => format!("last match ({total}{more})"),
+            (true, false) => "first match".to_string(),
+            _ => format!("match {} of {total}{more}", target + 1),
+        };
+        self.set_status(msg, false);
+    }
+}
+
+/// The matches of one content-search result, shown in the preview column.
+pub struct GrepPreview {
+    pub loc: Loc,
+    /// None while the file is being read.
+    pub result: Option<Result<MatchPreview, String>>,
+    /// Index into `MatchPreview::matches` of the match `]m` / `[m` is on.
+    pub current: usize,
 }

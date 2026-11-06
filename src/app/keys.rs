@@ -27,6 +27,8 @@ pub enum PromptKind {
     Filter,
     /// `s`: recursive name search (runs on Enter).
     NameSearch,
+    /// `S`: recursive content search (runs on Enter).
+    ContentSearch,
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +52,7 @@ impl Prompt {
             PromptKind::Search { backward: true } => "?",
             PromptKind::Filter => "filter: ",
             PromptKind::NameSearch => "search: ",
+            PromptKind::ContentSearch => "grep: ",
         }
     }
 }
@@ -253,6 +256,9 @@ impl App {
             Action::QuitWriteCwd => self.quit = Some(Quit::WithCwd),
             Action::Cd(path) => self.cd(&path),
             Action::NameSearch => self.open_prompt(PromptKind::NameSearch),
+            Action::ContentSearch => self.open_prompt(PromptKind::ContentSearch),
+            Action::NextMatch => self.step_match(n, true),
+            Action::PrevMatch => self.step_match(n, false),
             Action::GotoResultFolder => self.goto_result_folder(),
             Action::CycleSort => self.cycle_sort(),
             Action::GotoLine(line) => self.set_cursor(line.saturating_sub(1)),
@@ -358,7 +364,8 @@ impl App {
         let text = match kind {
             PromptKind::Filter => self.filter.clone(),
             // Prefilled inside results, so `s` refines the current search.
-            PromptKind::NameSearch => self.current_search_query().unwrap_or_default(),
+            PromptKind::NameSearch => self.current_search_query(false).unwrap_or_default(),
+            PromptKind::ContentSearch => self.current_search_query(true).unwrap_or_default(),
             _ => String::new(),
         };
         self.prompt = Some(Prompt {
@@ -452,6 +459,15 @@ impl App {
                     Err(e) => e.to_string(),
                 };
             }
+            // Also builds the regex, so `re:(` says "bad regex" before Enter.
+            PromptKind::ContentSearch => {
+                let parsed = crate::search::query::Query::parse(&text).map_err(|e| e.to_string());
+                p.note = match parsed.and_then(|q| crate::search::SearchMatcher::new(&q, true)) {
+                    Ok(_) => String::new(),
+                    Err(_) if text.trim().is_empty() => String::new(),
+                    Err(e) => e,
+                };
+            }
         }
     }
 
@@ -482,7 +498,12 @@ impl App {
                 "search for what? (s then text, *.pdf, re:…, ext:pdf)".into(),
                 false,
             ),
-            PromptKind::NameSearch => self.start_search(&text),
+            PromptKind::NameSearch => self.start_search(&text, false),
+            PromptKind::ContentSearch if text.trim().is_empty() => self.set_status(
+                "search contents for what? (S then text, re:…, ext:pmlmac)".into(),
+                false,
+            ),
+            PromptKind::ContentSearch => self.start_search(&text, true),
         }
     }
 
@@ -496,7 +517,7 @@ impl App {
                 self.search = p.saved_search;
                 self.set_cursor(p.origin);
             }
-            PromptKind::Command | PromptKind::NameSearch => {}
+            PromptKind::Command | PromptKind::NameSearch | PromptKind::ContentSearch => {}
         }
     }
 

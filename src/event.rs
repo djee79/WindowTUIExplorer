@@ -5,6 +5,7 @@ use crate::fs::path::{FsPath, Loc};
 use crate::fs::worker::{ListError, Probe};
 use crate::keymap::Keymap;
 use crate::platform::DiskSpace;
+use crate::search::content::MatchPreview;
 use crate::search::walk::Hit;
 use ratatui::crossterm::event::Event as TermEvent;
 use std::sync::Arc;
@@ -66,6 +67,11 @@ pub enum AppEvent {
         errors: u64,
         elapsed: Duration,
         cancelled: bool,
+    },
+    /// The matching lines of a content-search result, for its preview.
+    GrepPreview {
+        loc: Loc,
+        result: Result<MatchPreview, String>,
     },
 }
 

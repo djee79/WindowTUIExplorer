@@ -22,6 +22,7 @@ const HINTS: &[(&str, &str)] = &[
     ("hjkl", "move"),
     ("/", "find here"),
     ("s", "search below"),
+    ("S", "grep below"),
     ("f", "filter"),
     ("H/L", "history"),
     ("''", "previous dir"),
@@ -30,6 +31,17 @@ const HINTS: &[(&str, &str)] = &[
     ("<Space>", "leader"),
     (":", "cmd"),
     ("ZZ", "quit + cd"),
+    ("g?", "help"),
+];
+
+const GREP_HINTS: &[(&str, &str)] = &[
+    ("j/k", "move"),
+    ("]m/[m", "step matches"),
+    ("l", "open"),
+    ("gr", "go to folder"),
+    ("S", "refine"),
+    (",s", "sort"),
+    ("H/Esc", "back"),
     ("g?", "help"),
 ];
 
@@ -105,7 +117,7 @@ fn draw_search_header(f: &mut Frame, area: Rect, app: &App, s: &SearchState) {
     let left = vec![
         badge(" sentier ", ACCENT),
         Span::raw("  "),
-        Span::styled("search ", theme::dim()),
+        Span::styled(if s.content { "grep " } else { "search " }, theme::dim()),
         Span::styled(format!("\"{}\"", s.query), theme::bold(ACCENT)),
         Span::styled("  in  ", theme::dim()),
         Span::styled(origin, theme::bold(color)),
@@ -226,7 +238,11 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     } else if app.at_root() {
         left.push(Span::raw(super::locations::summary(app)));
     } else if let Some(s) = app.search_state(&app.cwd) {
-        left.push(Span::raw("search results"));
+        left.push(Span::raw(if s.content {
+            "content search results"
+        } else {
+            "search results"
+        }));
         left.push(sep());
         left.push(Span::raw(format!(
             "{} found",
@@ -239,7 +255,7 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
             ));
         }
         left.push(sep());
-        left.push(Span::raw(format!("sort: {}", s.sort.label())));
+        left.push(Span::raw(format!("sort: {}", s.sort_label())));
         if s.running() && !s.current.is_empty() {
             left.push(sep());
             left.push(Span::styled(
@@ -312,8 +328,8 @@ pub fn draw_hints(f: &mut Frame, area: Rect, app: &App) {
     let mut used = 1;
     let hints = if app.at_root() {
         ROOT_HINTS
-    } else if app.search_state(&app.cwd).is_some() {
-        RESULT_HINTS
+    } else if let Some(s) = app.search_state(&app.cwd) {
+        if s.content { GREP_HINTS } else { RESULT_HINTS }
     } else {
         HINTS
     };

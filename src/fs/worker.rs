@@ -18,7 +18,8 @@ use crate::event::{AppEvent, EventTx};
 use crate::keymap;
 use crate::locations;
 use crate::platform::{self, DriveKind};
-use crate::search::name::NameMatcher;
+use crate::search::SearchMatcher;
+use crate::search::content::MatchPreview;
 use crate::search::walk::{self, Hit};
 use std::fmt;
 use std::io;
@@ -36,6 +37,12 @@ const BATCH_INTERVAL: Duration = Duration::from_millis(100);
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(150);
 /// Locations reachability probe timeout (CLAUDE.md feature 2).
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// Reading a local file for the match preview: longer than a listing (the file may be
+/// big), still bounded. Network files use the network timeout.
+const GREP_PREVIEW_LOCAL: Duration = Duration::from_secs(2);
+/// Context lines around each match, and the most matches a preview collects.
+const GREP_CONTEXT: usize = 2;
+const GREP_MAX_MATCHES: usize = 500;
 
 /// A successful reachability probe.
 #[derive(Debug, Clone, Copy)]
@@ -292,7 +299,7 @@ impl Worker {
     }
 
     /// Starts a recursive name search under `root`. Hits stream in as `SearchProgress`.
-    pub fn search(&self, id: u64, root: &FsPath, matcher: Arc<NameMatcher>) -> CancelToken {
+    pub fn search(&self, id: u64, root: &FsPath, matcher: Arc<SearchMatcher>) -> CancelToken {
         let cancel = CancelToken::default();
         let threads = walk::default_threads(root.is_network());
         walk::spawn(
@@ -306,12 +313,16 @@ impl Worker {
         cancel
     }
 
-    /// Re-scores found hits with a refined query, off the UI thread, as one batch for
-    /// search `id`.
-    pub fn rescore(&self, id: u64, hits: Vec<Hit>, matcher: Arc<NameMatcher>) {
+    /// Re-scores found hits with a refined name query, off the UI thread, as one batch
+    /// for search `id`. (Content hits aren't re-scored: that means reading every file
+    /// again, which the fresh walk does anyway.)
+    pub fn rescore(&self, id: u64, hits: Vec<Hit>, matcher: Arc<SearchMatcher>) {
         let tx = self.tx.clone();
         self.rt.spawn(async move {
-            let call = tokio::task::spawn_blocking(move || walk::rescore(hits, &matcher));
+            let call = tokio::task::spawn_blocking(move || match &*matcher {
+                SearchMatcher::Name(m) => walk::rescore(hits, m),
+                SearchMatcher::Content(_) => Vec::new(),
+            });
             if let Ok(hits) = call.await {
                 let _ = tx.send(AppEvent::SearchProgress {
                     id,
@@ -320,6 +331,35 @@ impl Worker {
                     current: String::new(),
                 });
             }
+        });
+    }
+
+    /// The matching lines of one file, with context, for the preview of a content-search
+    /// result. Sends one `GrepPreview`; the app drops it if the cursor has moved on.
+    pub fn grep_preview(&self, loc: Loc, matcher: Arc<SearchMatcher>) {
+        let Some(path) = loc.as_fs().map(|p| p.os_string()) else {
+            return;
+        };
+        let (tx, timeouts) = (self.tx.clone(), self.timeouts);
+        self.rt.spawn(async move {
+            let t = timeout_for(&loc, timeouts).await;
+            let timeout = if t == timeouts.network {
+                t
+            } else {
+                GREP_PREVIEW_LOCAL.max(t)
+            };
+            let call = tokio::task::spawn_blocking(move || match &*matcher {
+                SearchMatcher::Content(m) => m
+                    .preview(&path, GREP_CONTEXT, GREP_MAX_MATCHES)
+                    .map_err(|e| e.to_string()),
+                SearchMatcher::Name(_) => Ok(MatchPreview::default()),
+            });
+            let result = match tokio::time::timeout(timeout, call).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(_) => Err(format!("timed out after {:.0} s", timeout.as_secs_f32())),
+            };
+            let _ = tx.send(AppEvent::GrepPreview { loc, result });
         });
     }
 

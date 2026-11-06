@@ -15,6 +15,7 @@
 //! A thread stuck in an SMB call can't be interrupted. Cancelling doesn't wait for it:
 //! `SearchDone` goes out at once, and the stuck thread exits silently when the OS returns.
 
+use super::SearchMatcher;
 use super::name::{Candidate, NameMatcher, Scratch};
 use crate::event::{AppEvent, EventTx};
 use crate::fs::path::FsPath;
@@ -77,7 +78,7 @@ struct Queue {
 
 struct Shared {
     id: u64,
-    matcher: Arc<NameMatcher>,
+    matcher: Arc<SearchMatcher>,
     cancel: CancelToken,
     tx: EventTx,
     scanned: AtomicU64,
@@ -92,7 +93,7 @@ struct Shared {
 pub fn spawn(
     id: u64,
     root: FsPath,
-    matcher: Arc<NameMatcher>,
+    matcher: Arc<SearchMatcher>,
     threads: usize,
     cancel: CancelToken,
     tx: EventTx,
@@ -310,7 +311,7 @@ fn visit_dir(w: &mut Walker, job: &Job) -> Vec<Job> {
         } else {
             format!("{}\\{}", job.rel, e.name)
         };
-        if let Some(hit) = matched(w, e, &rel, is_dir) {
+        if let Some(hit) = matched(w, &job.dir, e, &rel, is_dir) {
             w.batch.push(hit);
         }
         if is_dir && descend && (!e.reparse || q.follow) {
@@ -329,7 +330,10 @@ fn visit_dir(w: &mut Walker, job: &Job) -> Vec<Job> {
     subdirs
 }
 
-fn matched(w: &mut Walker, e: &FindEntry, rel: &str, is_dir: bool) -> Option<Hit> {
+/// Name search scores the entry; content search filters by name, then reads the file
+/// (here, in the walker thread) and scores it by its number of matching lines.
+fn matched(w: &mut Walker, dir: &FsPath, e: &FindEntry, rel: &str, is_dir: bool) -> Option<Hit> {
+    let shared = w.shared;
     let cand = Candidate {
         rel,
         name: &e.name,
@@ -337,10 +341,23 @@ fn matched(w: &mut Walker, e: &FindEntry, rel: &str, is_dir: bool) -> Option<Hit
         size: if is_dir { 0 } else { e.size },
         modified: e.modified,
     };
-    let score = w
-        .shared
-        .matcher
-        .score(&cand, w.shared.now, &mut w.scratch)?;
+    let score = match &*shared.matcher {
+        SearchMatcher::Name(m) => m.score(&cand, shared.now, &mut w.scratch)?,
+        SearchMatcher::Content(m) => {
+            if !m.passes(&cand, shared.now, &mut w.scratch) {
+                return None;
+            }
+            let path = dir.join(&e.name).ok()?.os_string();
+            match m.count(&path, &shared.cancel) {
+                Ok(n) => n?,
+                Err(err) => {
+                    tracing::debug!(path, error = %err, "search: can't read");
+                    shared.errors.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+            }
+        }
+    };
     Some(Hit {
         rel: rel.to_string(),
         is_dir,
@@ -451,10 +468,16 @@ mod tests {
 
     /// Runs a search to completion and returns the sorted relative paths found.
     fn search(root: &Path, q: &str) -> (Vec<String>, u64) {
+        let (hits, scanned) = search_hits(root, q, false);
+        (hits.into_iter().map(|h| h.rel).collect(), scanned)
+    }
+
+    /// Runs a search to completion and returns the hits, sorted by path.
+    fn search_hits(root: &Path, q: &str, content: bool) -> (Vec<Hit>, u64) {
         let Ok(query) = Query::parse(q) else {
             panic!("{q}")
         };
-        let Ok(matcher) = NameMatcher::new(&query) else {
+        let Ok(matcher) = SearchMatcher::new(&query, content) else {
             panic!("{q}")
         };
         let (tx, rx) = crate::event::channel();
@@ -469,11 +492,9 @@ mod tests {
         let mut found = Vec::new();
         loop {
             match rx.recv_timeout(Duration::from_secs(10)) {
-                Ok(AppEvent::SearchProgress { hits, .. }) => {
-                    found.extend(hits.into_iter().map(|h| h.rel))
-                }
+                Ok(AppEvent::SearchProgress { hits, .. }) => found.extend(hits),
                 Ok(AppEvent::SearchDone { scanned, .. }) => {
-                    found.sort();
+                    found.sort_by(|a, b| a.rel.cmp(&b.rel));
                     return (found, scanned);
                 }
                 Ok(_) => {}
@@ -527,12 +548,41 @@ mod tests {
     }
 
     #[test]
+    fn content_search_reads_files_and_counts() {
+        let root = tree("d");
+        let _ = std::fs::write(root.join(r"hitrep\notes.txt"), "PIPE one\nnone\nPIPE two\n");
+        let _ = std::fs::write(root.join(r"hitrep\fix.pmlmac"), "new PIPE\n");
+        let _ = std::fs::write(root.join(r"hitrep\blob.txt"), b"PIPE\x00binary");
+        let found = |q: &str| {
+            let (hits, _) = search_hits(&root, q, true);
+            hits.into_iter()
+                .map(|h| (h.rel, h.score))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            found("PIPE"),
+            [
+                (r"hitrep\fix.pmlmac".to_string(), 1),
+                (r"hitrep\notes.txt".to_string(), 2)
+            ],
+            "binary skipped, counts are matching lines"
+        );
+        assert_eq!(
+            found("PIPE ext:pmlmac"),
+            [(r"hitrep\fix.pmlmac".to_string(), 1)],
+            "name filters apply first"
+        );
+        assert_eq!(found("pipe !hitrep"), [], "excluded subtree isn't read");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn cancel_stops_and_reports() {
         let root = tree("b");
         let Ok(query) = Query::parse("x") else {
             panic!()
         };
-        let Ok(matcher) = NameMatcher::new(&query) else {
+        let Ok(matcher) = SearchMatcher::new(&query, false) else {
             panic!()
         };
         let (tx, rx) = crate::event::channel();

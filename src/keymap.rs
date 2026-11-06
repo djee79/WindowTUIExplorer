@@ -256,6 +256,11 @@ pub enum Action {
     Cd(String),
     /// `s`: recursive name search below the current folder.
     NameSearch,
+    /// `S`: recursive content search below the current folder.
+    ContentSearch,
+    /// `]m` / `[m`: next / previous match in the preview of a content-search result.
+    NextMatch,
+    PrevMatch,
     /// `gr`: in search results, the real folder of the result under the cursor.
     GotoResultFolder,
     /// `,s`: cycle the results sort.
@@ -304,6 +309,9 @@ const NAMED: &[(&str, Action)] = &[
     ("quit-write-cwd", Action::QuitWriteCwd),
     ("quit-no-write", Action::QuitNoWrite),
     ("name-search", Action::NameSearch),
+    ("content-search", Action::ContentSearch),
+    ("next-match", Action::NextMatch),
+    ("prev-match", Action::PrevMatch),
     ("goto-result-folder", Action::GotoResultFolder),
     ("cycle-sort", Action::CycleSort),
     // `:` command aliases (vim spellings)
@@ -446,6 +454,9 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("N", SearchPrev, "previous match"),
         ("f", Filter, "filter this directory"),
         ("s", NameSearch, "search names below here"),
+        ("S", ContentSearch, "search contents below here"),
+        ("]m", NextMatch, "next match in the preview"),
+        ("[m", PrevMatch, "previous match in the preview"),
         ("gr", GotoResultFolder, "go to the result's folder"),
         (",s", CycleSort, "cycle results sort"),
         ("<Esc>", Escape, "clear filter / search"),
