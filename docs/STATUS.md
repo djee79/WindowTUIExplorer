@@ -951,3 +951,30 @@ User feedback: typing `yes` for `D` was annoying; wanted a popup to confirm, lik
   path, `^a` pin, `Tab` choose several → Enter yanks them (`p` pastes as a copy).
 - `:picker files | dirs | grep | commands | keymaps | pins | launcher | tags | machines`
   (so keymap.toml's `run = "picker files"` works); the finders are in the `:` hints / `g?`.
+
+## M6, slice B: CLI, config overrides, `go` / `Space e` (code complete 2026-11-06)
+
+**All milestones (M1–M6) are code complete.** What remains is the manual check of each
+milestone at the office (the checklists above) and the few items marked "not yet".
+
+- CLI for other tools (`cli.rs`), no TUI, exit 0 / 1 refused / 2 bad usage:
+  - `sentier pin <path|url> [--name N] [--tag T]… [--key K]`: a folder or file (resolved
+    against the current folder; `.exe/.bat/.lnk` become apps) or a web address; refuses
+    one already pinned. Written atomically.
+  - `sentier pins [--query "#aveva is:unc"] [--json]`: the pickers' filters (`#tag`,
+    `!#tag`, `is:`, `on:`, words); `--json` is every field as in pins.toml.
+  - `sentier open <pin name>`: exact name; folders / files in their Windows app, apps,
+    web apps, a machine's `C$`; presets point to `sentier run`. Counts for frecency.
+  - A folder named `pin`, `pins`, `open` or `run` opens as `sentier .\pin`.
+- A running sentier reloads pins.toml when something else changes it (checked every 2 s,
+  its own saves recognised and skipped; held while a pin is being edited): "pins.toml
+  changed: reloaded".
+- config.toml: `show_hidden`, `numbers` (hybrid | relative | absolute | off),
+  `[timeouts] local_ms / network_ms`, `[preview] protocol / max_network_mb`, `editor`.
+  Timeouts and the protocol are read before the TUI starts (1 s cap, as %APPDATA% can be
+  a redirected network folder). `preview.cell_px` and `preview.cache_mb` load but aren't
+  used yet (there is no on-disk thumbnail cache yet).
+- `go` / `Space e`: this folder in the editor (config `editor`, $VISUAL, $EDITOR, nvim), in
+  this terminal; `:rename` uses the same editor.
+- Tests can no longer read or write the user's config.toml, keymap.toml or machines.tsv
+  either (temp paths under `cargo test`).

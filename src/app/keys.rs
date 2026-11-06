@@ -425,6 +425,7 @@ impl App {
             Action::Sync(name, skip) => self.sync_command(&name, skip),
             Action::SyncPicker => self.sync_command("", false),
             Action::Launcher => self.open_launcher(""),
+            Action::EditHere => self.edit_here(),
             Action::FilesPicker => self.open_files_picker(false),
             Action::DirsPicker => self.open_dirs_picker(),
             Action::GrepPicker => self.open_grep_picker(),

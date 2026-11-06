@@ -305,9 +305,7 @@ impl App {
         if names.is_empty() {
             return self.set_status("nothing to rename here".into(), false);
         }
-        let editor = std::env::var("VISUAL")
-            .or_else(|_| std::env::var("EDITOR"))
-            .unwrap_or_else(|_| "nvim".to_string());
+        let editor = self.config.editor();
         let mut words = editor.split_whitespace().map(str::to_string);
         let program = words.next().unwrap_or_else(|| "nvim".into());
         let file = std::env::temp_dir().join(format!("sentier-rename-{}.txt", std::process::id()));

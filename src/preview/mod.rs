@@ -212,6 +212,12 @@ pub fn choose_protocol(term_program: Option<&str>, override_: Option<&str>) -> P
 /// `TERM_PROGRAM`, and `SENTIER_PREVIEW_PROTOCOL` to force one until config.toml's
 /// `preview.protocol` exists.
 pub fn graphics() -> Picker {
+    graphics_with(None)
+}
+
+/// [`graphics`] with config.toml's `preview.protocol` (`auto` or unset: chosen from the
+/// terminal). `SENTIER_PREVIEW_PROTOCOL` still wins, for testing a protocol quickly.
+pub fn graphics_with(configured: Option<&str>) -> Picker {
     // `halfblocks()` assumes 10×20 px cells, our default ([`DEFAULT_CELL_PX`]). Another
     // size (config `preview.cell_px`) needs the deprecated `from_fontsize`; the terminal
     // query that replaces it doesn't work through ConPTY.
@@ -219,7 +225,9 @@ pub fn graphics() -> Picker {
     let cell = picker.font_size();
     debug_assert_eq!((cell.width, cell.height), DEFAULT_CELL_PX);
     let term = std::env::var("TERM_PROGRAM").ok();
-    let forced = std::env::var("SENTIER_PREVIEW_PROTOCOL").ok();
+    let forced = std::env::var("SENTIER_PREVIEW_PROTOCOL")
+        .ok()
+        .or_else(|| configured.map(str::to_string));
     picker.set_protocol_type(choose_protocol(term.as_deref(), forced.as_deref()));
     picker
 }
@@ -398,8 +406,8 @@ pub fn place_iterm2(out: &mut impl std::io::Write, at: Rect, data: &str) -> std:
 }
 
 /// Too big to read over the network just because the cursor passed by.
-pub fn too_big_for_network(size: u64, network: bool) -> bool {
-    network && size > MAX_NETWORK_BYTES
+pub fn too_big_for_network(size: u64, network: bool, limit: u64) -> bool {
+    network && size > limit
 }
 
 #[cfg(test)]
@@ -521,9 +529,17 @@ mod tests {
 
     #[test]
     fn network_guard() {
-        assert!(too_big_for_network(MAX_NETWORK_BYTES + 1, true));
-        assert!(!too_big_for_network(MAX_NETWORK_BYTES + 1, false));
-        assert!(!too_big_for_network(1024, true));
+        assert!(too_big_for_network(
+            MAX_NETWORK_BYTES + 1,
+            true,
+            MAX_NETWORK_BYTES
+        ));
+        assert!(!too_big_for_network(
+            MAX_NETWORK_BYTES + 1,
+            false,
+            MAX_NETWORK_BYTES
+        ));
+        assert!(!too_big_for_network(1024, true, MAX_NETWORK_BYTES));
     }
 
     #[test]

@@ -409,6 +409,13 @@ pub fn touch(list: &mut Vec<Recent>, host: &str, now: SystemTime) {
 
 /// `%LOCALAPPDATA%\sentier\machines.tsv`.
 pub fn recent_path() -> Option<PathBuf> {
+    if cfg!(test) {
+        return Some(
+            std::env::temp_dir()
+                .join(format!("sentier-test-store-{}", std::process::id()))
+                .join(RECENT_FILE),
+        );
+    }
     let base = std::env::var_os("LOCALAPPDATA")?;
     Some(PathBuf::from(base).join("sentier").join(RECENT_FILE))
 }

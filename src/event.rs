@@ -105,6 +105,8 @@ pub enum AppEvent {
     },
     /// The Start Menu's apps (name, `.lnk` path).
     StartMenu(crate::launcher::startmenu::Apps),
+    /// pins.toml was changed by something else (`sentier pin`, an editor): read again.
+    PinsChanged(crate::pins::PinStore),
     /// The frecency store, read at startup.
     UsageLoaded(crate::frecency::Usage),
     /// Something was started, shown or copied (`what`), or why not.

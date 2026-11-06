@@ -359,6 +359,8 @@ pub enum Action {
     GrepPicker,
     CommandsPicker,
     KeymapsPicker,
+    /// `go` / `<leader>e`: this folder in the editor.
+    EditHere,
     /// `<leader><leader>` / `<C-Space>`: the launcher.
     Launcher,
     /// `<leader>rs`: the pins picker filtered to sync presets.
@@ -457,6 +459,7 @@ const NAMED: &[(&str, Action)] = &[
     ("jobs", Action::Jobs),
     ("sync-picker", Action::SyncPicker),
     ("launcher", Action::Launcher),
+    ("edit-here", Action::EditHere),
     ("import-wtm", Action::ImportWtm),
     ("open-with", Action::OpenWith),
     ("reveal", Action::Reveal),
@@ -776,6 +779,8 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("<C-Space>", Launcher, ""),
         ("<leader>p", PinPicker, "pins picker"),
         ("<leader>ff", FilesPicker, "find files below here"),
+        ("<leader>e", EditHere, "this folder in the editor (Neovim)"),
+        ("go", EditHere, "this folder in the editor"),
         ("<leader>fr", DirsPicker, "recent folders"),
         ("<leader>/", GrepPicker, "grep file contents below here"),
         (
@@ -1010,6 +1015,13 @@ struct Entry {
 
 /// `%APPDATA%\sentier\keymap.toml`.
 pub fn store_path() -> Option<std::path::PathBuf> {
+    if cfg!(test) {
+        return Some(
+            std::env::temp_dir()
+                .join(format!("sentier-test-store-{}", std::process::id()))
+                .join(FILE_NAME),
+        );
+    }
     let base = std::env::var_os("APPDATA")?;
     Some(
         std::path::PathBuf::from(base)

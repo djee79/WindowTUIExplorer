@@ -309,6 +309,8 @@ pub struct App {
     pub usage: crate::frecency::Usage,
     /// Visits recorded since usage.tsv was last written, and when that was.
     usage_dirty: bool,
+    /// pins.toml changed outside, waiting for an open pin edit to end.
+    pins_pending: Option<crate::pins::PinStore>,
     usage_saved: Instant,
     /// The Start Menu's apps once scanned, and whether the launcher lists them (`^s`).
     pub start_menu: Option<crate::launcher::startmenu::Apps>,
@@ -442,6 +444,7 @@ impl App {
             open_registered: HashMap::new(),
             usage: Default::default(),
             usage_dirty: false,
+            pins_pending: None,
             usage_saved: Instant::now(),
             start_menu: None,
             picker_walk: None,
@@ -1055,6 +1058,7 @@ impl App {
                 Ok(config) => {
                     self.config = config;
                     self.apply_recent_days();
+                    self.apply_config();
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "config.toml");
@@ -1090,6 +1094,10 @@ impl App {
             AppEvent::Ran { what, result } => self.on_ran(what, result),
             // Launches recorded before the file was read stay.
             AppEvent::UsageLoaded(usage) => self.usage.merge(usage),
+            AppEvent::PinsChanged(store) => {
+                self.pins_pending = Some(store);
+                self.apply_pending_pins();
+            }
             AppEvent::WtmFound { result, offer } => self.on_wtm_found(result, offer),
             AppEvent::StartMenu(apps) => self.on_start_menu(apps),
             AppEvent::Registered { ext, registered } => self.on_registered(ext, registered),
@@ -1211,6 +1219,7 @@ impl App {
             self.worker.save_usage(self.usage.clone());
         }
         self.finders_tick(now);
+        self.apply_pending_pins();
         if self.is_busy() {
             let frame = self.spinner_frame(now);
             if frame != self.last_spin_frame {
@@ -2962,6 +2971,63 @@ mod pin_tests {
                 .all(|i| i.kind != crate::picker::ItemKind::StartMenu)),
             "only the pin now"
         );
+    }
+
+    /// pins.toml changed by `sentier pin` (or an editor) is taken in; while a pin is
+    /// being edited it waits, so the edit isn't pointed at another pin.
+    #[test]
+    fn outside_pin_changes_reload_but_wait_for_an_edit() {
+        let (mut app, _rt) = loaded();
+        let parse = |t: &str| match crate::pins::parse(t) {
+            Ok((s, _)) => s,
+            Err(e) => panic!("{e}"),
+        };
+        let one = parse("[[pin]]\nkind='folder'\nname='Work'\npath='C:\\work'\n");
+        app.handle(AppEvent::PinsChanged(one.clone()));
+        assert_eq!(app.pins, one);
+        assert!(
+            app.status
+                .as_ref()
+                .is_some_and(|s| s.text.contains("reloaded"))
+        );
+        // During an edit: held, then applied when it ends.
+        app.edit_pin(0, false, None);
+        let two = parse(
+            "[[pin]]\nkind='folder'\nname='Work'\npath='C:\\work'\n\
+             [[pin]]\nkind='web'\nname='g'\nurl='https://g.example'\n",
+        );
+        app.handle(AppEvent::PinsChanged(two.clone()));
+        assert_eq!(app.pins.pins.len(), 1, "not under an open edit");
+        press(&mut app, "<Esc><Esc>");
+        app.tick(Instant::now());
+        assert_eq!(app.pins, two);
+    }
+
+    /// config.toml: hidden files and the gutter follow it; `go` opens the configured
+    /// editor on this folder.
+    #[test]
+    fn config_settings_and_go() {
+        let (mut app, _rt) = loaded();
+        let Ok(cfg) = crate::config::parse(
+            "show_hidden = true\nnumbers = \"absolute\"\neditor = \"code --wait\"\n",
+        ) else {
+            panic!()
+        };
+        app.apply_early_config(cfg, None);
+        assert!(app.show_hidden);
+        assert_eq!((app.number, app.relative_number), (true, false));
+        press(&mut app, "go");
+        let Some(req) = app.inline.take() else {
+            panic!("an inline editor")
+        };
+        assert_eq!(req.program, "code");
+        assert_eq!(req.args, ["--wait", r"C:\work"]);
+        // A bad value is said, not fatal.
+        let Ok(bad) = crate::config::parse("numbers = \"sometimes\"\n") else {
+            panic!()
+        };
+        app.apply_early_config(bad, Some("config.toml: slow".into()));
+        assert!(app.status.as_ref().is_some_and(|s| s.is_error));
     }
 }
 

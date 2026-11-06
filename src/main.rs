@@ -2,6 +2,7 @@
 
 mod app;
 mod auth;
+mod cli;
 mod config;
 mod event;
 mod frecency;
@@ -24,7 +25,7 @@ use anyhow::{Context, Result, bail};
 use app::{App, Quit};
 use event::AppEvent;
 use fs::path::Loc;
-use fs::worker::{Timeouts, Worker};
+use fs::worker::Worker;
 use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::event::{
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -44,9 +45,12 @@ sentier: a terminal file explorer for Windows
 
 usage: sentier [options] [path]
        sentier run <preset name> [--allow-mirror]   (headless; sentier run --help)
+       sentier pin <path|url> [--name N] [--tag T]... [--key K]
+       sentier pins [--query \"#tag is:unc\"] [--json]
+       sentier open <pin name>
 
   path               start here (C:\\dir, \\\\server\\share\\dir, relative, ...;
-                     a folder named run: sentier .\\run)
+                     a folder named run, pin, pins or open: sentier .\\run)
 
 options:
   --cwd-file <file>  on ZZ (or Q, :wq), write the current directory to <file>
@@ -61,8 +65,10 @@ struct Args {
 
 fn main() -> ExitCode {
     let all: Vec<String> = std::env::args().skip(1).collect();
-    if all.first().map(String::as_str) == Some("run") {
-        return ExitCode::from(run_headless(&all[1..]));
+    match all.first().map(String::as_str) {
+        Some("run") => return ExitCode::from(run_headless(&all[1..])),
+        Some(cmd @ ("pin" | "pins" | "open")) => return ExitCode::from(run_cli(cmd, &all[1..])),
+        _ => {}
     }
     match real_main() {
         Ok(()) => ExitCode::SUCCESS,
@@ -71,6 +77,143 @@ fn main() -> ExitCode {
             eprintln!("sentier: {e:#}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// `sentier pin` / `pins` / `open` (cli.rs): no TUI. 0 ok, 1 refused, 2 bad usage.
+fn run_cli(cmd: &str, args: &[String]) -> u8 {
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        print!("{}", cli::USAGE);
+        return 0;
+    }
+    let _log_guard = init_logging();
+    let Some(path) = pins::store_path() else {
+        eprintln!("sentier {cmd}: no %APPDATA% folder, so no pins.toml");
+        return 1;
+    };
+    let mut store = match pins::load(&path) {
+        Ok((store, _)) => store,
+        Err(e) => {
+            eprintln!("sentier {cmd}: {e}");
+            return 1;
+        }
+    };
+    match cmd {
+        "pin" => {
+            let parsed = match cli::parse_pin_args(args) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("sentier pin: {e}\n\n{}", cli::USAGE);
+                    return 2;
+                }
+            };
+            let cwd = std::env::current_dir()
+                .map(|d| d.display().to_string())
+                .unwrap_or_default();
+            let probe = |p: &str| std::fs::metadata(p).ok().map(|m| m.is_dir());
+            match cli::add_pin(&mut store, &parsed, &cwd, &probe) {
+                Ok(msg) => match pins::save(&path, &store) {
+                    // A running sentier sees the file change and reloads it.
+                    Ok(()) => {
+                        println!("{msg}");
+                        0
+                    }
+                    Err(e) => {
+                        eprintln!("sentier pin: {e}");
+                        1
+                    }
+                },
+                Err(e) => {
+                    eprintln!("sentier pin: {e}");
+                    1
+                }
+            }
+        }
+        "pins" => {
+            let mut query = String::new();
+            let mut json = false;
+            let mut it = args.iter();
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--json" => json = true,
+                    "--query" | "-q" => query = it.next().cloned().unwrap_or_default(),
+                    other => {
+                        eprintln!("sentier pins: unknown option {other}\n\n{}", cli::USAGE);
+                        return 2;
+                    }
+                }
+            }
+            let found = cli::matching(&store, &query);
+            if json {
+                match cli::to_json(&found) {
+                    Ok(text) => println!("{text}"),
+                    Err(e) => {
+                        eprintln!("sentier pins: {e}");
+                        return 1;
+                    }
+                }
+            } else {
+                cli::to_lines(&found, &mut std::io::stdout());
+            }
+            0
+        }
+        _ => {
+            let name = args.join(" ");
+            let Some(pin) = cli::find(&store, &name) else {
+                eprintln!("sentier open: no pin named {name:?} (sentier pins lists them)");
+                return 1;
+            };
+            match cli_open(pin) {
+                Ok(what) => {
+                    // It counts for the launcher's frecency, as in the TUI.
+                    if let (Some(key), Some(up)) = (frecency::pin_key(pin), frecency::store_path())
+                    {
+                        let mut usage = frecency::load(&up);
+                        usage.record(&key, frecency::now_secs());
+                        let _ = frecency::save(&up, &usage);
+                    }
+                    println!("{what}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("sentier open: {e}");
+                    1
+                }
+            }
+        }
+    }
+}
+
+/// Opens a pin as Enter would, without the TUI.
+fn cli_open(pin: &pins::Pin) -> Result<String, String> {
+    use pins::PinKind;
+    match pin.kind {
+        PinKind::App | PinKind::Web => {
+            let l = launcher::launch_of(pin).ok_or("it has no command or url")?;
+            let command = if l.find {
+                open::run::resolve(&l.command)
+                    .ok_or_else(|| format!("{} isn't installed", l.command))?
+            } else {
+                l.command
+            };
+            platform::shell_execute(&command, &l.args, &l.dir).map_err(|e| e.to_string())?;
+            Ok(format!("started {}", pin.name))
+        }
+        PinKind::Folder | PinKind::File => {
+            let target = pin.target().ok_or("it has no valid path")?;
+            let path = target.as_fs().ok_or("it has no valid path")?.os_string();
+            platform::shell_open(&path).map_err(|e| e.to_string())?;
+            Ok(format!("opened {}", pin.name))
+        }
+        PinKind::Machine => {
+            let host = pin.extra.get("host").and_then(|v| v.as_str()).unwrap_or("");
+            platform::shell_open(&format!(r"\\{host}\C$")).map_err(|e| e.to_string())?;
+            Ok(format!(r"opened \\{host}\C$"))
+        }
+        PinKind::Sync | PinKind::Backup => Err(format!(
+            "{} is a preset: sentier run \"{}\" runs it",
+            pin.name, pin.name
+        )),
     }
 }
 
@@ -127,13 +270,16 @@ fn real_main() -> Result<()> {
         .build()
         .context("starting the async runtime")?;
     let (tx, rx) = event::channel();
-    let worker = Worker::new(rt.handle().clone(), tx.clone(), Timeouts::default());
+    // Timeouts and the picture protocol are needed before anything is listed.
+    let (early, problem) = config::load_early();
+    let worker = Worker::new(rt.handle().clone(), tx.clone(), early.timeouts());
 
     install_panic_hook();
     let mut terminal = setup_terminal()?;
     spawn_input_thread(tx);
 
     let mut app = App::new(worker, start);
+    app.apply_early_config(early, problem);
     let result = app::run(&mut terminal, &mut app, &rx, &TermHooks);
     restore_terminal();
 

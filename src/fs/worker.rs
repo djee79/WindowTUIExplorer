@@ -69,7 +69,7 @@ pub struct Probe {
     pub free: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timeouts {
     pub local: Duration,
     pub network: Duration,
@@ -323,6 +323,8 @@ pub struct Worker {
     timeouts: Timeouts,
     next_id: AtomicU64,
     pins_save: mpsc::UnboundedSender<PinStore>,
+    /// config.toml's `preview.max_network_mb`, in bytes.
+    preview_limit: Arc<AtomicU64>,
 }
 
 enum Batch {
@@ -334,14 +336,27 @@ enum Batch {
 impl Worker {
     pub fn new(rt: Handle, tx: EventTx, timeouts: Timeouts) -> Self {
         let (pins_save, pins_rx) = mpsc::unbounded_channel();
-        rt.spawn(pins_writer(pins_rx, tx.clone()));
+        let own_write = Arc::new(AtomicU64::new(0));
+        rt.spawn(pins_writer(pins_rx, tx.clone(), own_write.clone()));
+        // Tests never watch the user's file (store_path is a temp file there anyway).
+        if !cfg!(test) {
+            rt.spawn(pins_watcher(tx.clone(), own_write));
+        }
         Worker {
             rt,
             tx,
             timeouts,
             next_id: AtomicU64::new(1),
             pins_save,
+            preview_limit: Arc::new(AtomicU64::new(preview::MAX_NETWORK_BYTES)),
         }
+    }
+
+    /// config.toml's `preview.max_network_mb`: network files bigger than this aren't
+    /// previewed until `zp`.
+    pub fn set_preview_limit(&self, mb: u64) {
+        self.preview_limit
+            .store(mb.max(1).saturating_mul(1024 * 1024), Ordering::Relaxed);
     }
 
     /// A callback for matcher threads (the picker's nucleo pool): wakes the UI loop.
@@ -906,9 +921,10 @@ impl Worker {
             return;
         };
         let (tx, timeouts) = (self.tx.clone(), self.timeouts);
+        let limit = self.preview_limit.load(Ordering::Relaxed);
         self.rt.spawn(async move {
             let network = timeout_for(&key.loc, timeouts).await == timeouts.network;
-            if preview::too_big_for_network(key.size, network) {
+            if preview::too_big_for_network(key.size, network, limit) {
                 let mb = key.size / (1024 * 1024);
                 let result = Err(format!(
                     "large file on the network ({mb} MB): not previewed"
@@ -1474,17 +1490,67 @@ async fn list_root(
 
 /// The pins.toml writer: saves in the order asked, skipping to the newest store when
 /// several are queued (each one is the whole store).
-async fn pins_writer(mut rx: mpsc::UnboundedReceiver<PinStore>, tx: EventTx) {
+/// pins.toml's modified time in ms (None: no file), to tell its own saves from others'.
+fn pins_mtime() -> Option<u64> {
+    let m = std::fs::metadata(pins::store_path()?)
+        .ok()?
+        .modified()
+        .ok()?;
+    m.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis() as u64)
+}
+
+async fn pins_writer(
+    mut rx: mpsc::UnboundedReceiver<PinStore>,
+    tx: EventTx,
+    own_write: Arc<AtomicU64>,
+) {
     while let Some(mut store) = rx.recv().await {
         while let Ok(newer) = rx.try_recv() {
             store = newer;
         }
         let call = tokio::task::spawn_blocking(move || match pins::store_path() {
-            Some(path) => pins::save(&path, &store),
+            Some(path) => pins::save(&path, &store).map(|()| pins_mtime()),
             None => Err("APPDATA is not set".to_string()),
         });
-        if let Err(e) = call.await.unwrap_or_else(|e| Err(e.to_string())) {
-            let _ = tx.send(AppEvent::PinsSaveFailed(e));
+        match call.await.unwrap_or_else(|e| Err(e.to_string())) {
+            // The watcher skips this change: it's ours.
+            Ok(m) => own_write.store(m.unwrap_or(0), Ordering::Relaxed),
+            Err(e) => {
+                let _ = tx.send(AppEvent::PinsSaveFailed(e));
+            }
+        }
+    }
+}
+
+/// Every 2 s: did pins.toml change, and not by this sentier (`sentier pin`, an editor,
+/// another instance)? Then it's read again: one `PinsChanged`.
+async fn pins_watcher(tx: EventTx, own_write: Arc<AtomicU64>) {
+    let mut seen: Option<u64> = None;
+    let mut first = true;
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let probe = tokio::task::spawn_blocking(pins_mtime);
+        let Ok(Ok(now)) = tokio::time::timeout(Duration::from_secs(3), probe).await else {
+            continue;
+        };
+        if first {
+            (seen, first) = (now, false);
+            continue;
+        }
+        if now == seen {
+            continue;
+        }
+        seen = now;
+        if now.is_none() || now == Some(own_write.load(Ordering::Relaxed)) {
+            continue;
+        }
+        let load = tokio::task::spawn_blocking(|| pins::store_path().map(|p| pins::load(&p)));
+        if let Ok(Some(Ok((store, _)))) = load.await
+            && tx.send(AppEvent::PinsChanged(store)).is_err()
+        {
+            return;
         }
     }
 }

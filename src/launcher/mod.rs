@@ -66,6 +66,20 @@ pub fn launch_of(p: &Pin) -> Option<Launch> {
     }
 }
 
+/// `grafana.example/x` → `https://grafana.example/x`; a full URL as it is; None when it
+/// isn't one (no dot in the host, spaces).
+pub fn normalize_url(text: &str) -> Option<String> {
+    let t = text.trim();
+    if t.is_empty() || t.contains(char::is_whitespace) {
+        return None;
+    }
+    if t.contains("://") {
+        return Some(t.to_string());
+    }
+    let host = t.split('/').next().unwrap_or_default();
+    (host.contains('.') || host.starts_with("localhost")).then(|| format!("https://{t}"))
+}
+
 /// The launcher's "nothing matched: run what I typed": the first word (or quoted part)
 /// is the program, the rest its arguments. `notepad x.txt`, `"C:\My App\a.exe" -v`,
 /// `https://…`.

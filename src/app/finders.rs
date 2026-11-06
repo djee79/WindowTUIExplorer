@@ -417,6 +417,83 @@ impl App {
         }
     }
 
+    /// config.toml read before the TUI starts: the picture protocol, then the rest.
+    pub fn apply_early_config(&mut self, cfg: crate::config::Config, problem: Option<String>) {
+        let protocol = cfg
+            .preview
+            .protocol
+            .clone()
+            .filter(|p| !p.trim().eq_ignore_ascii_case("auto"));
+        self.graphics = crate::preview::graphics_with(protocol.as_deref());
+        self.config = cfg;
+        self.apply_config();
+        if let Some(p) = problem {
+            self.set_status(p, true);
+        }
+    }
+
+    /// `show_hidden`, `numbers`, `preview.max_network_mb` from config.toml.
+    pub(super) fn apply_config(&mut self) {
+        if let Some(h) = self.config.show_hidden
+            && h != self.show_hidden
+        {
+            self.show_hidden = h;
+            self.rebuild_view();
+        }
+        if let Some(n) = self.config.numbers.clone() {
+            match crate::config::numbers(&n) {
+                Ok((number, relative)) => {
+                    self.number = number;
+                    self.relative_number = relative;
+                }
+                Err(e) => self.set_status(e, true),
+            }
+        }
+        if let Some(mb) = self.config.preview.max_network_mb {
+            self.worker.set_preview_limit(mb);
+        }
+        self.dirty = true;
+    }
+
+    /// `go` / `<leader>e`: this folder in the editor (config `editor`, $VISUAL, $EDITOR,
+    /// else nvim), in this terminal; the listing is refreshed after.
+    pub(super) fn edit_here(&mut self) {
+        let Some(dir) = self.cwd.real().as_fs().map(FsPath::display) else {
+            return self.set_status("not a real folder here".into(), false);
+        };
+        let editor = self.config.editor();
+        // `code --wait`-style editors come with their own arguments.
+        let mut parts = crate::open::rules::split_args(&editor);
+        if parts.is_empty() {
+            return;
+        }
+        let program = parts.remove(0);
+        parts.push(dir);
+        self.inline = Some(super::fileops::Inline {
+            program: program.clone(),
+            args: parts,
+            file: None,
+            then: super::fileops::InlineThen::Refresh { what: program },
+        });
+    }
+
+    /// pins.toml changed outside: take it, unless a pin is being edited or asked about
+    /// (indices would shift under it); then it waits for that to end.
+    pub(super) fn apply_pending_pins(&mut self) {
+        if self.pins_pending.is_none() || self.pin_draft.is_some() || self.confirm.is_some() {
+            return;
+        }
+        let Some(store) = self.pins_pending.take() else {
+            return;
+        };
+        if store == self.pins {
+            return; // our own save, read back
+        }
+        self.pins = store;
+        self.reload_root();
+        self.set_status("pins.toml changed: reloaded".into(), false);
+    }
+
     /// Unsaved folder visits, for main to write before exiting.
     pub fn take_unsaved_usage(&mut self) -> Option<crate::frecency::Usage> {
         std::mem::take(&mut self.usage_dirty).then(|| self.usage.clone())

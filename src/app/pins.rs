@@ -623,7 +623,7 @@ impl App {
         if !self.pins_ready() {
             return;
         }
-        let url = normalize_url(url).unwrap_or_default();
+        let url = crate::launcher::normalize_url(url).unwrap_or_default();
         let host = url
             .split("://")
             .nth(1)
@@ -700,7 +700,8 @@ impl App {
         // App and web fields live on the pin itself.
         match f {
             PresetField::Url => {
-                pin.url = Some(normalize_url(text).ok_or("a web address (https://…)")?);
+                pin.url =
+                    Some(crate::launcher::normalize_url(text).ok_or("a web address (https://…)")?);
                 return Ok(());
             }
             PresetField::Browser => {
@@ -813,19 +814,6 @@ impl App {
             PresetField::Dir => "the working folder · Tab completes".into(),
         }
     }
-}
-
-/// `grafana.example/x` → `https://grafana.example/x`; None when it isn't one.
-fn normalize_url(text: &str) -> Option<String> {
-    let t = text.trim();
-    if t.is_empty() || t.contains(char::is_whitespace) {
-        return None;
-    }
-    if t.contains("://") {
-        return Some(t.to_string());
-    }
-    let host = t.split('/').next().unwrap_or_default();
-    (host.contains('.') || host.starts_with("localhost")).then(|| format!("https://{t}"))
 }
 
 /// A preset field's current value, to prefill its prompt.
