@@ -1,0 +1,1019 @@
+//! Copy / move jobs (CLAUDE.md section 4): the plan for a paste, the job's state and
+//! phase, and its final report. Pure: the worker runs the plan and sends back the events
+//! (robocopy's, parsed, or the same events made by the native backend), and the app
+//! applies them here.
+
+pub mod robocopy;
+pub mod run;
+
+use crate::fs::path::{FsPath, Loc};
+use robocopy::{Event, Overwrite, Step, Tracker};
+use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+use std::time::{Duration, Instant, SystemTime};
+
+/// Files at or above this go through robocopy (restartable, `/Z`).
+pub const NATIVE_MAX_BYTES: u64 = 256 * 1024 * 1024;
+/// Jobs running longer than this open the panel by themselves.
+pub const AUTO_PANEL_AFTER: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Op {
+    Copy,
+    Move,
+}
+
+impl Op {
+    pub fn word(self) -> &'static str {
+        match self {
+            Op::Copy => "copy",
+            Op::Move => "move",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Backend {
+    Robocopy,
+    /// Small files, copied one by one.
+    Native,
+    /// A move within one volume: a rename, instant whatever the size.
+    Rename,
+}
+
+impl Backend {
+    pub fn word(self) -> &'static str {
+        match self {
+            Backend::Robocopy => "robocopy",
+            Backend::Native => "native",
+            Backend::Rename => "rename",
+        }
+    }
+}
+
+/// One selected item.
+#[derive(Debug, Clone)]
+pub struct Item {
+    pub path: FsPath,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+/// What `p` / `P` asked for.
+#[derive(Debug, Clone)]
+pub struct Request {
+    pub op: Op,
+    pub items: Vec<Item>,
+    pub dest: FsPath,
+    pub overwrite: Overwrite,
+}
+
+/// A source and destination path pair, for the native and rename backends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pair {
+    pub src: String,
+    pub dst: String,
+    pub size: u64,
+    pub is_dir: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Plan {
+    pub backend: Backend,
+    /// robocopy runs, in order.
+    pub steps: Vec<Step>,
+    /// native / rename work.
+    pub pairs: Vec<Pair>,
+    /// `3 files → hitmac`, `HIT → local`.
+    pub title: String,
+}
+
+fn same_volume(a: &FsPath, b: &FsPath) -> bool {
+    a.volume_root()
+        .display()
+        .eq_ignore_ascii_case(&b.volume_root().display())
+}
+
+fn parent(p: &FsPath) -> Option<FsPath> {
+    Loc::Fs(p.clone()).parent()?.as_fs().cloned()
+}
+
+/// Works out how to paste: refuses a folder into itself and a paste where it already is.
+pub fn plan(req: &Request, native_max: u64) -> Result<Plan, String> {
+    if req.items.is_empty() {
+        return Err("nothing to paste".into());
+    }
+    for it in &req.items {
+        if it.is_dir && req.dest.starts_with(&it.path) {
+            return Err(format!(
+                "can't {} {} into itself",
+                req.op.word(),
+                it.path.name()
+            ));
+        }
+        if parent(&it.path).is_some_and(|p| p.display().eq_ignore_ascii_case(&req.dest.display())) {
+            return Err(format!("{} is already in this folder", it.path.name()));
+        }
+    }
+    let title = title(&req.items, &req.dest);
+    let pair = |it: &Item| -> Result<Pair, String> {
+        Ok(Pair {
+            src: it.path.display(),
+            dst: req
+                .dest
+                .join(&it.path.name())
+                .map_err(|e| e.to_string())?
+                .display(),
+            size: it.size,
+            is_dir: it.is_dir,
+        })
+    };
+    if req.op == Op::Move && req.items.iter().all(|i| same_volume(&i.path, &req.dest)) {
+        return Ok(Plan {
+            backend: Backend::Rename,
+            steps: Vec::new(),
+            pairs: req.items.iter().map(pair).collect::<Result<_, _>>()?,
+            title,
+        });
+    }
+    if req.items.iter().all(|i| !i.is_dir && i.size < native_max) {
+        return Ok(Plan {
+            backend: Backend::Native,
+            steps: Vec::new(),
+            pairs: req.items.iter().map(pair).collect::<Result<_, _>>()?,
+            title,
+        });
+    }
+    // robocopy: one run per folder, and one per source folder for the files.
+    let mut steps: Vec<Step> = Vec::new();
+    for it in req.items.iter().filter(|i| i.is_dir) {
+        steps.push(Step {
+            src: it.path.display(),
+            dst: pair(it)?.dst,
+            files: Vec::new(),
+        });
+    }
+    for it in req.items.iter().filter(|i| !i.is_dir) {
+        let Some(dir) = parent(&it.path) else {
+            continue;
+        };
+        let src = dir.display();
+        match steps
+            .iter_mut()
+            .find(|s| !s.files.is_empty() && s.src.eq_ignore_ascii_case(&src))
+        {
+            Some(s) => s.files.push(it.path.name()),
+            None => steps.push(Step {
+                src,
+                dst: req.dest.display(),
+                files: vec![it.path.name()],
+            }),
+        }
+    }
+    Ok(Plan {
+        backend: Backend::Robocopy,
+        steps,
+        pairs: Vec::new(),
+        title,
+    })
+}
+
+/// `HIT → local` for one item, `3 files → hitmac`, `2 folders, 1 file → hitmac`.
+fn title(items: &[Item], dest: &FsPath) -> String {
+    let to = dest.name();
+    if let [one] = items {
+        return format!("{} → {to}", one.path.name());
+    }
+    let dirs = items.iter().filter(|i| i.is_dir).count();
+    let files = items.len() - dirs;
+    let n = |k: usize, one: &str, many: &str| format!("{k} {}", if k == 1 { one } else { many });
+    let what = match (dirs, files) {
+        (0, f) => n(f, "file", "files"),
+        (d, 0) => n(d, "folder", "folders"),
+        (d, f) => format!("{}, {}", n(d, "folder", "folders"), n(f, "file", "files")),
+    };
+    format!("{what} → {to}")
+}
+
+/// The robocopy steps that copy only `failed` (source paths) again.
+pub fn retry_steps(steps: &[Step], failed: &[String]) -> Vec<Step> {
+    let mut out: Vec<Step> = Vec::new();
+    for f in failed {
+        // The step it came from: the longest source folder that contains it.
+        let Some(step) = steps
+            .iter()
+            .filter(|s| {
+                f.len() > s.src.len()
+                    && f[..s.src.len()].eq_ignore_ascii_case(&s.src)
+                    && f[s.src.len()..].starts_with('\\')
+                    || s.src.ends_with('\\') && f.to_lowercase().starts_with(&s.src.to_lowercase())
+            })
+            .max_by_key(|s| s.src.len())
+        else {
+            continue;
+        };
+        let rel = f[step.src.len()..].trim_start_matches('\\');
+        let (dir, name) = match rel.rfind('\\') {
+            Some(i) => (&rel[..i], &rel[i + 1..]),
+            None => ("", rel),
+        };
+        let join = |base: &str| {
+            if dir.is_empty() {
+                base.to_string()
+            } else {
+                format!("{}\\{dir}", base.trim_end_matches('\\'))
+            }
+        };
+        let (src, dst) = (join(&step.src), join(&step.dst));
+        match out.iter_mut().find(|s| s.src.eq_ignore_ascii_case(&src)) {
+            Some(s) => s.files.push(name.to_string()),
+            None => out.push(Step {
+                src,
+                dst,
+                files: vec![name.to_string()],
+            }),
+        }
+    }
+    out
+}
+
+// ------------------------------------------------------------------ the job
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Phase {
+    Scanning,
+    Copying,
+    Retrying,
+    /// Every byte is written but robocopy hasn't exited: the old "stuck at 99 %".
+    Finishing,
+    Done,
+    Failed,
+    Cancelled,
+}
+
+impl Phase {
+    pub fn word(self) -> &'static str {
+        match self {
+            Phase::Scanning => "SCANNING",
+            Phase::Copying => "COPYING",
+            Phase::Retrying => "RETRYING",
+            Phase::Finishing => "FINISHING",
+            Phase::Done => "DONE",
+            Phase::Failed => "FAILED",
+            Phase::Cancelled => "CANCELLED",
+        }
+    }
+
+    pub fn is_over(self) -> bool {
+        matches!(self, Phase::Done | Phase::Failed | Phase::Cancelled)
+    }
+}
+
+/// What the worker sends about a running job.
+#[derive(Debug, Clone)]
+pub enum JobEvent {
+    /// The `/L` pass (or the selection's sizes) found this much to copy.
+    Scanned { files: u64, bytes: u64 },
+    /// robocopy's (or the native backend's) output, parsed.
+    Output(Vec<Event>),
+    /// One robocopy run ended with this exit code.
+    StepDone(i32),
+    /// The job could not run at all (robocopy missing, refused…).
+    Error(String),
+    /// Everything ended (or was cancelled).
+    Finished { cancelled: bool },
+}
+
+#[derive(Debug, Clone)]
+pub struct Job {
+    pub id: u64,
+    pub title: String,
+    pub op: Op,
+    pub backend: Backend,
+    pub dest: String,
+    pub steps: Vec<Step>,
+    pub overwrite: Overwrite,
+    pub total_files: Option<u64>,
+    pub total_bytes: Option<u64>,
+    pub tracker: Tracker,
+    pub started: Instant,
+    pub started_at: SystemTime,
+    pub phase: Phase,
+    pub phase_since: Instant,
+    /// The OR of every step's exit code (robocopy's bitmask).
+    pub exit: Option<i32>,
+    pub error: Option<String>,
+    pub log: String,
+    pub ended: Option<Instant>,
+    samples: VecDeque<(Instant, u64)>,
+    /// The last non-zero speed (bytes/s), shown while the current one is unknown.
+    pub last_speed: Option<f64>,
+}
+
+impl Job {
+    pub fn new(
+        id: u64,
+        plan: &Plan,
+        op: Op,
+        dest: String,
+        overwrite: Overwrite,
+        log: String,
+    ) -> Job {
+        let now = Instant::now();
+        Job {
+            id,
+            title: plan.title.clone(),
+            op,
+            backend: plan.backend,
+            dest,
+            steps: plan.steps.clone(),
+            overwrite,
+            total_files: None,
+            total_bytes: None,
+            tracker: Tracker::new(false),
+            started: now,
+            started_at: SystemTime::now(),
+            phase: Phase::Scanning,
+            phase_since: now,
+            exit: None,
+            error: None,
+            log,
+            ended: None,
+            samples: VecDeque::new(),
+            last_speed: None,
+        }
+    }
+
+    pub fn apply(&mut self, ev: JobEvent, now: Instant) {
+        match ev {
+            JobEvent::Scanned { files, bytes } => {
+                self.total_files = Some(files);
+                self.total_bytes = Some(bytes);
+            }
+            JobEvent::Output(events) => {
+                for e in events {
+                    self.tracker.apply(e);
+                }
+                self.samples.push_back((now, self.tracker.bytes_now()));
+                while self
+                    .samples
+                    .front()
+                    .is_some_and(|(t, _)| now.duration_since(*t) > Duration::from_secs(3))
+                {
+                    self.samples.pop_front();
+                }
+            }
+            JobEvent::StepDone(code) => {
+                self.tracker.finish();
+                self.exit =
+                    Some(self.exit.unwrap_or(0) | code.max(0) | if code < 0 { 16 } else { 0 });
+            }
+            JobEvent::Error(e) => self.error = Some(e),
+            JobEvent::Finished { cancelled } => {
+                self.tracker.finish();
+                self.ended = Some(now);
+                let failed = self.error.is_some()
+                    || self.exit.is_some_and(|c| c >= 8)
+                    || !self.tracker.failed.is_empty();
+                self.set_phase(
+                    if cancelled {
+                        Phase::Cancelled
+                    } else if failed {
+                        Phase::Failed
+                    } else {
+                        Phase::Done
+                    },
+                    now,
+                );
+                return;
+            }
+        }
+        self.refresh(now);
+    }
+
+    fn set_phase(&mut self, p: Phase, now: Instant) {
+        if self.phase != p {
+            self.phase = p;
+            self.phase_since = now;
+        }
+    }
+
+    /// The phase from what is known (called on events and on ticks).
+    pub fn refresh(&mut self, now: Instant) {
+        if self.phase.is_over() {
+            return;
+        }
+        let t = &self.tracker;
+        let p = if self.total_files.is_none() {
+            Phase::Scanning
+        } else if t.retrying() {
+            Phase::Retrying
+        } else if self.all_written() {
+            Phase::Finishing
+        } else {
+            Phase::Copying
+        };
+        self.set_phase(p, now);
+        if let Some(s) = self.speed(now)
+            && s > 0.0
+        {
+            self.last_speed = Some(s);
+        }
+    }
+
+    /// Every file and byte counted by the scan is done, and something was to do.
+    fn all_written(&self) -> bool {
+        let (Some(files), Some(bytes)) = (self.total_files, self.total_bytes) else {
+            return false;
+        };
+        let t = &self.tracker;
+        files > 0
+            && t.files_done + t.failed.len() as u64 >= files
+            && t.bytes_now() >= bytes
+            && t.current_path().is_none()
+    }
+
+    /// Bytes per second over the last 3 s; None until there are two samples.
+    pub fn speed(&self, now: Instant) -> Option<f64> {
+        let (t0, b0) = *self.samples.front()?;
+        let b1 = self.tracker.bytes_now();
+        let dt = now.duration_since(t0).as_secs_f64();
+        if dt < 0.5 {
+            return None;
+        }
+        Some(b1.saturating_sub(b0) as f64 / dt)
+    }
+
+    /// 0.0–1.0 by bytes (files when there are no bytes).
+    pub fn fraction(&self) -> f64 {
+        match (self.total_bytes, self.total_files) {
+            (Some(b), _) if b > 0 => (self.tracker.bytes_now() as f64 / b as f64).min(1.0),
+            (_, Some(f)) if f > 0 => (self.tracker.files_done as f64 / f as f64).min(1.0),
+            (Some(_), Some(_)) => 1.0,
+            _ => 0.0,
+        }
+    }
+
+    pub fn eta(&self, now: Instant) -> Option<Duration> {
+        let total = self.total_bytes?;
+        let speed = self.speed(now).filter(|s| *s > 1.0)?;
+        let left = total.saturating_sub(self.tracker.bytes_now());
+        Some(Duration::from_secs_f64(left as f64 / speed))
+    }
+
+    pub fn elapsed(&self, now: Instant) -> Duration {
+        self.ended.unwrap_or(now).duration_since(self.started)
+    }
+
+    /// The final report (only meaningful once it's over).
+    pub fn report(&self, now: Instant) -> Report {
+        let t = &self.tracker;
+        let s = t.summary;
+        let skipped = s.map_or(0, |s| s.files.skipped);
+        Report {
+            id: self.id,
+            title: self.title.clone(),
+            op: self.op,
+            backend: self.backend,
+            dest: self.dest.clone(),
+            started: self.started_at,
+            seconds: self.elapsed(now).as_secs(),
+            phase: self.phase,
+            exit: self.exit,
+            error: self.error.clone(),
+            copied: t.files_done,
+            bytes: t.bytes_done,
+            skipped,
+            failed: t
+                .failed
+                .iter()
+                .map(|f| FailedFile {
+                    path: f.path.clone(),
+                    code: f.code,
+                    message: f.message.clone(),
+                })
+                .collect(),
+            extra: t.extras.len() as u64,
+            retried: t
+                .retries
+                .iter()
+                .filter(|r| r.ok == Some(true))
+                .map(|r| (r.path.clone(), r.attempts))
+                .collect(),
+            errors: t
+                .errors
+                .iter()
+                .map(|e| {
+                    format!(
+                        "ERROR {} {} {}: {}",
+                        e.code,
+                        e.action,
+                        e.path.as_deref().unwrap_or(""),
+                        e.message
+                    )
+                })
+                .collect(),
+            log: self.log.clone(),
+            steps: self.steps.clone(),
+            overwrite: self.overwrite,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailedFile {
+    pub path: String,
+    pub code: u32,
+    pub message: String,
+}
+
+/// What's kept after a job, in `%LOCALAPPDATA%\sentier\jobs\<id>.json`, until dismissed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Report {
+    pub id: u64,
+    pub title: String,
+    pub op: Op,
+    pub backend: Backend,
+    pub dest: String,
+    pub started: SystemTime,
+    pub seconds: u64,
+    pub phase: Phase,
+    pub exit: Option<i32>,
+    pub error: Option<String>,
+    pub copied: u64,
+    pub bytes: u64,
+    pub skipped: u64,
+    pub failed: Vec<FailedFile>,
+    pub extra: u64,
+    /// Files that worked after retries, with the attempt that worked.
+    pub retried: Vec<(String, u32)>,
+    pub errors: Vec<String>,
+    pub log: String,
+    /// For `r` (retry failed only).
+    pub steps: Vec<Step>,
+    pub overwrite: Overwrite,
+}
+
+impl Report {
+    /// `FAILED robocopy exit 9 = 1 (files copied) + 8 (some copies failed)`
+    pub fn result_line(&self) -> String {
+        let mut s = self.phase.word().to_string();
+        if let Some(code) = self.exit
+            && self.backend == Backend::Robocopy
+        {
+            s.push_str(&format!(
+                " robocopy exit {code}  =  {}",
+                robocopy::exit_meaning(code).parts
+            ));
+        }
+        if let Some(e) = &self.error {
+            s.push_str(&format!(": {e}"));
+        }
+        s
+    }
+}
+
+/// `3.80 GB`, `512 KB`, `12 B`.
+pub fn human_bytes(n: u64) -> String {
+    const U: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut v = n as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < U.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.2} {}", U[i])
+    }
+}
+
+/// `0:47`, `2:38`, `1:02:03`.
+pub fn clock(d: Duration) -> String {
+    let s = d.as_secs();
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
+}
+
+// ------------------------------------------------------------------ files
+
+/// `%LOCALAPPDATA%\sentier\jobs`: logs and kept reports.
+pub fn jobs_dir() -> Option<std::path::PathBuf> {
+    // Tests never write into the user's folder.
+    if cfg!(test) {
+        return Some(std::env::temp_dir().join("sentier-test-jobs"));
+    }
+    let base = std::env::var_os("LOCALAPPDATA")?;
+    Some(std::path::PathBuf::from(base).join("sentier").join("jobs"))
+}
+
+/// `…\jobs\2026-11-05_1951_HIT-local.log` (the title's letters and digits only).
+pub fn log_path(id: u64, title: &str) -> Option<String> {
+    let stamp = chrono::DateTime::from_timestamp_millis(id as i64)
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d_%H%M%S")
+                .to_string()
+        })
+        .unwrap_or_else(|| id.to_string());
+    Some(
+        jobs_dir()?
+            .join(format!("{stamp}_{}.log", slug(title)))
+            .display()
+            .to_string(),
+    )
+}
+
+/// `HIT → local` → `HIT-local`.
+pub fn slug(title: &str) -> String {
+    let mut out = String::new();
+    for c in title.chars() {
+        if c.is_alphanumeric() || c == '_' || c == '.' {
+            out.push(c);
+        } else if !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    let out = out.trim_end_matches('-');
+    out.chars().take(40).collect()
+}
+
+/// The folder part of `C:\a\b.txt` (`C:\a`).
+pub fn parent_of(path: &str) -> Option<&str> {
+    let p = path.trim_end_matches('\\');
+    let i = p.rfind('\\')?;
+    Some(if i == 2 && p.as_bytes().get(1) == Some(&b':') {
+        &p[..3]
+    } else {
+        &p[..i]
+    })
+}
+
+/// Retry steps for jobs that put every file straight into `dest` (native, rename).
+pub fn flat_steps(failed: &[String], dest: &str) -> Vec<Step> {
+    let mut out: Vec<Step> = Vec::new();
+    for f in failed {
+        let (Some(dir), Some(name)) = (parent_of(f), f.rsplit('\\').next()) else {
+            continue;
+        };
+        match out.iter_mut().find(|s| s.src.eq_ignore_ascii_case(dir)) {
+            Some(s) => s.files.push(name.to_string()),
+            None => out.push(Step {
+                src: dir.to_string(),
+                dst: dest.to_string(),
+                files: vec![name.to_string()],
+            }),
+        }
+    }
+    out
+}
+
+pub fn save_report(dir: &std::path::Path, r: &Report) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let text = serde_json::to_string_pretty(r).map_err(|e| e.to_string())?;
+    let tmp = dir.join(format!("{}.json.tmp", r.id));
+    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, dir.join(format!("{}.json", r.id))).map_err(|e| e.to_string())
+}
+
+/// Every kept report; unreadable ones are skipped (and logged).
+pub fn load_reports(dir: &std::path::Path) -> Vec<Report> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    rd.flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| {
+            let text = std::fs::read_to_string(e.path()).ok()?;
+            match serde_json::from_str(&text) {
+                Ok(r) => Some(r),
+                Err(err) => {
+                    tracing::warn!(file = %e.path().display(), error = %err, "bad job report");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+pub fn delete_report(dir: &std::path::Path, id: u64) {
+    let _ = std::fs::remove_file(dir.join(format!("{id}.json")));
+}
+#[cfg(test)]
+mod tests {
+    use super::robocopy::{FileClass, Summary};
+    use super::*;
+
+    fn p(s: &str) -> FsPath {
+        let Ok(Loc::Fs(f)) = Loc::parse(s) else {
+            panic!("{s}")
+        };
+        f
+    }
+
+    fn item(s: &str, is_dir: bool, size: u64) -> Item {
+        Item {
+            path: p(s),
+            is_dir,
+            size,
+        }
+    }
+
+    fn req(op: Op, items: Vec<Item>, dest: &str) -> Request {
+        Request {
+            op,
+            items,
+            dest: p(dest),
+            overwrite: Overwrite::Never,
+        }
+    }
+
+    #[test]
+    fn plan_table() {
+        // Small files: native.
+        let r = req(
+            Op::Copy,
+            vec![
+                item(r"C:\a\x.txt", false, 10),
+                item(r"C:\a\y.txt", false, 10),
+            ],
+            r"D:\b",
+        );
+        let Ok(pl) = plan(&r, NATIVE_MAX_BYTES) else {
+            panic!()
+        };
+        assert_eq!(pl.backend, Backend::Native);
+        assert_eq!(pl.pairs[1].dst, r"D:\b\y.txt");
+        assert_eq!(pl.title, "2 files → b");
+
+        // A folder or a big file: robocopy, folders first, files grouped by folder.
+        let r = req(
+            Op::Copy,
+            vec![
+                item(r"\\srv01\p\HIT\big.bin", false, NATIVE_MAX_BYTES),
+                item(r"\\srv01\p\HIT\sub", true, 0),
+                item(r"\\srv01\p\HIT\a.txt", false, 1),
+            ],
+            r"D:\local",
+        );
+        let Ok(pl) = plan(&r, NATIVE_MAX_BYTES) else {
+            panic!()
+        };
+        assert_eq!(pl.backend, Backend::Robocopy);
+        assert_eq!(pl.steps.len(), 2);
+        assert_eq!(
+            (pl.steps[0].src.as_str(), pl.steps[0].dst.as_str()),
+            (r"\\srv01\p\HIT\sub", r"D:\local\sub")
+        );
+        assert_eq!(pl.steps[1].files, ["big.bin", "a.txt"]);
+        assert_eq!(pl.steps[1].dst, r"D:\local");
+        assert_eq!(pl.title, "1 folder, 2 files → local");
+
+        // A move on one volume: rename. Across volumes: robocopy / native.
+        let r = req(Op::Move, vec![item(r"C:\a\big", true, 0)], r"C:\b");
+        assert_eq!(
+            plan(&r, NATIVE_MAX_BYTES).map(|p| p.backend),
+            Ok(Backend::Rename)
+        );
+        let r = req(Op::Move, vec![item(r"C:\a\big", true, 0)], r"D:\b");
+        assert_eq!(
+            plan(&r, NATIVE_MAX_BYTES).map(|p| p.backend),
+            Ok(Backend::Robocopy)
+        );
+        let r = req(
+            Op::Move,
+            vec![item(r"\\srv01\p\a.txt", false, 3)],
+            r"\\SRV01\P\b",
+        );
+        assert_eq!(
+            plan(&r, NATIVE_MAX_BYTES).map(|p| p.backend),
+            Ok(Backend::Rename)
+        );
+
+        // Refusals.
+        let r = req(Op::Copy, vec![item(r"C:\a", true, 0)], r"C:\a\b");
+        assert!(plan(&r, NATIVE_MAX_BYTES).is_err_and(|e| e.contains("into itself")));
+        let r = req(Op::Copy, vec![item(r"C:\a\x.txt", false, 1)], r"C:\A");
+        assert!(plan(&r, NATIVE_MAX_BYTES).is_err_and(|e| e.contains("already in this folder")));
+        assert!(plan(&req(Op::Copy, vec![], r"C:\a"), NATIVE_MAX_BYTES).is_err());
+    }
+
+    #[test]
+    fn retry_only_failed() {
+        let steps = vec![
+            Step {
+                src: r"\\srv01\p\HIT".into(),
+                dst: r"D:\HIT".into(),
+                files: vec![],
+            },
+            Step {
+                src: r"C:\a".into(),
+                dst: r"D:\b".into(),
+                files: vec!["x.txt".into()],
+            },
+        ];
+        let failed = vec![
+            r"\\srv01\p\HIT\hitmac\pipe.pmlmac".to_string(),
+            r"\\srv01\p\HIT\hitmac\other.pmlmac".to_string(),
+            r"\\srv01\p\HIT\top.txt".to_string(),
+            r"C:\a\x.txt".to_string(),
+            r"E:\unrelated.txt".to_string(),
+        ];
+        let r = retry_steps(&steps, &failed);
+        assert_eq!(r.len(), 3);
+        assert_eq!(
+            (r[0].src.as_str(), r[0].dst.as_str()),
+            (r"\\srv01\p\HIT\hitmac", r"D:\HIT\hitmac")
+        );
+        assert_eq!(r[0].files, ["pipe.pmlmac", "other.pmlmac"]);
+        assert_eq!(
+            (r[1].src.as_str(), r[1].files.as_slice()),
+            (r"\\srv01\p\HIT", &["top.txt".to_string()][..])
+        );
+        assert_eq!((r[2].dst.as_str(), r[2].files.len()), (r"D:\b", 1));
+    }
+
+    fn file(path: &str, size: u64) -> Event {
+        Event::File {
+            class: FileClass::New,
+            size,
+            path: path.into(),
+        }
+    }
+
+    #[test]
+    fn phases_from_scan_to_finishing_to_done() {
+        let pl = Plan {
+            backend: Backend::Robocopy,
+            steps: vec![],
+            pairs: vec![],
+            title: "HIT → local".into(),
+        };
+        let mut j = Job::new(
+            1,
+            &pl,
+            Op::Copy,
+            r"D:\local".into(),
+            Overwrite::Never,
+            "x.log".into(),
+        );
+        let t0 = j.started;
+        j.refresh(t0);
+        assert_eq!(j.phase, Phase::Scanning);
+        j.apply(
+            JobEvent::Scanned {
+                files: 2,
+                bytes: 300,
+            },
+            t0,
+        );
+        assert_eq!(j.phase, Phase::Copying);
+        j.apply(
+            JobEvent::Output(vec![file(r"S:\a", 100), Event::Progress(100.0)]),
+            t0,
+        );
+        j.apply(
+            JobEvent::Output(vec![file(r"S:\b", 200), Event::Progress(50.0)]),
+            t0 + Duration::from_secs(1),
+        );
+        assert_eq!(j.tracker.bytes_now(), 200);
+        assert!((j.fraction() - 2.0 / 3.0).abs() < 1e-9);
+        assert_eq!(j.speed(t0 + Duration::from_secs(1)), Some(100.0));
+        assert_eq!(
+            j.eta(t0 + Duration::from_secs(1)),
+            Some(Duration::from_secs(1))
+        );
+        let t1 = t0 + Duration::from_secs(2);
+        j.apply(JobEvent::Output(vec![Event::Progress(100.0)]), t1);
+        assert_eq!(
+            j.phase,
+            Phase::Finishing,
+            "all bytes written, still running"
+        );
+        assert_eq!(j.phase_since, t1);
+        let t2 = t1 + Duration::from_secs(47);
+        j.apply(JobEvent::StepDone(1), t2);
+        j.apply(JobEvent::Finished { cancelled: false }, t2);
+        assert_eq!(j.phase, Phase::Done);
+        let r = j.report(t2);
+        assert_eq!((r.copied, r.bytes, r.failed.len()), (2, 300, 0));
+        assert_eq!(r.result_line(), "DONE robocopy exit 1  =  1 (files copied)");
+        assert_eq!(clock(j.elapsed(t2)), "0:49");
+    }
+
+    #[test]
+    fn retrying_failed_and_cancelled() {
+        let pl = Plan {
+            backend: Backend::Robocopy,
+            steps: vec![],
+            pairs: vec![],
+            title: "t".into(),
+        };
+        let now = Instant::now();
+        let mut j = Job::new(2, &pl, Op::Copy, "D:".into(), Overwrite::Never, "l".into());
+        j.apply(JobEvent::Scanned { files: 1, bytes: 6 }, now);
+        j.apply(
+            JobEvent::Output(vec![
+                file(r"S:\a.txt", 6),
+                Event::Error(robocopy::RcError {
+                    code: 32,
+                    action: "Copying File".into(),
+                    path: Some(r"S:\a.txt".into()),
+                    message: "used by another process".into(),
+                }),
+            ]),
+            now,
+        );
+        assert_eq!(j.phase, Phase::Retrying);
+        j.apply(JobEvent::StepDone(8), now);
+        j.apply(JobEvent::Finished { cancelled: false }, now);
+        assert_eq!(j.phase, Phase::Failed);
+        let r = j.report(now);
+        assert_eq!(r.failed.len(), 1);
+        assert_eq!(r.failed[0].code, 32);
+        assert!(r.result_line().starts_with("FAILED robocopy exit 8"));
+
+        let mut j = Job::new(3, &pl, Op::Copy, "D:".into(), Overwrite::Never, "l".into());
+        j.apply(JobEvent::Finished { cancelled: true }, now);
+        assert_eq!(j.phase, Phase::Cancelled);
+        // A summary alone (nothing to copy) is done, not finishing.
+        let mut j = Job::new(4, &pl, Op::Copy, "D:".into(), Overwrite::Never, "l".into());
+        j.apply(JobEvent::Scanned { files: 0, bytes: 0 }, now);
+        j.apply(
+            JobEvent::Output(vec![Event::Summary(Summary::default())]),
+            now,
+        );
+        assert_eq!(j.phase, Phase::Copying);
+    }
+
+    #[test]
+    fn report_round_trips() {
+        let pl = Plan {
+            backend: Backend::Native,
+            steps: vec![],
+            pairs: vec![],
+            title: "t".into(),
+        };
+        let now = Instant::now();
+        let mut j = Job::new(5, &pl, Op::Move, "D:".into(), Overwrite::Always, "l".into());
+        j.apply(JobEvent::Finished { cancelled: false }, now);
+        let r = j.report(now);
+        let text = serde_json::to_string(&r).unwrap_or_default();
+        let back: Option<Report> = serde_json::from_str(&text).ok();
+        assert_eq!(back, Some(r));
+    }
+
+    #[test]
+    fn formatting() {
+        assert_eq!(human_bytes(12), "12 B");
+        assert_eq!(human_bytes(4_080_218_931), "3.80 GB");
+        assert_eq!(clock(Duration::from_secs(158)), "2:38");
+        assert_eq!(clock(Duration::from_secs(3723)), "1:02:03");
+    }
+
+    #[test]
+    fn files_and_paths() {
+        assert_eq!(slug("HIT → local"), "HIT-local");
+        assert_eq!(slug("3 files → hitmac"), "3-files-hitmac");
+        assert_eq!(parent_of(r"C:\a\b.txt"), Some(r"C:\a"));
+        assert_eq!(parent_of(r"C:\b.txt"), Some(r"C:\"));
+        assert_eq!(parent_of(r"\\srv01\p\b.txt"), Some(r"\\srv01\p"));
+        let steps = flat_steps(
+            &[
+                r"C:\a\x.txt".into(),
+                r"C:\a\y.txt".into(),
+                r"D:\z.txt".into(),
+            ],
+            r"E:\out",
+        );
+        assert_eq!(steps.len(), 2);
+        assert_eq!((steps[0].src.as_str(), steps[0].files.len()), (r"C:\a", 2));
+        assert_eq!(
+            (steps[1].src.as_str(), steps[1].dst.as_str()),
+            (r"D:\", r"E:\out")
+        );
+
+        let dir = std::env::temp_dir().join(format!("sentier-reports-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pl = Plan {
+            backend: Backend::Native,
+            steps: vec![],
+            pairs: vec![],
+            title: "t".into(),
+        };
+        let now = Instant::now();
+        let mut j = Job::new(42, &pl, Op::Copy, "D:".into(), Overwrite::Never, "l".into());
+        j.apply(JobEvent::Finished { cancelled: false }, now);
+        let r = j.report(now);
+        assert_eq!(save_report(&dir, &r), Ok(()));
+        std::fs::write(dir.join("junk.json"), "{").ok();
+        assert_eq!(load_reports(&dir), vec![r]);
+        delete_report(&dir, 42);
+        assert!(load_reports(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

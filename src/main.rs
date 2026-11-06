@@ -5,6 +5,7 @@ mod auth;
 mod config;
 mod event;
 mod fs;
+mod jobs;
 mod keymap;
 mod locations;
 mod machines;

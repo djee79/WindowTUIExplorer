@@ -130,6 +130,7 @@ impl App {
             Mode::Preview => self.on_preview_key(key),
             Mode::Credentials => self.on_credentials_key(key),
             Mode::NetList => self.on_net_list_key(key),
+            Mode::Jobs => self.on_jobs_key(key),
             Mode::Normal => self.on_normal_key(key),
         }
     }
@@ -137,6 +138,9 @@ impl App {
     // ---------------------------------------------------------------- normal mode
 
     fn on_normal_key(&mut self, ev: KeyEvent) {
+        if self.visual_key(&ev) {
+            return;
+        }
         let key = Key::from_event(&ev);
         // In a machine view a template's key jumps there, and `u` picks the user.
         if self.keys_pending.is_empty()
@@ -262,6 +266,7 @@ impl App {
             Action::SearchNext => self.search_again(n, false),
             Action::SearchPrev => self.search_again(n, true),
             Action::Filter => self.open_prompt(PromptKind::Filter),
+            Action::Escape if self.clear_marks() => {}
             Action::Escape if self.filter.is_empty() && self.results_escape() => {}
             Action::Escape => {
                 self.search_hl = false;
@@ -309,6 +314,14 @@ impl App {
             Action::PinPicker => self.open_pin_picker(""),
             Action::TagPicker => self.open_tag_picker(),
             Action::MachinePicker => self.open_machine_picker(""),
+            Action::ToggleMark => self.toggle_marks(n),
+            Action::Visual => self.start_visual(),
+            Action::Yank => self.yank(crate::jobs::Op::Copy, n),
+            Action::Cut => self.yank(crate::jobs::Op::Move, n),
+            Action::Paste => self.paste(false),
+            Action::PasteOverwrite => self.paste(true),
+            Action::Jobs => self.toggle_jobs_panel(),
+            Action::RepeatPaste => self.repeat_paste(),
             Action::PinCwd => self.pin_cwd(),
             Action::TagRename(old, new) => self.tag_rename(&old, &new, None),
             Action::TagDelete(tag) => self.tag_delete(&tag, None),

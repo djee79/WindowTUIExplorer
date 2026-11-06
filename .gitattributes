@@ -1,0 +1,2 @@
+# robocopy fixtures are raw bytes: CR alone separates progress, CRLF ends lines.
+tests/fixtures/robocopy/* -text

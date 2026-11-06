@@ -701,6 +701,26 @@ pub fn cred_write(target: &str, user: &str, password: &[u16]) -> io::Result<()> 
     unsafe { CredWriteW(&cred, 0) }.map_err(|e| io::Error::other(e.message()))
 }
 
+/// robocopy's piped output is in the console's OEM code page (`é` is 0x82 under 437/850),
+/// whatever `/UNICODE` says. Decodes it.
+pub fn oem_to_string(bytes: &[u8]) -> String {
+    use windows::Win32::Globalization::{MULTI_BYTE_TO_WIDE_CHAR_FLAGS, MultiByteToWideChar};
+    const CP_OEMCP: u32 = 1;
+    if bytes.is_empty() {
+        return String::new();
+    }
+    let flags = MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0);
+    // SAFETY: both buffers are valid slices; the first call only measures.
+    let n = unsafe { MultiByteToWideChar(CP_OEMCP, flags, bytes, None) };
+    if n <= 0 {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    let mut wide = vec![0u16; n as usize];
+    // SAFETY: `wide` holds the `n` units the first call asked for.
+    let n = unsafe { MultiByteToWideChar(CP_OEMCP, flags, bytes, Some(&mut wide)) };
+    String::from_utf16_lossy(&wide[..n.max(0) as usize])
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;

@@ -209,6 +209,7 @@ fn draw_current(f: &mut Frame, area: Rect, app: &mut App) {
                 row == app.cursor,
                 app.is_search_match(&e.name),
                 number,
+                app.is_marked(row, &e.name),
             )
         })
         .collect();
@@ -498,6 +499,7 @@ impl Cols {
         is_cursor: bool,
         search_hit: bool,
         number: Option<Span<'static>>,
+        marked: bool,
     ) -> Line<'static> {
         let name = display_name(e, w.saturating_sub(self.right_width() + self.lead() + 1));
         let pad = w.saturating_sub(self.lead() + width(&name) + self.right_width());
@@ -521,9 +523,13 @@ impl Cols {
             date_style = sel(date_style);
             fill = fill.bg(SEL_BG);
         }
-        // Marker column (selection, M4) and line number stay off the cursor highlight,
-        // like neovim's sign column and CursorLineNr.
-        let mut spans = vec![Span::raw(" ")];
+        // Marker column (selection) and line number stay off the cursor highlight, like
+        // neovim's sign column and CursorLineNr.
+        let mut spans = vec![if marked {
+            Span::styled("▌", theme::bold(theme::ACCENT))
+        } else {
+            Span::raw(" ")
+        }];
         if let Some(n) = number {
             spans.push(n);
             spans.push(Span::raw(" "));

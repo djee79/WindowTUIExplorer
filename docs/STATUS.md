@@ -556,3 +556,48 @@ Manual checklist:
 - [ ] Point `inventory_csv` at a real export; search a colleague's name; Enter opens it.
 - [ ] `source_cmd` with `getad` (or `powershell -NoProfile -c "Get-ADComputer … | ConvertTo-Json"`).
 - [ ] `is:offline` after a probe round; `^a` pins from the picker.
+
+## M4 jobs: copy / move with robocopy, the jobs panel (code complete 2026-11-06, manual check pending)
+
+- Selection: `Tab` (toggle + down, counts), `v`/`V` visual range with any motion (`y`, `x`/`d`,
+  `Tab` keeps it as the selection, `Esc`/`v` leave), `Esc` clears. `▌` in the marker column,
+  `3 selected · 4.31 GB` in the status line. Cleared on leaving the folder.
+- `yy` / `x` (counts, selection or visual range) fill the register; `p` pastes without
+  replacing (existing files are skipped and reported), `P` replaces (asks first), `.` pastes
+  the last copy again here. A cut is pasted once. Pasting into the same folder or a folder
+  into itself is refused.
+- Backends (`jobs::plan`): a move within one volume is a rename (instant); files under
+  256 MB (`[jobs] native_max_bytes`) copy natively (retrying locked files twice); anything
+  else (folders, big files) goes to robocopy: one run per folder, one per source folder for
+  files. `[jobs] robocopy_threads` adds `/MT:n`.
+- robocopy: `/E /Z /R:2 /W:5 /BYTES /FP /TEE /UNILOG+:<job log>` (+ `/MOV`/`/MOVE`,
+  `/XC /XN /XO` for `p`, `/IS /IT` for `P`). A `/L` pass first gives the totals (Scanning).
+  stdout is decoded from the OEM code page (robocopy ignores `/UNICODE` when piped: `é` is
+  0x82) and parsed by structure, not by English words, so a French Windows works too.
+- Fixtures: `cargo run --example capture_robocopy` captured success, nothing to copy, mirror
+  with extras, `/L`, `/MT`, locked file, access denied, missing source and an unreachable
+  destination into `tests/fixtures/robocopy/` (paths scrubbed to `C:\capture`; marked
+  `-text` in `.gitattributes`). `/MT` prints `0%`/`100%` per file only; handled.
+- Exit codes are explained (`FAILED robocopy exit 9 = 1 (files copied) + 8 (some copies
+  failed)`). Retries: a file seen again after an error; failed when the next file starts.
+- Jobs panel (`J`, `<leader>j`; opens by itself after 5 s): list with phase, bar, ETA;
+  detail with the phase chain, current file, bytes/files, speed (last speed while idle),
+  elapsed, retries, errors, log path. **Finishing** is its own phase with a timer ("every
+  byte is written… the old stuck at 99%"). Finished jobs show the report: counts, failed
+  files with reasons. `c` cancels (kills robocopy), `r` retries only the failed files,
+  `o` opens the log, `Enter`/`dd` dismisses. Reports are kept as JSON in
+  `%LOCALAPPDATA%\sentier\jobs\` next to the logs until dismissed.
+- AVEVA guard: a pasted folder whose top level matches every `[aveva] project_markers` glob
+  (default `evars.bat` and `*000`) asks "looks like an AVEVA project: make sure no one has
+  it open" first.
+- Status line: `⇅ 1 job 38%` while jobs run.
+
+Not yet: the in-use check (`NetFileEnum`, with presets in M4b), admin-share confirmations
+naming the machine (with file operations), `dd` to the Recycle Bin (M6).
+
+Manual checklist (office):
+- [ ] Copy a big project folder from a share to local: Scanning → Copying → Finishing → Done.
+- [ ] A file open in E3D: Retrying, then FAILED with the file and ERROR 32; `r` after closing.
+- [ ] `c` mid-copy stops robocopy; the report says what was done.
+- [ ] A folder with accents in names; the current file shows them correctly.
+- [ ] Unplug / dead share as destination: fails with ERROR 53 explained, UI stays responsive.

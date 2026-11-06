@@ -5,6 +5,8 @@
 //! to the [`AppEvent`]s that come back.
 
 pub mod auth;
+mod jobs;
+pub use jobs::JobRow;
 mod keys;
 mod machines;
 mod picker;
@@ -95,6 +97,8 @@ pub enum Mode {
     NetList,
     /// The credential prompt (a share refused the login, or `:connect`).
     Credentials,
+    /// `J`: the jobs panel (list, detail, report).
+    Jobs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,6 +248,22 @@ pub struct App {
     pub machine_found_errors: Vec<String>,
     /// The open machine picker's unpinned rows (the ids of `ItemKind::Machine` items).
     pub machine_rows: Vec<crate::machines::MachineRecord>,
+    /// Jobs (M4): the selected names in the cwd, the visual-mode anchor (a row), what
+    /// `yy` / `x` put aside, this session's jobs and their cancel tokens, reports kept
+    /// from earlier sessions, the panel's cursor, and a paste waiting on the AVEVA check.
+    pub marked: HashSet<String>,
+    pub visual: Option<usize>,
+    pub register: Option<jobs::Register>,
+    pub jobs: Vec<crate::jobs::Job>,
+    job_cancel: HashMap<u64, crate::fs::worker::CancelToken>,
+    pub old_reports: Vec<crate::jobs::Report>,
+    pub jobs_cursor: usize,
+    jobs_auto_opened: HashSet<u64>,
+    jobs_pending_d: bool,
+    paste_token: u64,
+    pending_paste: Option<jobs::PendingPaste>,
+    last_paste: Option<(jobs::Register, bool)>,
+    last_job_id: u64,
     /// `:net drop <server>` waiting for the connection list; `:net list` shown.
     net_drop_server: Option<String>,
     pub net_listing: Option<auth::NetListing>,
@@ -334,6 +354,19 @@ impl App {
             machine_found_loading: false,
             machine_found_errors: Vec::new(),
             machine_rows: Vec::new(),
+            marked: HashSet::new(),
+            visual: None,
+            register: None,
+            jobs: Vec::new(),
+            job_cancel: HashMap::new(),
+            old_reports: Vec::new(),
+            jobs_cursor: 0,
+            jobs_auto_opened: HashSet::new(),
+            jobs_pending_d: false,
+            paste_token: 0,
+            pending_paste: None,
+            last_paste: None,
+            last_job_id: 0,
             net_drop_server: None,
             net_listing: None,
             reach: HashMap::new(),
@@ -353,6 +386,7 @@ impl App {
         app.worker
             .load_recent_machines(crate::machines::DEFAULT_RECENT_DAYS);
         app.worker.load_keymap();
+        app.worker.load_job_reports();
         app.set_cwd(start, None);
         app
     }
@@ -445,6 +479,8 @@ impl App {
         self.view_listing = None;
         self.view.clear();
         self.cursor = 0;
+        self.marked.clear();
+        self.visual = None;
         self.offset = 0;
 
         // A machine view, or a path on a machine's admin share: remember the machine and
@@ -903,6 +939,9 @@ impl App {
             AppEvent::PathsChecked { host, found } => self.on_paths_checked(host, found),
             AppEvent::RecentMachines(result) => self.on_recent_machines(result),
             AppEvent::MachineSources(results) => self.on_machine_sources(results),
+            AppEvent::Job { id, ev } => self.on_job_event(id, ev),
+            AppEvent::JobReports(reports) => self.on_job_reports(reports),
+            AppEvent::AvevaChecked { token, hits } => self.on_aveva_checked(token, hits),
             AppEvent::NetDropped(results) => self.on_net_dropped(results),
             AppEvent::PinsLoaded(result) => self.on_pins_loaded(result),
             AppEvent::PinsSaveFailed(e) => {
@@ -1014,6 +1053,7 @@ impl App {
             self.probe_root(true);
         }
         self.key_timeout(now);
+        self.jobs_tick(now);
         if self.picker.as_mut().is_some_and(|p| p.tick()) {
             self.dirty = true;
         }
@@ -1044,7 +1084,10 @@ impl App {
     /// How long the loop may sleep before something time-driven needs doing.
     fn next_wake(&self, now: Instant) -> Duration {
         let mut wake = IDLE_WAKE;
-        if self.is_busy() || self.picker.as_ref().is_some_and(|p| p.running) {
+        if self.is_busy()
+            || self.picker.as_ref().is_some_and(|p| p.running)
+            || self.jobs_running() > 0
+        {
             wake = wake.min(SPINNER_TICK);
         }
         if let Some(due) = self.preview_due {
@@ -3252,5 +3295,414 @@ mod machine_tests {
         )]));
         let screen = render(&mut app, 140, 30);
         assert!(screen.contains("timed out after 20 s"), "{screen}");
+    }
+}
+
+#[cfg(test)]
+mod job_tests {
+    use super::tests::{fixture, press, render};
+    use super::*;
+    use crate::fs::worker::Timeouts;
+    use crate::jobs::robocopy::{Event as RcEvent, FileClass};
+    use crate::jobs::{JobEvent, Phase};
+    use ratatui::crossterm::event::KeyEvent;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static N: AtomicU32 = AtomicU32::new(0);
+
+    fn temp_tree() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "sentier-jobs-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(dir.join("src").join("proj").join("sub"));
+        let _ = std::fs::create_dir_all(dir.join("dst"));
+        let _ = std::fs::write(dir.join("src").join("a.txt"), "a");
+        let _ = std::fs::write(dir.join("src").join("b.txt"), "bb");
+        let _ = std::fs::write(dir.join("src").join("proj").join("sub").join("c.txt"), "c");
+        dir
+    }
+
+    /// An app with a real worker and channel, started in `dir`.
+    struct Live {
+        app: App,
+        rx: crate::event::EventRx,
+        _rt: tokio::runtime::Runtime,
+    }
+
+    impl Live {
+        fn new(dir: &Path) -> Live {
+            let Ok(rt) = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+            else {
+                panic!("runtime")
+            };
+            let (tx, rx) = crate::event::channel();
+            let worker = Worker::new(rt.handle().clone(), tx, Timeouts::default());
+            let Ok(cwd) = Loc::parse(&dir.display().to_string()) else {
+                panic!()
+            };
+            let app = App::new(worker, cwd);
+            let mut live = Live { app, rx, _rt: rt };
+            live.until(|a| a.view_listing.is_some() && a.pending.is_empty());
+            live
+        }
+
+        /// Handles events until `done` holds (5 s at most).
+        fn until(&mut self, done: impl Fn(&App) -> bool) {
+            let end = Instant::now() + Duration::from_secs(10);
+            while !done(&self.app) {
+                assert!(
+                    Instant::now() < end,
+                    "timed out; status {:?}",
+                    self.app.status
+                );
+                if let Ok(ev) = self.rx.recv_timeout(Duration::from_millis(20)) {
+                    self.app.handle(ev);
+                }
+                self.app.tick(Instant::now());
+            }
+        }
+
+        fn cd(&mut self, path: &Path) {
+            press(&mut self.app, ":");
+            for c in format!("cd {}", path.display()).chars() {
+                self.app.handle(AppEvent::Term(Event::Key(KeyEvent::new(
+                    crossterm_char(c),
+                    ratatui::crossterm::event::KeyModifiers::NONE,
+                ))));
+            }
+            press(&mut self.app, "<CR>");
+            let want = path.display().to_string().to_lowercase();
+            self.until(|a| a.cwd.display().to_lowercase() == want && a.view_listing.is_some());
+        }
+
+        fn names(&self) -> Vec<String> {
+            let Some(l) = &self.app.view_listing else {
+                return Vec::new();
+            };
+            self.app
+                .view
+                .iter()
+                .map(|&i| l.entries[i].name.clone())
+                .collect()
+        }
+
+        fn goto(&mut self, name: &str) {
+            let Some(i) = self.names().iter().position(|n| n == name) else {
+                panic!("{name} not in {:?}", self.names())
+            };
+            self.app.set_cursor(i);
+        }
+    }
+
+    fn crossterm_char(c: char) -> ratatui::crossterm::event::KeyCode {
+        ratatui::crossterm::event::KeyCode::Char(c)
+    }
+
+    fn status(app: &App) -> String {
+        app.status
+            .as_ref()
+            .map(|s| s.text.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn tab_visual_and_operands() {
+        let (mut app, _rt) = fixture();
+        // HIT, notes.txt, spec2.xlsx, spec10.xlsx (desktop.ini hidden)
+        press(&mut app, "<Tab>");
+        assert!(app.marked.contains("HIT"));
+        assert_eq!(app.cursor, 1);
+        press(&mut app, "2<Tab>");
+        assert_eq!(app.marked.len(), 3);
+        let screen = render(&mut app, 120, 20);
+        assert!(screen.contains("3 selected"), "{screen}");
+        assert!(screen.contains("▌"), "selection marker: {screen}");
+        press(&mut app, "<Esc>");
+        assert!(app.marked.is_empty());
+
+        // v from row 1, two down: rows 1..=3; y yanks them and leaves visual.
+        press(&mut app, "ggjvjj");
+        assert_eq!(app.visual, Some(1));
+        let screen = render(&mut app, 120, 20);
+        assert!(
+            screen.contains("VISUAL") && screen.contains("3 selected"),
+            "{screen}"
+        );
+        press(&mut app, "y");
+        assert_eq!(app.visual, None);
+        let Some(reg) = &app.register else { panic!() };
+        let names: Vec<String> = reg.items.iter().map(|i| i.path.name()).collect();
+        assert_eq!(names, ["notes.txt", "spec2.xlsx", "spec10.xlsx"]);
+        assert!(status(&app).contains("yanked 3 items"));
+
+        // 2yy: two from the cursor; x cuts.
+        press(&mut app, "gg2yy");
+        let Some(reg) = &app.register else { panic!() };
+        assert_eq!(reg.items.len(), 2);
+        assert!(reg.items[0].is_dir, "HIT is a folder");
+        press(&mut app, "x");
+        assert_eq!(
+            app.register.as_ref().map(|r| r.op),
+            Some(crate::jobs::Op::Move)
+        );
+        // Pasting where they are is refused.
+        press(&mut app, "p");
+        assert!(
+            status(&app).contains("already in this folder"),
+            "{}",
+            status(&app)
+        );
+        // `.` repeats the last copy-paste; nothing to repeat yet.
+        press(&mut app, ".");
+        assert!(
+            status(&app).contains("nothing to repeat"),
+            "{}",
+            status(&app)
+        );
+        // Nothing to select in Locations.
+        press(&mut app, "gl<Tab>");
+        assert!(app.marked.is_empty());
+    }
+
+    #[test]
+    fn yank_paste_runs_a_job_and_the_panel_shows_it() {
+        let dir = temp_tree();
+        let mut l = Live::new(&dir.join("src"));
+        // a.txt, b.txt: a native copy.
+        l.goto("a.txt");
+        press(&mut l.app, "2yy");
+        l.cd(&dir.join("dst"));
+        press(&mut l.app, "p");
+        l.until(|a| a.jobs.first().is_some_and(|j| j.phase.is_over()));
+        let job = &l.app.jobs[0];
+        assert_eq!(job.phase, Phase::Done, "{:?}", job.error);
+        assert_eq!(job.backend, crate::jobs::Backend::Native);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("dst").join("b.txt"))
+                .ok()
+                .as_deref(),
+            Some("bb")
+        );
+        assert!(
+            status(&l.app).starts_with("done: 2 files → dst"),
+            "{}",
+            status(&l.app)
+        );
+        // The destination listing refreshes by itself.
+        l.until(|a| a.view.len() == 2);
+
+        // Again: both are there now, so p skips them and says so.
+        press(&mut l.app, "p");
+        l.until(|a| a.jobs.len() == 2 && a.jobs[1].phase.is_over());
+        assert!(status(&l.app).contains("2 skipped"), "{}", status(&l.app));
+
+        // `.` pastes the same files again elsewhere.
+        l.cd(&dir.join("src").join("proj"));
+        press(&mut l.app, ".");
+        l.until(|a| a.jobs.len() == 3 && a.jobs[2].phase.is_over());
+        assert!(dir.join("src").join("proj").join("b.txt").exists());
+        l.app.jobs.pop();
+        let _ = std::fs::remove_file(dir.join("src").join("proj").join("a.txt"));
+        let _ = std::fs::remove_file(dir.join("src").join("proj").join("b.txt"));
+
+        // A folder goes through robocopy.
+        l.cd(&dir.join("src"));
+        l.goto("proj");
+        press(&mut l.app, "yy");
+        l.cd(&dir.join("dst"));
+        press(&mut l.app, "p");
+        l.until(|a| a.jobs.len() == 3 && a.jobs[2].phase.is_over());
+        let job = &l.app.jobs[2];
+        assert_eq!(
+            (job.phase, job.backend),
+            (Phase::Done, crate::jobs::Backend::Robocopy)
+        );
+        assert!(
+            dir.join("dst")
+                .join("proj")
+                .join("sub")
+                .join("c.txt")
+                .exists()
+        );
+
+        // The panel: newest first, with its report.
+        press(&mut l.app, "J");
+        assert_eq!(l.app.mode, Mode::Jobs);
+        let screen = render(&mut l.app, 140, 40);
+        assert!(
+            screen.contains("proj → dst") && screen.contains("DONE"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("Report") && screen.contains("robocopy exit 1"),
+            "{screen}"
+        );
+        // Enter dismisses the selected (newest) one.
+        press(&mut l.app, "<CR>");
+        assert_eq!(l.app.jobs.len(), 2);
+        press(&mut l.app, "q");
+        assert_eq!(l.app.mode, Mode::Normal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cut_and_paste_on_one_volume_renames() {
+        let dir = temp_tree();
+        let mut l = Live::new(&dir.join("src"));
+        l.goto("proj");
+        press(&mut l.app, "x");
+        l.cd(&dir.join("dst"));
+        press(&mut l.app, "p");
+        l.until(|a| a.jobs.first().is_some_and(|j| j.phase.is_over()));
+        assert_eq!(l.app.jobs[0].backend, crate::jobs::Backend::Rename);
+        assert!(
+            dir.join("dst")
+                .join("proj")
+                .join("sub")
+                .join("c.txt")
+                .exists()
+        );
+        assert!(!dir.join("src").join("proj").exists());
+        assert!(l.app.register.is_none(), "a cut is pasted once");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn overwrite_and_aveva_ask_first() {
+        let dir = temp_tree();
+        let proj = dir.join("src").join("proj");
+        let _ = std::fs::write(proj.join("evars.bat"), "set x=1");
+        let _ = std::fs::create_dir_all(proj.join("hit000"));
+        let mut l = Live::new(&dir.join("src"));
+        l.goto("proj");
+        press(&mut l.app, "yy");
+        l.cd(&dir.join("dst"));
+        press(&mut l.app, "P");
+        l.until(|a| a.mode == Mode::Prompt);
+        let note = l.app.confirm_note();
+        assert!(note.contains("proj looks like an AVEVA project"), "{note}");
+        assert!(note.contains("REPLACED"), "{note}");
+        // Anything but y cancels.
+        press(&mut l.app, "n");
+        assert!(l.app.jobs.is_empty());
+        press(&mut l.app, "P");
+        l.until(|a| a.mode == Mode::Prompt);
+        press(&mut l.app, "y");
+        l.until(|a| a.jobs.first().is_some_and(|j| j.phase.is_over()));
+        assert!(dir.join("dst").join("proj").join("evars.bat").exists());
+
+        // A file-only paste with p asks nothing.
+        l.cd(&dir.join("src"));
+        l.goto("a.txt");
+        press(&mut l.app, "yy");
+        l.cd(&dir.join("dst"));
+        press(&mut l.app, "p");
+        assert_eq!(l.app.mode, Mode::Normal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn finishing_failed_report_and_retry() {
+        let (mut app, _rt) = fixture();
+        let Ok(Loc::Fs(dest)) = Loc::parse(r"D:\local") else {
+            panic!()
+        };
+        let plan = crate::jobs::Plan {
+            backend: crate::jobs::Backend::Robocopy,
+            steps: vec![crate::jobs::robocopy::Step {
+                src: r"\\srv01\p\HIT".into(),
+                dst: r"D:\local\HIT".into(),
+                files: vec![],
+            }],
+            pairs: vec![],
+            title: "HIT → local".into(),
+        };
+        let mut job = crate::jobs::Job::new(
+            7,
+            &plan,
+            crate::jobs::Op::Copy,
+            dest.display(),
+            crate::jobs::robocopy::Overwrite::Never,
+            r"C:\logs\7.log".into(),
+        );
+        let now = Instant::now();
+        job.apply(
+            JobEvent::Scanned {
+                files: 2,
+                bytes: 300,
+            },
+            now,
+        );
+        let file = |p: &str, size| RcEvent::File {
+            class: FileClass::New,
+            size,
+            path: p.into(),
+        };
+        job.apply(
+            JobEvent::Output(vec![
+                file(r"\\srv01\p\HIT\a.bin", 100),
+                RcEvent::Progress(100.0),
+                file(r"\\srv01\p\HIT\hitmac\b.bin", 200),
+                RcEvent::Progress(100.0),
+            ]),
+            now,
+        );
+        assert_eq!(job.phase, Phase::Finishing);
+        app.jobs.push(job);
+        press(&mut app, "J");
+        let screen = render(&mut app, 140, 40);
+        assert!(screen.contains("FINISHING"), "{screen}");
+        assert!(screen.contains("stuck at 99%"), "{screen}");
+        assert!(screen.contains("● Finishing"), "{screen}");
+        assert!(render(&mut app, 140, 40).contains("⇅ 1 job 100% finishing"));
+
+        // It fails on a locked file after all: the report lists it, r retries only it.
+        let j = &mut app.jobs[0];
+        j.apply(
+            JobEvent::Output(vec![
+                file(r"\\srv01\p\HIT\hitmac\c.pmlmac", 6),
+                RcEvent::Error(crate::jobs::robocopy::RcError {
+                    code: 32,
+                    action: "Copying File".into(),
+                    path: Some(r"\\srv01\p\HIT\hitmac\c.pmlmac".into()),
+                    message: "The process cannot access the file because it is being used by another process.".into(),
+                }),
+            ]),
+            now,
+        );
+        j.apply(JobEvent::StepDone(9), now);
+        j.apply(JobEvent::Finished { cancelled: false }, now);
+        let screen = render(&mut app, 160, 40);
+        assert!(
+            screen.contains("FAILED robocopy exit 9  =  1 (files copied) + 8 (some copies failed)"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("hitmac\\c.pmlmac") && screen.contains("ERROR 32"),
+            "{screen}"
+        );
+        assert!(screen.contains("r retry failed only"), "{screen}");
+        press(&mut app, "r");
+        assert_eq!(app.jobs.len(), 2);
+        let retry = &app.jobs[1];
+        assert_eq!(retry.title, "retry: HIT → local");
+        assert_eq!(retry.steps.len(), 1);
+        assert_eq!(retry.steps[0].src, r"\\srv01\p\HIT\hitmac");
+        assert_eq!(retry.steps[0].dst, r"D:\local\HIT\hitmac");
+        assert_eq!(retry.steps[0].files, ["c.pmlmac"]);
+        // c cancels the running retry.
+        press(&mut app, "gc");
+        assert!(
+            status(&app).contains("cancelling retry"),
+            "{}",
+            status(&app)
+        );
     }
 }

@@ -20,6 +20,8 @@ use ratatui::widgets::Paragraph;
 /// Keys shown in the hint line. Only what exists; it grows with each milestone.
 const HINTS: &[(&str, &str)] = &[
     ("hjkl", "move"),
+    ("Tab/v", "select"),
+    ("yy/x/p", "copy · cut · paste"),
     ("/", "find here"),
     ("s", "search below"),
     ("S", "grep below"),
@@ -32,6 +34,23 @@ const HINTS: &[(&str, &str)] = &[
     (":", "cmd"),
     ("ZZ", "quit + cd"),
     ("g?", "help"),
+];
+
+const JOBS_HINTS: &[(&str, &str)] = &[
+    ("jk", "pick job"),
+    ("c", "cancel"),
+    ("r", "retry failed"),
+    ("o", "log"),
+    ("Enter", "dismiss"),
+    ("J", "close"),
+];
+
+const VISUAL_HINTS: &[(&str, &str)] = &[
+    ("motions", "extend"),
+    ("y", "yank"),
+    ("x/d", "cut"),
+    ("Tab", "keep as selection"),
+    ("Esc/v", "leave"),
 ];
 
 const GREP_HINTS: &[(&str, &str)] = &[
@@ -315,7 +334,40 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         bar(f, area, left, Vec::new());
         return;
     }
-    left.push(badge(" NORMAL ", ACCENT));
+    if app.mode == Mode::Jobs {
+        left.push(badge(" JOBS ", ACCENT));
+        left.push(Span::raw("  "));
+        match &app.status {
+            Some(s) => left.push(Span::styled(
+                s.text.clone(),
+                theme::fg(if s.is_error { ERR } else { FG }),
+            )),
+            None => {
+                let s = super::jobs::summary(app);
+                left.push(Span::raw(if s.is_empty() {
+                    "no jobs".to_string()
+                } else {
+                    s
+                }));
+                left.push(Span::styled(
+                    r"  ·  reports stay in %LOCALAPPDATA%\sentier\jobs\ until dismissed",
+                    theme::dim(),
+                ));
+            }
+        }
+        bar(
+            f,
+            area,
+            left,
+            super::jobs::indicator(app).into_iter().collect(),
+        );
+        return;
+    }
+    if app.visual.is_some() {
+        left.push(badge(" VISUAL ", theme::WARN));
+    } else {
+        left.push(badge(" NORMAL ", ACCENT));
+    }
     left.push(Span::raw("  "));
     if let Some(status) = &app.status {
         let color = if status.is_error { ERR } else { FG };
@@ -394,6 +446,10 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
                 theme::fg(ACCENT),
             ));
         }
+        if let Some(sel) = selection_summary(app) {
+            left.push(sep());
+            left.push(Span::styled(sel, theme::bold(ACCENT)));
+        }
         left.push(sep());
         left.push(Span::raw("sort: name ↑"));
         left.push(sep());
@@ -411,6 +467,7 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     if !pending.is_empty() {
         right.push(Span::styled(format!("{pending}   "), theme::bold(ACCENT)));
     }
+    right.extend(super::jobs::indicator(app));
     if let Some((_, space)) = &app.space {
         let label = if app.cwd.is_network() {
             "share free  "
@@ -438,6 +495,10 @@ pub fn draw_hints(f: &mut Frame, area: Rect, app: &App) {
         }
     } else if app.mode == Mode::Preview {
         FULL_PREVIEW_HINTS
+    } else if app.mode == Mode::Jobs {
+        JOBS_HINTS
+    } else if app.visual.is_some() {
+        VISUAL_HINTS
     } else if app.at_root() {
         ROOT_HINTS
     } else if let Some(s) = app.search_state(&app.cwd) {
@@ -455,4 +516,24 @@ pub fn draw_hints(f: &mut Frame, area: Rect, app: &App) {
         left.push(Span::styled(format!(" {what}   "), theme::dim()));
     }
     bar(f, area, left, Vec::new());
+}
+
+/// `3 selected · 4.31 GB` for the selection or the visual range.
+fn selection_summary(app: &App) -> Option<String> {
+    if app.visual.is_none() && app.marked.is_empty() {
+        return None;
+    }
+    let listing = app.view_listing.as_ref()?;
+    let idx = app.operand(1);
+    let bytes: u64 = idx
+        .iter()
+        .filter_map(|&i| listing.entries.get(i))
+        .filter(|e| e.kind == crate::fs::EntryKind::File)
+        .map(|e| e.size)
+        .sum();
+    let mut s = format!("{} selected", idx.len());
+    if bytes > 0 {
+        s.push_str(&format!(" · {}", human_size(bytes)));
+    }
+    Some(s)
 }

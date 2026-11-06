@@ -1,0 +1,35 @@
+
+ Log File : C:\capture\list.log
+
+-------------------------------------------------------------------------------
+   ROBOCOPY     ::     Robust File Copy for Windows                              
+-------------------------------------------------------------------------------
+
+  Started : Friday, November 6, 2026 10:50:35 AM
+   Source : C:\capture\list\src\
+     Dest : C:\capture\list\dst\
+
+    Files : *.*
+	    
+  Options : *.* /FP /BYTES /L /TEE /S /E /DCOPY:DA /COPY:DAT /PURGE /MIR /Z /R:1 /W:1 
+
+------------------------------------------------------------------------------
+
+	                   1	C:\capture\list\src\
+	  *EXTRA File 		       5	C:\capture\list\dst\extra.txt
+	    Older     		       6	C:\capture\list\src\a.txt
+	  New Dir          2	C:\capture\list\src\sub\
+	    New File  		       2	C:\capture\list\src\sub\b.txt
+	    New File  		41943040	C:\capture\list\src\sub\big.bin
+	  New Dir          1	C:\capture\list\src\sub\deep\
+	    New File  		       2	C:\capture\list\src\sub\deep\c.pmlmac
+
+------------------------------------------------------------------------------
+
+               Total    Copied   Skipped  Mismatch    FAILED    Extras
+    Dirs :         3         2         1         0         0         0
+   Files :         4         4         0         0         0         1
+   Bytes :  41943050  41943050         0         0         0         5
+   Times :   0:00:00   0:00:00                       0:00:00   0:00:00
+   Ended : Friday, November 6, 2026 10:50:35 AM
+

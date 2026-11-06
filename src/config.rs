@@ -21,6 +21,12 @@ pub struct Config {
     /// `[machines]`: `recent_days`, `watch`.
     #[serde(default)]
     pub machines: MachinesSection,
+    /// `[jobs]`: `robocopy_threads` (`/MT:n`, default off), `native_max_bytes`.
+    #[serde(default)]
+    pub jobs: JobsSection,
+    /// `[aveva]`: `project_markers`, the globs a project folder has at its top level.
+    #[serde(default)]
+    pub aveva: AvevaSection,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -40,7 +46,31 @@ pub struct MachinesSection {
     pub source_cmd: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct JobsSection {
+    pub robocopy_threads: Option<u32>,
+    pub native_max_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct AvevaSection {
+    pub project_markers: Option<Vec<String>>,
+}
+
+/// A Dabacon project folder holds an `evars.bat` next to its `*000` database folders.
+pub const DEFAULT_AVEVA_MARKERS: &[&str] = &["evars.bat", "*000"];
+
 impl Config {
+    /// The AVEVA guard's markers: every one must match a name at the folder's top level.
+    pub fn aveva_markers(&self) -> Vec<String> {
+        self.aveva.project_markers.clone().unwrap_or_else(|| {
+            DEFAULT_AVEVA_MARKERS
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        })
+    }
+
     /// The path templates: config.toml's, or the spec's defaults when it has none.
     pub fn templates(&self) -> Vec<crate::machines::PathTemplate> {
         if self.machine.path.is_empty() {

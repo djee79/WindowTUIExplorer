@@ -911,6 +911,87 @@ impl Worker {
     }
 
     /// Opens a file with its associated program (ShellExecute "open").
+    /// Runs a copy / move job on the blocking pool; its progress comes back as
+    /// `AppEvent::Job`. The token cancels it (robocopy is killed).
+    pub fn start_job(&self, id: u64, spec: crate::jobs::run::Spec) -> CancelToken {
+        let cancel = CancelToken::default();
+        let (tx, token) = (self.tx.clone(), cancel.clone());
+        self.rt.spawn_blocking(move || {
+            crate::jobs::run::run(&spec, &token, &|ev| {
+                let _ = tx.send(AppEvent::Job { id, ev });
+            });
+        });
+        cancel
+    }
+
+    /// Which of `dirs` look like AVEVA projects: every marker glob matches a name at the
+    /// folder's top level. A folder that can't be read in time counts as not one.
+    pub fn aveva_check(&self, token: u64, dirs: Vec<String>, markers: Vec<String>) {
+        let (tx, timeout) = (self.tx.clone(), self.timeouts.network);
+        self.rt.spawn(async move {
+            let globs: Vec<globset::GlobMatcher> = markers
+                .iter()
+                .filter_map(|m| {
+                    globset::GlobBuilder::new(m)
+                        .case_insensitive(true)
+                        .build()
+                        .ok()
+                        .map(|g| g.compile_matcher())
+                })
+                .collect();
+            let mut hits = Vec::new();
+            for dir in dirs {
+                let d = dir.clone();
+                let read = tokio::task::spawn_blocking(move || -> Vec<String> {
+                    std::fs::read_dir(&d)
+                        .map(|rd| {
+                            rd.flatten()
+                                .map(|e| e.file_name().to_string_lossy().to_string())
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                });
+                let names = match tokio::time::timeout(timeout, read).await {
+                    Ok(Ok(n)) => n,
+                    _ => continue,
+                };
+                if !globs.is_empty() && globs.iter().all(|g| names.iter().any(|n| g.is_match(n))) {
+                    hits.push(dir);
+                }
+            }
+            let _ = tx.send(AppEvent::AvevaChecked { token, hits });
+        });
+    }
+
+    pub fn save_report(&self, report: crate::jobs::Report) {
+        self.rt.spawn_blocking(move || {
+            if let Some(dir) = crate::jobs::jobs_dir()
+                && let Err(e) = crate::jobs::save_report(&dir, &report)
+            {
+                tracing::warn!(error = %e, "saving a job report");
+            }
+        });
+    }
+
+    pub fn delete_report(&self, id: u64) {
+        self.rt.spawn_blocking(move || {
+            if let Some(dir) = crate::jobs::jobs_dir() {
+                crate::jobs::delete_report(&dir, id);
+            }
+        });
+    }
+
+    /// The reports kept from earlier sessions: one `JobReports`.
+    pub fn load_job_reports(&self) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let reports = crate::jobs::jobs_dir()
+                .map(|d| crate::jobs::load_reports(&d))
+                .unwrap_or_default();
+            let _ = tx.send(AppEvent::JobReports(reports));
+        });
+    }
+
     pub fn open(&self, loc: Loc) {
         let Some(path) = loc.as_fs().map(|p| p.os_string()) else {
             return;

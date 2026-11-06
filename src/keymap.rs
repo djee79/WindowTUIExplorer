@@ -299,6 +299,21 @@ pub enum Action {
     TagPicker,
     /// `<leader>m`: the machine picker (pinned, recent, inventory, `source_cmd`).
     MachinePicker,
+    /// `Tab`: toggle the item under the cursor and move down.
+    ToggleMark,
+    /// `v` / `V`: visual mode (range select with motions).
+    Visual,
+    /// `yy`: yank (copy) the selection or `n` items.
+    Yank,
+    /// `x`: cut the selection or `n` items.
+    Cut,
+    /// `p`: paste here, never replacing; `P`: paste and replace (asks).
+    Paste,
+    PasteOverwrite,
+    /// `J` / `<leader>j`: the jobs panel.
+    Jobs,
+    /// `.`: repeat the last paste here.
+    RepeatPaste,
     /// `:pin`: pin the current folder (name, tags, key).
     PinCwd,
     /// `:tag rename <old> <new>` / `:tag delete <tag>`, across all pins.
@@ -385,6 +400,14 @@ const NAMED: &[(&str, Action)] = &[
     ("pin-picker", Action::PinPicker),
     ("tag-picker", Action::TagPicker),
     ("machine-picker", Action::MachinePicker),
+    ("toggle-select", Action::ToggleMark),
+    ("visual", Action::Visual),
+    ("yank", Action::Yank),
+    ("cut", Action::Cut),
+    ("paste", Action::Paste),
+    ("paste-overwrite", Action::PasteOverwrite),
+    ("jobs", Action::Jobs),
+    ("repeat-paste", Action::RepeatPaste),
     ("goto-path", Action::GotoPath),
     ("help", Action::Help),
     ("quit", Action::Quit),
@@ -589,6 +612,16 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("<leader>p", PinPicker, "pins picker"),
         ("<leader>t", TagPicker, "tags: pick, filter, rename"),
         ("<leader>m", MachinePicker, "machines picker"),
+        ("<leader>j", Jobs, "jobs panel"),
+        ("J", Jobs, "jobs panel"),
+        ("<Tab>", ToggleMark, "select + down"),
+        ("v", Visual, "visual (range select)"),
+        ("V", Visual, ""),
+        ("yy", Yank, "yank (copy)"),
+        ("x", Cut, "cut"),
+        ("p", Paste, "paste here"),
+        ("P", PasteOverwrite, "paste, replacing (asks)"),
+        (".", RepeatPaste, "repeat the last paste here"),
         ("R", Refresh, "retry / refresh / re-probe"),
         ("dd", Delete, "delete (Locations: remove saved share)"),
         (":", CommandLine, "command line"),
@@ -610,6 +643,7 @@ fn group_label(prefix: &[Key], leader: Key) -> &'static str {
             KeyCode::Char('Z') => "quit",
             KeyCode::Char('\'') => "jump to a pin",
             KeyCode::Char('m') => "pin this folder as",
+            KeyCode::Char('y') => "yank",
             KeyCode::Char(',') => "results",
             _ => "more",
         },
@@ -1001,7 +1035,7 @@ mod tests {
         ));
         assert_eq!(map.lookup(&k("g")), Lookup::Prefix);
         assert_eq!(map.lookup(&k("gq")), Lookup::None);
-        assert_eq!(map.lookup(&k("x")), Lookup::None);
+        assert_eq!(map.lookup(&k("X")), Lookup::None);
         assert!(matches!(
             map.lookup(&k("<leader>l")),
             Lookup::Exact {

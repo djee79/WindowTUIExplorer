@@ -59,6 +59,18 @@ pub enum AppEvent {
     PinsSaveFailed(String),
     /// A picker's matcher has new results.
     Wake,
+    /// A job's progress, from the worker (M4).
+    Job {
+        id: u64,
+        ev: crate::jobs::JobEvent,
+    },
+    /// The job reports kept from earlier sessions.
+    JobReports(Vec<crate::jobs::Report>),
+    /// Which pasted folders look like AVEVA projects.
+    AvevaChecked {
+        token: u64,
+        hits: Vec<String>,
+    },
     /// The machine picker's slow sources (inventory CSV, `source_cmd`), each with its
     /// machines or why not.
     MachineSources(

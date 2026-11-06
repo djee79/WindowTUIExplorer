@@ -28,6 +28,12 @@ pub enum Confirm {
         tag: String,
         reopen: Option<Reopen>,
     },
+    /// A paste that replaces files (`P`) or touches an AVEVA project.
+    Paste {
+        req: Box<crate::jobs::Request>,
+        plan: Box<crate::jobs::Plan>,
+        why: String,
+    },
 }
 
 impl Confirm {
@@ -36,6 +42,7 @@ impl Confirm {
             Confirm::DeleteView { reopen, .. }
             | Confirm::RenameTag { reopen, .. }
             | Confirm::DeleteTag { reopen, .. } => reopen,
+            Confirm::Paste { .. } => None,
         }
     }
 }
@@ -199,6 +206,9 @@ impl App {
                 let n = self.pins.tag_count(tag);
                 format!("remove #{tag} from {}? {yes}", pins_word(n))
             }
+            Some(Confirm::Paste { why, .. }) => {
+                format!("{why} Go ahead? y = yes, anything else cancels")
+            }
             None => String::new(),
         }
     }
@@ -283,6 +293,9 @@ impl App {
     }
 
     fn apply_confirm(&mut self, c: Confirm) {
+        if let Confirm::Paste { req, plan, .. } = c {
+            return self.start_job(*req, *plan);
+        }
         let msg = match &c {
             Confirm::DeleteView { idx, .. } if *idx < self.pins.views.len() => {
                 let v = self.pins.views.remove(*idx);
@@ -297,6 +310,7 @@ impl App {
                 let n = self.pins.delete_tag(tag);
                 format!("removed #{tag} from {}", pins_word(n))
             }
+            Confirm::Paste { .. } => String::new(),
         };
         self.save_pins();
         self.set_status(msg, false);

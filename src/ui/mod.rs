@@ -4,6 +4,7 @@ mod columns;
 mod credentials;
 mod grep;
 mod help;
+mod jobs;
 mod locations;
 mod netlist;
 mod picker;
@@ -46,6 +47,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     statusbar::draw_hints(f, hints, app);
     if app.mode == Mode::Picker {
         picker::draw(f, body, app);
+    }
+    if app.mode == Mode::Jobs {
+        jobs::draw(f, body, app);
     }
     if app.mode == Mode::Help {
         help::draw(f, body, app);

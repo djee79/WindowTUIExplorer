@@ -1,0 +1,41 @@
+
+ Log File : C:\capture\mirror_extra.log
+
+-------------------------------------------------------------------------------
+   ROBOCOPY     ::     Robust File Copy for Windows                              
+-------------------------------------------------------------------------------
+
+  Started : Friday, November 6, 2026 10:50:35 AM
+   Source : C:\capture\mirror_extra\src\
+     Dest : C:\capture\mirror_extra\dst\
+
+    Files : *.*
+	    
+  Options : *.* /FP /BYTES /TEE /S /E /DCOPY:DA /COPY:DAT /PURGE /MIR /Z /R:1 /W:1 
+
+------------------------------------------------------------------------------
+
+	                   1	C:\capture\mirror_extra\src\
+	*EXTRA Dir        -1	C:\capture\mirror_extra\dst\old\
+	  *EXTRA File 		       5	C:\capture\mirror_extra\dst\old\stale.txt
+	  *EXTRA File 		       5	C:\capture\mirror_extra\dst\extra.txt
+	    New File  		       6	C:\capture\mirror_extra\src\a.txt100%  
+	  New Dir          2	C:\capture\mirror_extra\src\sub\
+	    New File  		       2	C:\capture\mirror_extra\src\sub\b.txt100%  
+	    New File  		41943040	C:\capture\mirror_extra\src\sub\big.bin  2.5%  5.0%  7.5% 10.0% 12.5% 15.0% 17.5% 20.0% 22.5% 25.0% 27.5% 30.0% 32.5% 35.0% 37.5% 40.0% 42.5% 45.0% 47.5% 50.0% 52.5% 55.0% 57.5% 60.0% 62.5% 65.0% 67.5% 70.0% 72.5% 75.0% 77.5% 80.0% 82.5% 85.0% 87.5% 90.0% 92.5% 95.0% 97.5%100%  
+	  New Dir          1	C:\capture\mirror_extra\src\sub\deep\
+	    New File  		       2	C:\capture\mirror_extra\src\sub\deep\c.pmlmac100%  
+
+------------------------------------------------------------------------------
+
+               Total    Copied   Skipped  Mismatch    FAILED    Extras
+    Dirs :         3         2         1         0         0         1
+   Files :         4         4         0         0         0         2
+   Bytes :  41943050  41943050         0         0         0        10
+   Times :   0:00:00   0:00:00                       0:00:00   0:00:00
+
+
+   Speed :           2,097,152,500 Bytes/sec.
+   Speed :             120,000.031 MegaBytes/min.
+   Ended : Friday, November 6, 2026 10:50:35 AM
+
