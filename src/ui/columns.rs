@@ -5,15 +5,17 @@
 
 use super::theme::{self, BORDER, DIMMED, DIR, ERR, FG, INACTIVE_SEL_BG, NET, SEL_BG};
 use super::{human_size, spinner, thousands, truncate, width};
-use crate::app::{App, DirState, visible_indices};
+use crate::app::{App, DirState, Mode, visible_indices};
 use crate::fs::worker::ListError;
 use crate::fs::{Entry, EntryKind, Listing};
+use crate::preview::PreviewKind;
 use chrono::{DateTime, Local};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
+use ratatui_image::Image;
 use std::time::{Instant, SystemTime};
 
 /// Rows kept between the cursor and the panel edge while scrolling.
@@ -31,7 +33,15 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     .areas(area);
     draw_parent(f, parent, app);
     draw_current(f, current, app);
-    draw_preview(f, preview, app);
+    // The box a picture may fill: the preview panel less a margin and a caption line.
+    let inner = panel(String::new(), false).inner(preview);
+    app.image_area = Some(Rect {
+        x: inner.x + 1,
+        width: inner.width.saturating_sub(2),
+        height: inner.height.saturating_sub(2),
+        ..inner
+    });
+    app.image_drawn = draw_preview(f, preview, app);
 }
 
 pub(super) fn panel<'a>(title: String, focused: bool) -> Block<'a> {
@@ -205,13 +215,14 @@ fn draw_current(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
+/// The preview panel. Returns where a picture was drawn, if one was.
+fn draw_preview(f: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
     let entry = app.selected();
     let title = entry.map(|e| e.name.clone()).unwrap_or_default();
     let block = panel(title, false);
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let Some(entry) = entry else { return };
+    let entry = entry?;
 
     if let EntryKind::Drive(kind) = entry.kind {
         let lines = vec![
@@ -219,29 +230,29 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
             info_line("Type", format!("drive · {}", kind.label())),
         ];
         f.render_widget(Paragraph::new(lines), inner);
-        return;
+        return None;
     }
     if !entry.is_container() {
         if app.search_state(&app.cwd).is_some_and(|s| s.content) {
             super::grep::draw(f, inner, app, entry);
+        } else if PreviewKind::of(&entry.name).is_some() {
+            return draw_image(f, inner, app, entry);
         } else {
             draw_file_info(f, inner, app, entry);
         }
-        return;
+        return None;
     }
-    let Some(loc) = app.preview_loc() else { return };
-    let Some(state) = app.dir(&loc) else {
-        // Not requested yet (debounce): show nothing rather than a flicker.
-        return;
-    };
+    let loc = app.preview_loc()?;
+    // Not requested yet (debounce): show nothing rather than a flicker.
+    let state = app.dir(&loc)?;
     let Some(listing) = state.listing.as_deref().filter(|_| state.error.is_none()) else {
         draw_state(f, inner, app, state, false);
-        return;
+        return None;
     };
     let rows = visible_indices(listing, app.show_hidden, "");
     if rows.is_empty() {
         f.render_widget(Paragraph::new(Span::styled(" empty", theme::dim())), inner);
-        return;
+        return None;
     }
     let sel = app.remembered(&loc).and_then(|name| {
         rows.iter()
@@ -249,6 +260,7 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
     });
     let offset = centered_offset(sel.unwrap_or(0), rows.len(), inner.height as usize);
     draw_simple_rows(f, inner, listing, &rows, offset, sel);
+    None
 }
 
 /// Loading / error placeholder for a panel without a usable listing.
@@ -515,6 +527,77 @@ pub(super) fn info_line(label: &str, value: String) -> Line<'static> {
         Span::styled(format!(" {label:<10}"), theme::dim()),
         Span::styled(value, theme::fg(FG)),
     ])
+}
+
+/// A picture with a caption line (`1920×1080 · JPEG · 412.0 KB`). Returns where the
+/// picture landed, so the UI loop can erase it once it moves (see `crate::preview`).
+fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Rect> {
+    let area = app.image_area?;
+    let caption_area = Rect {
+        y: inner.bottom().saturating_sub(1),
+        height: 1,
+        ..inner
+    };
+    let state = app
+        .cwd
+        .join(&e.name)
+        .ok()
+        .and_then(|loc| app.image_of(&loc));
+    let mut caption = human_size(e.size);
+    let mut drawn = None;
+    match state.map(|s| s.result.as_ref()) {
+        Some(Some(Ok(p))) => {
+            caption = format!(
+                "{}×{} · {} · {}",
+                p.width,
+                p.height,
+                p.format,
+                human_size(e.size)
+            );
+            let size = p.protocol.size();
+            // Overlays (help, pickers) cover the column: no picture under them.
+            let covered = matches!(app.mode, Mode::Help | Mode::Picker);
+            if !covered && size.width <= area.width && size.height <= area.height {
+                let rect = Rect {
+                    width: size.width,
+                    height: size.height,
+                    ..area
+                };
+                f.render_widget(Image::new(&p.protocol), rect);
+                drawn = Some(rect);
+            }
+        }
+        Some(Some(Err(err))) => {
+            let lines = vec![
+                Line::default(),
+                Line::from(Span::styled(
+                    format!(
+                        " ⚠ {}",
+                        truncate(err, inner.width.saturating_sub(4) as usize)
+                    ),
+                    theme::fg(theme::WARN),
+                )),
+            ];
+            f.render_widget(Paragraph::new(lines), inner);
+        }
+        Some(None) => {
+            let line = Line::from(Span::styled(
+                format!(" {} rendering…", spinner(app)),
+                theme::dim(),
+            ));
+            f.render_widget(Paragraph::new(vec![Line::default(), line]), inner);
+        }
+        // Waiting for the cursor to settle.
+        None => {}
+    }
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {caption}"),
+            theme::dim(),
+        ))),
+        caption_area,
+    );
+    drawn
 }
 
 fn draw_file_info(f: &mut Frame, area: Rect, app: &App, e: &Entry) {

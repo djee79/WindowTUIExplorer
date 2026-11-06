@@ -19,9 +19,11 @@ use crate::keymap;
 use crate::locations;
 use crate::pins::{self, PinStore};
 use crate::platform::{self, DriveKind};
+use crate::preview::{self, ImageKey};
 use crate::search::SearchMatcher;
 use crate::search::content::MatchPreview;
 use crate::search::walk::{self, Hit};
+use ratatui_image::picker::Picker;
 use std::fmt;
 use std::io;
 use std::path::PathBuf;
@@ -41,6 +43,9 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Reading a local file for the match preview: longer than a listing (the file may be
 /// big), still bounded. Network files use the network timeout.
 const GREP_PREVIEW_LOCAL: Duration = Duration::from_secs(2);
+/// Reading + encoding a picture for the preview column.
+const IMAGE_PREVIEW_LOCAL: Duration = Duration::from_secs(5);
+const IMAGE_PREVIEW_NETWORK: Duration = Duration::from_secs(15);
 /// Context lines around each match, and the most matches a preview collects.
 const GREP_CONTEXT: usize = 2;
 const GREP_MAX_MATCHES: usize = 500;
@@ -397,6 +402,43 @@ impl Worker {
                 Err(_) => Err(format!("timed out after {:.0} s", timeout.as_secs_f32())),
             };
             let _ = tx.send(AppEvent::GrepPreview { loc, result });
+        });
+    }
+
+    /// Reads and encodes the picture behind `key` for the preview column. Sends one
+    /// `ImagePreview`. Network files over 50 MB aren't read (mapped drives count as
+    /// network); reading gets 5 s locally, 15 s on the network. A late answer for a file
+    /// the cursor has left is dropped by the app (it compares the key).
+    pub fn image_preview(&self, key: ImageKey, picker: Picker) {
+        let Some(path) = key.loc.as_fs().map(|p| p.os_string()) else {
+            return;
+        };
+        let (tx, timeouts) = (self.tx.clone(), self.timeouts);
+        self.rt.spawn(async move {
+            let network = timeout_for(&key.loc, timeouts).await == timeouts.network;
+            if preview::too_big_for_network(key.size, network) {
+                let mb = key.size / (1024 * 1024);
+                let result = Err(format!(
+                    "large file on the network ({mb} MB): not previewed"
+                ));
+                let _ = tx.send(AppEvent::ImagePreview { key, result });
+                return;
+            }
+            let timeout = if network {
+                IMAGE_PREVIEW_NETWORK
+            } else {
+                IMAGE_PREVIEW_LOCAL
+            };
+            let (cols, rows) = (key.cols, key.rows);
+            let call = tokio::task::spawn_blocking(move || {
+                preview::image::load(&path, &picker, cols, rows).map(Arc::new)
+            });
+            let result = match tokio::time::timeout(timeout, call).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(_) => Err(format!("timed out after {} s", timeout.as_secs())),
+            };
+            let _ = tx.send(AppEvent::ImagePreview { key, result });
         });
     }
 

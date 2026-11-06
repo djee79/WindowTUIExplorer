@@ -309,3 +309,40 @@ top-level, and `zip.rs` / `inuse.rs` / `report.rs` live under `jobs/`.
 Until M3b, a `kind = "machine"` pin loads as a reported, preserved broken pin.
 
 Order from here: M2b previews → M2c credentials → M3b machines → M4 jobs.
+
+## M2b previews, slice 1: image previews (code complete 2026-11-06, manual check pending)
+
+Probe results (`examples/image_probe.rs`, WezTerm 20240203 on Windows 11):
+- The terminal query never answers through ConPTY (fails in 0 ms), so auto-detection is
+  useless: the protocol comes from `TERM_PROGRAM` (WezTerm → iTerm2, anything else →
+  halfblocks; `SENTIER_PREVIEW_PROTOCOL` forces one until config.toml exists) and the cell
+  size is 10×20 px (`preview.cell_px` later; the card's shape looked right at 10×20).
+- iTerm2: shows. Sixel, kitty: nothing. Halfblocks: shows.
+- An iTerm2 picture stays on screen until its cells are written again. ratatui never
+  rewrites them (ratatui-image marks them "skip"), and a full clear doesn't remove it
+  either. Writing spaces over the cells does, and so does text drawn there.
+  → After each frame, if the picture moved, changed size or went away (or the window was
+  resized), the UI loop re-emits the old picture's cells from the frame just drawn
+  (`preview::repaint_cells` + `Backend::draw`). No flicker, no full clears.
+- Windows Terminal not probed yet (gets halfblocks for now).
+
+Code:
+- `src/preview/`: `PreviewKind` (png jpg gif webp bmp tiff ico), protocol choice, an
+  in-memory LRU (64), `repaint_cells`, the 50 MB network guard; `image::load` decodes and
+  encodes on the blocking pool (the UI only renders an encoded picture).
+- `Worker::image_preview`: 5 s local / 15 s network; network files over 50 MB (mapped
+  drives included) say so instead of reading. Late answers are dropped by key.
+- App: asked after 60 ms of cursor stillness; the box comes from the UI's last frame, so a
+  resize refits it; cache hits are instant. Caption: `400×200 · PNG · 4.0 KB`. No picture
+  under the help overlay or a picker.
+
+Next slices: EXIF for photos (`kamadak-exif`), PDF pages (WinRT `Windows.Data.Pdf`) with
+`]p`/`[p`/`gP`, shell thumbnails (`IShellItemImageFactory`), `zp` full screen + zoom,
+preload next/previous, the disk cache for network files, a Windows Terminal probe run.
+
+Manual checklist:
+- [ ] A folder of photos in WezTerm: pictures appear after the cursor stops; holding `j`
+      doesn't stutter; moving to a .txt or a folder leaves no picture behind.
+- [ ] Resize the window with a picture shown: it refits, no ghost.
+- [ ] `g?` and `<Space>p` over a picture: no picture bleeding through.
+- [ ] A big photo on the NAS: spinner, then the picture; one over 50 MB says so.

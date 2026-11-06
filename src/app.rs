@@ -7,6 +7,7 @@
 mod keys;
 mod picker;
 mod pins;
+mod preview;
 mod search;
 mod tags;
 
@@ -190,6 +191,19 @@ pub struct App {
     confirm: Option<tags::Confirm>,
     view_draft: Option<tags::ViewDraft>,
     tag_draft: Option<String>,
+    /// Pictures in the preview column: the encoder settings, the picture shown (or on its
+    /// way), and recently shown ones.
+    graphics: ratatui_image::picker::Picker,
+    image: Option<preview::ImageState>,
+    image_cache:
+        crate::preview::Lru<crate::preview::ImageKey, Arc<crate::preview::image::ImagePreview>>,
+    /// Set by the UI each frame: the box a picture may fill, and where one was drawn.
+    pub image_area: Option<ratatui::layout::Rect>,
+    pub image_drawn: Option<ratatui::layout::Rect>,
+    /// The window was resized: the old picture must be erased by hand.
+    pub image_resized: bool,
+    /// When the cursor last moved (pictures wait for it to be still).
+    moved_at: Instant,
     /// Reachability of Locations entries, keyed by the location each one opens.
     pub reach: HashMap<Loc, Reach>,
     last_probe_round: Option<Instant>,
@@ -250,6 +264,13 @@ impl App {
             confirm: None,
             view_draft: None,
             tag_draft: None,
+            graphics: crate::preview::graphics(),
+            image: None,
+            image_cache: crate::preview::Lru::new(crate::preview::CACHE_ENTRIES),
+            image_area: None,
+            image_drawn: None,
+            image_resized: false,
+            moved_at: Instant::now(),
             reach: HashMap::new(),
             last_probe_round: None,
             status: None,
@@ -314,7 +335,7 @@ impl App {
     }
 
     pub fn is_busy(&self) -> bool {
-        !self.pending.is_empty() || self.searching()
+        !self.pending.is_empty() || self.searching() || self.image_busy()
     }
 
     pub fn dir(&self, loc: &Loc) -> Option<&DirState> {
@@ -635,7 +656,9 @@ impl App {
     }
 
     fn schedule_preview(&mut self) {
-        self.preview_due = Some(Instant::now() + PREVIEW_DELAY);
+        let now = Instant::now();
+        self.preview_due = Some(now + PREVIEW_DELAY);
+        self.moved_at = now;
     }
 
     fn refresh(&mut self) {
@@ -709,7 +732,12 @@ impl App {
                     self.on_key(key);
                 }
             }
-            AppEvent::Term(Event::Resize(..)) => self.dirty = true,
+            AppEvent::Term(Event::Resize(..)) => {
+                self.dirty = true;
+                // ratatui redraws everything, but an iTerm2 picture survives that.
+                self.image_resized = true;
+            }
+            AppEvent::ImagePreview { key, result } => self.on_image_preview(key, result),
             AppEvent::Term(_) => {}
             AppEvent::InputClosed(e) => {
                 tracing::error!(error = %e, "input thread stopped");
@@ -850,6 +878,7 @@ impl App {
         if self.picker.as_mut().is_some_and(|p| p.tick()) {
             self.dirty = true;
         }
+        self.image_tick(now);
         self.search_tick(now);
         if self.preview_due.is_some_and(|due| now >= due) {
             self.preview_due = None;
@@ -879,6 +908,11 @@ impl App {
         if let Some(due) = self.preview_due {
             wake = wake.min(due.saturating_duration_since(now));
         }
+        // Wake when the cursor has been still long enough for a picture.
+        let still = self.moved_at + preview::IMAGE_STILL;
+        if still > now {
+            wake = wake.min(still - now);
+        }
         if let Some(t) = self.keys_since.filter(|_| !self.which_key) {
             wake = wake.min((t + self.keymap.timeout).saturating_duration_since(now));
         }
@@ -904,11 +938,35 @@ pub fn visible_indices(listing: &Listing, show_hidden: bool, filter: &str) -> Ve
 /// next event or the next time-driven change. Returns how the user quit.
 pub fn run(terminal: &mut DefaultTerminal, app: &mut App, rx: &EventRx) -> anyhow::Result<Quit> {
     let mut last_draw = Instant::now() - FRAME;
+    // Where the last frame put a picture.
+    let mut last_image: Option<ratatui::layout::Rect> = None;
     loop {
         let now = Instant::now();
         app.tick(now);
         if app.dirty && now.duration_since(last_draw) >= FRAME {
-            terminal.draw(|f| ui::draw(f, app))?;
+            app.image_drawn = None;
+            let frame = terminal.draw(|f| ui::draw(f, app))?;
+            // An iTerm2 picture stays until its cells are written again, and ratatui skips
+            // cells it thinks are unchanged. So when the picture moved or went away, write
+            // the old picture's cells again from this frame (crate::preview docs).
+            let drawn = app.image_drawn;
+            let repaint: Vec<(u16, u16, ratatui::buffer::Cell)> = match last_image {
+                Some(old) if drawn != Some(old) || app.image_resized => {
+                    crate::preview::repaint_cells(old, drawn)
+                        .into_iter()
+                        .filter_map(|(x, y)| Some((x, y, frame.buffer.cell((x, y))?.clone())))
+                        .collect()
+                }
+                _ => Vec::new(),
+            };
+            if !repaint.is_empty() {
+                use ratatui::backend::Backend;
+                let backend = terminal.backend_mut();
+                backend.draw(repaint.iter().map(|(x, y, c)| (*x, *y, c)))?;
+                backend.flush()?;
+            }
+            last_image = drawn;
+            app.image_resized = false;
             app.dirty = false;
             last_draw = Instant::now();
         }
@@ -942,7 +1000,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    fn entry(name: &str, kind: EntryKind, size: u64, hidden: bool) -> Entry {
+    pub(super) fn entry(name: &str, kind: EntryKind, size: u64, hidden: bool) -> Entry {
         Entry {
             name: name.to_string(),
             kind,
@@ -958,7 +1016,7 @@ mod tests {
         }
     }
 
-    fn listing(mut entries: Vec<Entry>) -> Arc<Listing> {
+    pub(super) fn listing(mut entries: Vec<Entry>) -> Arc<Listing> {
         sort_entries(&mut entries);
         Arc::new(Listing {
             entries,
@@ -2058,5 +2116,123 @@ mod pin_tests {
         );
         press(&mut app, "<Esc><Esc>");
         assert_eq!(app.pins.pins.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    //! The picture preview without a terminal: the worker's answer is injected (the test
+    //! runtime is never driven), the frame is drawn into a TestBackend.
+    use super::tests::{entry, fixture, listing, press, render};
+    use super::*;
+    use crate::preview::image::load;
+
+    /// The fixture's C:\work plus `photo.png`, with the picture loaded from a temp file.
+    fn with_photo() -> (
+        App,
+        tokio::runtime::Runtime,
+        Arc<crate::preview::image::ImagePreview>,
+    ) {
+        let (mut app, rt) = fixture();
+        app.graphics = ratatui_image::picker::Picker::halfblocks();
+        let cwd = app.cwd.clone();
+        app.dirs.insert(
+            cwd.clone(),
+            DirState {
+                listing: Some(listing(vec![
+                    entry("notes.txt", EntryKind::File, 1536, false),
+                    entry("photo.png", EntryKind::File, 4096, false),
+                ])),
+                ..DirState::default()
+            },
+        );
+        app.set_cwd(cwd, None);
+        let dir = std::env::temp_dir().join(format!("sentier-prev-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("photo.png");
+        let img = image::RgbaImage::from_pixel(400, 200, image::Rgba([200, 30, 30, 255]));
+        assert!(img.save(&path).is_ok());
+        let Ok(p) = load(&path.to_string_lossy(), &app.graphics, 30, 20) else {
+            panic!("load")
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        (app, rt, Arc::new(p))
+    }
+
+    /// Lets the cursor settle, so the picture is asked for.
+    fn settle(app: &mut App) {
+        app.tick(Instant::now() + preview::IMAGE_STILL + Duration::from_millis(1));
+    }
+
+    #[test]
+    fn picture_waits_for_the_cursor_then_draws_and_is_cached() {
+        let (mut app, _rt, picture) = with_photo();
+        render(&mut app, 120, 30); // the UI reports the picture box
+        press(&mut app, "j"); // photo.png
+        app.tick(Instant::now());
+        assert!(app.image.is_none(), "not while the cursor is moving");
+        settle(&mut app);
+        let Some(key) = app.image.as_ref().map(|s| s.key.clone()) else {
+            panic!("asked for")
+        };
+        assert_eq!(key.loc.display(), r"C:\work\photo.png");
+        assert!(app.is_busy(), "spinner while it's read");
+        let screen = render(&mut app, 120, 30);
+        assert!(screen.contains("rendering"), "{screen}");
+
+        // A late answer for another file is ignored…
+        let mut other = key.clone();
+        other.cols += 1;
+        app.handle(AppEvent::ImagePreview {
+            key: other,
+            result: Err("stale".into()),
+        });
+        assert!(app.image.as_ref().is_some_and(|s| s.result.is_none()));
+        // …the right one is drawn.
+        app.handle(AppEvent::ImagePreview {
+            key: key.clone(),
+            result: Ok(Arc::clone(&picture)),
+        });
+        let screen = render(&mut app, 120, 30);
+        assert!(screen.contains("400×200 · PNG"), "{screen}");
+        assert!(app.image_drawn.is_some(), "the UI says where it drew");
+
+        // Another file: no picture drawn (so the loop erases the old one).
+        press(&mut app, "k");
+        render(&mut app, 120, 30);
+        assert!(app.image_drawn.is_none());
+
+        // Back: straight from the cache, no worker round trip.
+        press(&mut app, "j");
+        settle(&mut app);
+        assert!(
+            app.image.as_ref().is_some_and(|s| s.result.is_some()),
+            "cached"
+        );
+        render(&mut app, 120, 30);
+        assert!(app.image_drawn.is_some());
+
+        // A help overlay covers the column: no picture under it.
+        press(&mut app, "g?");
+        render(&mut app, 120, 30);
+        assert!(app.image_drawn.is_none());
+    }
+
+    #[test]
+    fn errors_show_in_the_panel() {
+        let (mut app, _rt, _) = with_photo();
+        render(&mut app, 120, 30);
+        press(&mut app, "j");
+        settle(&mut app);
+        let Some(key) = app.image.as_ref().map(|s| s.key.clone()) else {
+            panic!()
+        };
+        app.handle(AppEvent::ImagePreview {
+            key,
+            result: Err("large file on the network (80 MB): not previewed".into()),
+        });
+        let screen = render(&mut app, 120, 30);
+        assert!(screen.contains("large file on the network"), "{screen}");
+        assert!(app.image_drawn.is_none());
     }
 }

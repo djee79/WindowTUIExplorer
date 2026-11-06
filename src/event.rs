@@ -6,6 +6,8 @@ use crate::fs::worker::{ListError, Probe};
 use crate::keymap::Keymap;
 use crate::pins::PinStore;
 use crate::platform::DiskSpace;
+use crate::preview::ImageKey;
+use crate::preview::image::ImagePreview;
 use crate::search::content::MatchPreview;
 use crate::search::walk::Hit;
 use ratatui::crossterm::event::Event as TermEvent;
@@ -57,6 +59,11 @@ pub enum AppEvent {
     PinsSaveFailed(String),
     /// A picker's matcher has new results.
     Wake,
+    /// A picture for the preview column, read and encoded (or why not).
+    ImagePreview {
+        key: ImageKey,
+        result: Result<Arc<ImagePreview>, String>,
+    },
     /// keymap.toml was read: the built keymap plus any problems to report, or a read error.
     KeymapLoaded(Result<(Keymap, Vec<String>), String>),
     /// A batch of search hits (possibly empty: then it's only progress).

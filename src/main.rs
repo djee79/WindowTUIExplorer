@@ -8,6 +8,7 @@ mod locations;
 mod picker;
 mod pins;
 mod platform;
+mod preview;
 mod prompt;
 mod search;
 mod ui;
