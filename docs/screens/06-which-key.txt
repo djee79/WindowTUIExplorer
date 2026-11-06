@@ -1,0 +1,45 @@
+ sentier  \\srv01\project\HIT\hit000                                                                               ●  srv01  12 ms     tab 1 of 2
+╭─ HIT ──────────────────────╮╭─ hit000 ──────────────────────────────────────── 412 items ╮╭─ hit1001_0003 ───────────────────────────────────────────────────╮
+│ hit000\                    ││     Name                             Size  Modified        ││                                                                  │
+│ hitdfl\                    ││   2 hit1001_0001                  48.2 MB  2026-11-05 16:42││ Type      file · no text preview (binary)                        │
+│ hitiso\                    ││▌  1 hit1001_0002                 612.0 MB  2026-11-05 16:40││ Size      1 932 441 600 bytes  (1.8 GB)                          │
+│ hitmac\                    ││▌3   hit1001_0003                   1.8 GB  2026-11-05 16:42││ Modified  2026-11-05 16:42:07                                    │
+│ hitpic\                    ││   1 hit1001_0004                 211.7 MB  2026-11-04 11:03││ Created   2025-03-12 09:15:44                                    │
+│ hitrep\                    ││   2 hit1001_0005                  96.4 MB  2026-11-03 09:58││ Attrib    A                                                      │
+│ evars.bat                  ││   3 hit1001_0006                  12.1 MB  2026-10-30 14:21││                                                                  │
+│                            ││▌  4 hit1001_0007                   1.9 GB  2026-11-05 16:41││ Path      \\srv01\project\HIT\hit000\                     │
+│                            ││   5 hit1002_0001                  33.0 MB  2026-11-02 08:17││           hit1001_0003                                           │
+│                            ││   6 hit1002_0002                   7.9 MB  2026-10-28 15:44││                                                                  │
+│                            ││   7 hit1003_0001                 402.3 MB  2026-11-05 15:12││ yp copy path    yP copy UNC-resolved path                        │
+│                            ││   8 hit1003_0002                  88.6 MB  2026-11-01 10:09││                                                                  │
+│                            ││   9 hit1004_0001                   5.2 MB  2026-09-19 13:37││                                                                  │
+│                            ││  10 hit1005_0001                  71.0 MB  2026-11-05 12:55││ Selection 3 files · 4.31 GB                                      │
+│                            ││  11 hit2001_0001                 256.8 MB  2026-11-05 16:38││ ──────────────────────────────────────────────────────────────── │
+│                            ││  12 hit2001_0002                  19.4 MB  2026-10-22 09:02││ ▌ hit1001_0002                                          612.0 MB │
+│                            ││  13 hit2002_0001                 144.1 MB  2026-11-04 17:26││ ▌ hit1001_0003                                            1.8 GB │
+│                            ││  14 hit3001_0001                   9.7 MB  2026-08-14 10:45││ ▌ hit1001_0007                                            1.9 GB │
+│                            ││  15 hit3002_0001                   3.3 MB  2026-08-14 10:46││                                                                  │
+│                            ││  16 hit4001_0001                  61.5 MB  2026-11-03 16:30││ yy yank   x cut   dd trash   Esc clear selection                 │
+│                            ││  17 hit4002_0001                  27.8 MB  2026-10-31 11:11││                                                                  │
+│                            ││  18 hit5001_0001                 118.2 MB  2026-11-05 14:03││                                                                  │
+│                            ││  19 hit5002_0001                  41.6 MB  2026-11-02 13:50││                                                                  │
+│                            ││  20 hit6001_0001                   2.1 MB  2026-07-07 08:30││                                                                  │
+│                            ││  21 hit7001_0001                  15.0 MB  2026-10-15 15:15││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+╭─ <leader> ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Esc cancel · Backspace up ╮
+│                                                                                                                                                              │
+│  <Space> → launcher                                        j → jobs panel                                      : → commands                                  │
+│                                                                                                                                                              │
+│        p → pins                                            r → +run preset                                     s → +search                                   │
+│                                                                                                                                                              │
+│        f → +find                                           l → Locations                                       t → tags (filter)                             │
+│                                                                                                                                                              │
+│        / → grep picker                                     e → open dir in Neovim                              q → quit                                      │
+│                                                                                                                                                              │
+│  +groups open a second level after the key:  f → ff files · fr recent dirs   r → rs sync · rb backup   s → sk keymaps                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ NORMAL  412 items  ·  3 selected (4.31 GB)                                                                                                             <Space>
+ key run   Esc cancel   Backspace back up a level   <leader>sk search all keymaps
+ » 1 job   HIT → local  copying ████████████████░░░░░░░░  68%   hit1001_0007   41.8 MB/s   ETA 0:51                                               J for details

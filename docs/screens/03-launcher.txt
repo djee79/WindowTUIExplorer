@@ -1,21 +1,21 @@
- sentier  Launcher                                                                                                                            pins + Start Menu
+ sentier  Launcher  <Space><Space>                                                                                                            pins + Start Menu
 ╭────────────────────────────────────────────────────────────────────────────╮╭─ HIT → local ───────────────────────────────────────────────────── sync preset ╮
-│ > hit▏                                                             8 / 143 ││                                                                                │
+│ > hit #aveva▏                                                      6 / 143 ││                                                                                │
 ╰────────────────────────────────────────────────────────────────────────────╯│ Source    \\srv01\project\HIT                                           │
 ╭─ Results ──────────────────────────────────────────────────────────────────╮│ Dest      D:\aveva\local\HIT                                                   │
-│                                                                            ││ Mode      mirror  · dest becomes an exact copy; local extras deleted           │
-│ [sync]   HIT → local                  'h                    today 08:12 ok ││ Exclude   none                                                                 │
-│ [app]    E3D — HIT (network)                                         AVEVA ││ In-use    checked on the server before each run                                │
-│ [folder] HIT (server)                                                AVEVA ││ Key       'h                                                                   │
-│ [folder] HIT (local)                  'l                             AVEVA ││                                                                                │
-│ [app]    E3D — HIT (local)                                           AVEVA ││                                                                                │
-│ [backup] HIT backup                                           Mon 18:00 ok ││ Last runs                                                                      │
-│ [file]   HIT_equipment_list.xlsx                            D:\aveva\local ││ ────────────────────────────────────────────────────────────────────────────── │
-│ [web]    HIT EI web reports                                       Edge app ││ today  08:12   ok         3.80 GB   2m41s     412 files                        │
-│                                                                            ││ Wed    17:30   ok         1.12 GB   0m58s     88 files                         │
-│ ────────────────────────────────────────────────────────────────────────── ││ Tue    08:05   failed    2 locked   1m12s     r to retry                       │
-│ ranked: name prefix › group › substring › fuzzy, then frecency             ││ Mon    08:01   ok         4.02 GB   2m55s     431 files                        │
-│                                                                            ││                                                                                │
+│  #aveva 23   #acme 40   #autodesk 11   #servers 8   #backup 5      +9 more ││ Mode      mirror  · dest becomes an exact copy; local extras deleted           │
+│ ────────────────────────────────────────────────────────────────────────── ││ Exclude   none                                                                 │
+│ [sync]   HIT → local              'h                          #aveva #acme ││ In-use    checked on the server before each run                                │
+│ [app]    E3D — HIT (network)                                  #aveva #acme ││ Key       'h                                                                   │
+│ [folder] HIT (server)                                      #aveva #servers ││ Tags      #aveva #acme   ^t edit tags                                          │
+│ [folder] HIT (local)              'l                                #aveva ││                                                                                │
+│ [app]    E3D — HIT (local)                                          #aveva ││ Last runs                                                                      │
+│ [backup] HIT backup                                         #aveva #backup ││ ────────────────────────────────────────────────────────────────────────────── │
+│                                                                            ││ today  08:12   ok         3.80 GB   2m41s     412 files                        │
+│ ────────────────────────────────────────────────────────────────────────── ││ Wed    17:30   ok         1.12 GB   0m58s     88 files                         │
+│ filters: #tag and  #a,b or  !#tag not                                      ││ Tue    08:05   failed    2 locked   1m12s     r to retry                       │
+│          is:web is:unc is:unreachable  on:<server>                         ││ Mon    08:01   ok         4.02 GB   2m55s     431 files                        │
+│ ranked: name prefix › tag prefix › substring › fuzzy, then frecency        ││                                                                                │
 │                                                                            ││                                                                                │
 │                                                                            ││ Enter opens the dry-run preview. Mirror always previews first.                 │
 │                                                                            ││                                                                                │
@@ -37,9 +37,9 @@
 │                                                                            ││                                                                                │
 │                                                                            ││                                                                                │
 │                                                                            ││                                                                                │
-│ sources: pins 143 done   ·  Start Menu  ^S to include                      ││ Enter preview & run   S-Enter run (update only)   ^E edit   ^D delete          │
+│ sources: pins 143 done   ·  Start Menu  ^S to include                      ││ Enter preview & run   ^e edit   ^t tags   ^x delete   ^y copy path             │
 │                                                                            ││                                                                                │
 ╰────────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────────╯
- [sync] [backup] [app] [folder] [web] [file]  ·  one store: pins.toml
- ↑↓ move   Enter open / run   Tab multi-select   ^Y copy path   ^P pin   ^G group   Esc close
+ INSERT  [sync] [backup] [app] [folder] [web] [file] [view]  ·  one store: pins.toml
+ ^j/^k move   Enter open / run   # tag filter   Tab multi-select   <leader>t pick tags   Esc normal mode   Esc Esc close
 

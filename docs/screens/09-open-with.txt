@@ -1,0 +1,45 @@
+ sentier  \\srv01\project\HIT\hitiso                                                                               ●  srv01  12 ms     tab 1 of 2
+╭─ HIT ──────────────────────╮╭─ hitiso ───────────────────────────────────────── 27 items ╮╭─ B-1001_rev3.pdf ──────────────────────────────────── page 1 / 3 ╮
+│ hit000\                    ││     Name                             Size  Modified        ││                                                                  │
+│ hitdfl\                    ││   1 old\                                   2026-10-02 09:12││  ┌────────────────────────────────────────────────────────────┐  │
+│ hitiso\                    ││ 2   B-1001_rev3.pdf                1.2 MB  2026-11-04 15:20││  │                                                            │  │
+│ hitmac\                    ││   1 B-1001_rev3.dwg                3.4 MB  2026-11-04 15:18││  │                                                            │  │
+│ hitpic\                    ││   2 B-1002_rev2.pdf                980 KB  2026-10-29 10:41││  │    N ↑                                                     │  │
+│ hitrep\                    ││   3 B-1002_rev2.dwg ╭─ Open B-1001_rev3.pdf with ────────────────────────────────────╮1-A1                                  │  │
+│ evars.bat                  ││   4 B-1003_rev1.pdf │                                                                │╮                                     │  │
+│                            ││   5 B-1004_rev1.pdf │  configured (*.pdf · open.toml)                                │╲                                     │  │
+│                            ││   6 B-1005_rev0.pdf │  1  Default app            Adobe Acrobat                     o │ ╲                                    │  │
+│                            ││   7 site_photo_0412.│  2  Bluebeam Revu                                       ★ last │  ╲                                   │  │
+│                            ││   8 site_photo_0413.│  3  Reveal in Explorer     explorer /select                 gR │   ╰───────────┬────                  │  │
+│                            ││   9 overview.png    │  4  Copy UNC path                                           yP │     EL 104 250│                      │  │
+│                            ││  10 iso_index.xlsx  │  ────────────────────────────────────────────────────────────  │               │ ╳ GATE               │  │
+│                            ││                     │  Windows suggests (registered for .pdf)                        │               ╰──────╮               │  │
+│                            ││                     │  5  Microsoft Edge                                             │                      ╲               │  │
+│                            ││                     │  6  Foxit PDF Reader                                           │                       ╲              │  │
+│                            ││                     │  ────────────────────────────────────────────────────────────  │                        ●             │  │
+│                            ││                     │  7  Open with…             Windows dialog                      │                ┌─────────────────────┤  │
+│                            ││                     │  8  Properties                                       Alt-Enter │                │ HIT · PIPING ISO    │  │
+│                            ││                     │                                                                │                │ B-1001   REV 3      │  │
+│                            ││                     ╰─ 1-9 pick · j/k Enter · type to filter · Esc ──────────────────╯                │ SCALE NTS  SH 1/3   │  │
+│                            ││                                                            ││  └──────────────────────────────────────┴─────────────────────┘  │
+│                            ││                                                            ││                                                                  │
+│                            ││                     ╭─ same key on hitmac\pipe_report.pmlmac ────────────────────────╮t  [p prev  zp full screen               │
+│                            ││                     │  1  Neovim                 this terminal (inline)              │ × 559 mm  ·  34 × 22 in                 │
+│                            ││                     │  2  Notepad++              detached                            │metric B-1001                            │
+│                            ││                     │  3  VS Code                detached                            │ified 2026-11-04 15:20                   │
+│                            ││                     │  4  Neovim                 new WezTerm tab                     │df · cached · page 2 preloaded           │
+│                            ││                     │                                                                │                                         │
+│                            ││                     ╰────────────────────────────────────────────────────────────────╯                                         │
+│                            ││                                                            ││ Next in this folder                                              │
+│                            ││                                                            ││ ──────────────────────────────────────────────────────────────── │
+│                            ││                                                            ││ B-1001_rev3.dwg       Windows thumbnail (DWG handler)            │
+│                            ││                                                            ││ site_photo_0412.jpg   4032 × 3024 · EXIF 2026-09-12 · Pixel 9 Pro│
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││ Protocol: kitty → sixel → iTerm2 → halfblocks (auto)             │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                     2 / 27 ││                                                                  │
+╰────────────────────────────╯╰────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────╯
+ MENU  open-with menu  ·  rules from open.toml + Windows-registered apps
+ o/Enter first opener   O this menu   gR reveal in Explorer   ^o same menu in pickers
+

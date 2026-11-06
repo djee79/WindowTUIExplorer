@@ -40,6 +40,6 @@
 │                                                        ││ r retry failed only   o open log   Enter dismiss                                                   │
 │                                                        ││                                                                                                    │
 ╰────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Reports stay in %LOCALAPPDATA%\sentier\jobs\ until dismissed
+ NORMAL  Reports stay in %LOCALAPPDATA%\sentier\jobs\ until dismissed
  jk pick job   c cancel   r retry failed   o log   J close
 

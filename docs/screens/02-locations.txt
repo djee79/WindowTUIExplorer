@@ -14,7 +14,7 @@
 │  ● P:  →                  \\srv01\project                            mapped ││ message and stays where you are.                                       │
 │  × S:  →                  \\fs01\scans                          disconnected ││                                                                        │
 │                                                                                    ││                                                                        │
-│  SHARES                                                                            ││ R retry now      e rename         dm delete pin    yP copy path        │
+│  SHARES                                                                            ││ R retry now      r rename         dd unpin         yp copy path        │
 │  ●                        \\srv01\project                                   ││                                                                        │
 │  ●                        \\srv01\software                                  ││                                                                        │
 │  ○                        \\nas02\aveva_archive                              ││                                                                        │
@@ -40,6 +40,6 @@
 │  ● reachable   ○ not checked yet   × unreachable              re-probed every 60 s ││                                                                        │
 │                                                                                    ││                                                                        │
 ╰────────────────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────╯
- 16 locations  ·  4 pinned folders  ·  4 drives  ·  3 shares
- Enter open   P pin current dir   ' + key to jump   R retry   gl Locations   h from a drive root comes here
+ NORMAL  16 locations  ·  4 pinned folders  ·  4 drives  ·  3 shares
+ l/Enter open   m{key} pin current dir   '{key} jump   '' previous dir   R retry   gl Locations   - parent
 

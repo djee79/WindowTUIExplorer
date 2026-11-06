@@ -1,0 +1,45 @@
+ sentier  search "b1001 iso"  in  \\srv01\project\HIT                                                                ●  48 213 scanned · 9 found · 2.1 s
+╭─ HIT ──────────────────────╮╭─ search: b1001 iso ───────────────────────────── 9 found ● ╮╭─ B-1001_rev3.pdf ──────────────────────────────────── page 1 / 3 ╮
+│ hit000\                    ││     Path                                  Size  Score      ││                                                                  │
+│ hitdfl\                    ││ 1   hitiso\B-1001_rev3.pdf              1.2 MB     98      ││  ┌────────────────────────────────────────────────────────────┐  │
+│ hitiso\                    ││   1 hitiso\B-1001_rev3.dwg              3.4 MB     97      ││  │                                                            │  │
+│ hitmac\                    ││   2 hitiso\B-1001_rev3_markup.pdf       1.4 MB     91      ││  │                                                            │  │
+│ hitpic\                    ││   3 hitiso\old\B-1001_rev2.pdf          1.1 MB     88      ││  │    N ↑                                                     │  │
+│ hitrep\                    ││   4 hitiso\old\B-1001_rev1.pdf          1.0 MB     87      ││  │        6"-150-HIT-1001-A1                                  │  │
+│ evars.bat                  ││   5 hitrep\iso_B-1001_bom.csv            12 KB     74      ││  │  ●───────────────────╮                                     │  │
+│                            ││   6 hitpic\B-1001_iso.png               640 KB     72      ││  │                      ╲                                     │  │
+│ searched from here         ││   7 hitmac\iso\B1001_fix.pmlmac           3 KB     69      ││  │                       ╲                                    │  │
+│ H or Esc comes back        ││   8 hitdfl\iso\B1001_notes.txt            2 KB     61      ││  │                        ╲                                   │  │
+│                            ││                                                            ││  │                         ╰───────────┬────                  │  │
+│                            ││     ● walking  hitpic\2025\site\…                          ││  │                           EL 104 250│                      │  │
+│                            ││                                                            ││  │                                     │ ╳ GATE               │  │
+│                            ││ ────────────────────────────────────────────────────────── ││  │                                     ╰──────╮               │  │
+│                            ││ fuzzy · smart-case · whole path, name hits rank higher     ││  │                                            ╲               │  │
+│                            ││ add filters: ext:pdf  mtime:<7d  size:>1mb  !old           ││  │                                             ╲              │  │
+│                            ││ s again: refine instantly while a fresh walk runs          ││  │                                              ●             │  │
+│                            ││                                                            ││  │                                      ┌─────────────────────┤  │
+│                            ││                                                            ││  │                                      │ HIT · PIPING ISO    │  │
+│                            ││                                                            ││  │                                      │ B-1001   REV 3      │  │
+│                            ││                                                            ││  │                                      │ SCALE NTS  SH 1/3   │  │
+│                            ││                                                            ││  └──────────────────────────────────────┴─────────────────────┘  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││ Page      1 / 3   ]p next  [p prev  zp full screen               │
+│                            ││                                                            ││ Sheet     ANSI D  ·  864 × 559 mm  ·  34 × 22 in                 │
+│                            ││                                                            ││ Title     HIT piping isometric B-1001                            │
+│                            ││                                                            ││ Size      1.2 MB  ·  modified 2026-11-04 15:20                   │
+│                            ││                                                            ││ Render    Windows.Data.Pdf · cached · page 2 preloaded           │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││ Found in                                                         │
+│                            ││                                                            ││ ──────────────────────────────────────────────────────────────── │
+│                            ││                                                            ││ \\srv01\project\HIT\hitiso\                               │
+│                            ││                                                            ││ gr go to this folder                                             │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││ Walker: 16 threads · FindFirstFileExW large fetch (UNC)          │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+╰────────────────────────────╯╰────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────╯
+ NORMAL  search results  ·  9 found  ·  sort: score                                                                     Esc cancels the walk, keeps the results
+ j/k move   l open   gr go to folder   s refine   ,s sort   Tab/yy select·yank   H/Esc back to HIT   S content search
+
