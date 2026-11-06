@@ -519,6 +519,12 @@ mod tests {
             (r"\\server\share\dir\..\..", r"\\server\share"),
             ("//server/share/dir", r"\\server\share\dir"),
             (r"\\10.255.255.1\x", r"\\10.255.255.1\x"),
+            // hidden share (`$`): typed by hand, never mapped
+            (r"\\srv01\STD$", r"\\srv01\STD$"),
+            (
+                r"\\srv01\STD$\cat\",
+                r"\\srv01\STD$\cat",
+            ),
             // verbatim UNC
             (r"\\?\UNC\server\share", r"\\server\share"),
             (r"\\?\unc\server\share\dir", r"\\server\share\dir"),
@@ -570,6 +576,7 @@ mod tests {
         let cases: &[(&str, &[&str])] = &[
             (r"C:\a\b", &[r"C:\a", r"C:\", "Locations"]),
             (r"\\srv\share\a", &[r"\\srv\share", r"\\srv", "Locations"]),
+            (r"\\srv\STD$\a", &[r"\\srv\STD$", r"\\srv", "Locations"]),
             (r"\\?\UNC\srv\share", &[r"\\srv", "Locations"]),
             (r"\\srv", &["Locations"]),
         ];
@@ -591,7 +598,13 @@ mod tests {
     fn name_and_join_round_trip() {
         // `\\srv` is not here: the Locations root lists drives by name, while servers
         // will appear there as saved entries carrying their own target (M2).
-        let cases: &[&str] = &[r"C:\", r"C:\a\b", r"\\srv\share", r"\\srv\share\x"];
+        let cases: &[&str] = &[
+            r"C:\",
+            r"C:\a\b",
+            r"\\srv\share",
+            r"\\srv\share\x",
+            r"\\srv\STD$",
+        ];
         for start in cases {
             let Ok(loc) = Loc::parse(start) else {
                 panic!("parse {start}")
