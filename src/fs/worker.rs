@@ -1016,6 +1016,112 @@ impl Worker {
         cancel
     }
 
+    // -------------------------------------------------------------- open with (M5)
+
+    /// Reads open.toml, finds every opener's program, and the last-used openers: one
+    /// `OpenConfig`. No file: the built-in rules.
+    pub fn load_open_config(&self) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            use crate::open::{rules, run};
+            let (cfg, problems) = match run::config_path().map(std::fs::read_to_string) {
+                Some(Ok(text)) => rules::parse(&text),
+                Some(Err(e)) if e.kind() != io::ErrorKind::NotFound => (
+                    rules::OpenConfig::default(),
+                    vec![format!("open.toml: {e}")],
+                ),
+                _ => (rules::OpenConfig::default(), Vec::new()),
+            };
+            let resolved = run::resolve_all(&cfg);
+            let last = run::load_last();
+            let _ = tx.send(AppEvent::OpenConfig {
+                cfg: Box::new(cfg),
+                problems,
+                resolved,
+                last,
+            });
+        });
+    }
+
+    /// Starts a program and doesn't wait (`program` is found on PATH / App Paths first).
+    /// One `Ran` saying `what`, or why it couldn't start.
+    pub fn run_detached(
+        &self,
+        what: String,
+        program: String,
+        args: Vec<String>,
+        cwd: Option<String>,
+    ) {
+        self.blocking_ran(what, move || {
+            let exe = crate::open::run::resolve(&program)
+                .ok_or_else(|| format!("{program} not found (PATH, App Paths)"))?;
+            crate::open::run::spawn_detached(&exe, &args, cwd.as_deref()).map_err(|e| e.to_string())
+        });
+    }
+
+    /// Explorer with `path` selected.
+    pub fn reveal(&self, path: String) {
+        let what = format!("revealed {}", short_name(&path));
+        self.blocking_ran(what, move || {
+            crate::platform::reveal(&path).map_err(|e| e.to_string())
+        });
+    }
+
+    /// The Properties sheet.
+    pub fn properties(&self, path: String) {
+        let what = format!("properties of {}", short_name(&path));
+        self.blocking_ran(what, move || {
+            crate::platform::show_properties(&path).map_err(|e| e.to_string())
+        });
+    }
+
+    /// Windows' Open with dialog. It's modal, so it gets a thread of its own rather than
+    /// holding a pool thread while the user decides.
+    pub fn open_with_dialog(&self, path: String) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::platform::open_with_dialog(&path).map_err(|e| e.to_string());
+            // Cancelling the dialog is an error to Windows, not to the user.
+            let result = result.or_else(|e| {
+                if e.contains("0x800704C7") {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            });
+            let _ = tx.send(AppEvent::Ran {
+                what: format!("open with: {}", short_name(&path)),
+                result,
+            });
+        });
+    }
+
+    /// Paths (UNC-resolved for mapped drives with `unc`) or names to the clipboard, one
+    /// per line.
+    pub fn copy_text(&self, what: String, lines: Vec<String>, unc: bool) {
+        self.blocking_ran(what, move || {
+            let lines: Vec<String> = if unc {
+                lines.iter().map(|p| crate::open::run::unc_of(p)).collect()
+            } else {
+                lines
+            };
+            crate::open::run::copy_text(&lines.join("\r\n"))
+        });
+    }
+
+    pub fn save_open_last(&self, last: crate::open::run::LastUsed) {
+        self.rt
+            .spawn_blocking(move || crate::open::run::save_last(&last));
+    }
+
+    fn blocking_ran(&self, what: String, f: impl FnOnce() -> Result<(), String> + Send + 'static) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let result = f();
+            let _ = tx.send(AppEvent::Ran { what, result });
+        });
+    }
+
     /// Looks for 7-Zip once: one `SevenZip`.
     pub fn find_7z(&self) {
         let tx = self.tx.clone();
@@ -1157,6 +1263,15 @@ impl Worker {
             let _ = tx.send(AppEvent::Opened { loc, result });
         });
     }
+}
+
+/// `C:\a\b.pdf` → `b.pdf`, for messages.
+fn short_name(path: &str) -> String {
+    path.trim_end_matches('\\')
+        .rsplit('\\')
+        .next()
+        .unwrap_or(path)
+        .to_string()
 }
 
 async fn timeout_for(loc: &Loc, t: Timeouts) -> Duration {

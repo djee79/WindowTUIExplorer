@@ -7,6 +7,7 @@ mod help;
 mod jobs;
 mod locations;
 mod netlist;
+mod openwith;
 mod picker;
 mod statusbar;
 mod sync;
@@ -51,6 +52,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.mode == Mode::Jobs {
         jobs::draw(f, body, app);
+    }
+    if app.mode == Mode::OpenWith {
+        openwith::draw(f, body, app);
     }
     if app.mode == Mode::SyncPreview {
         sync::draw(f, body, app);

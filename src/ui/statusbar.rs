@@ -57,6 +57,16 @@ const SYNC_HINTS: &[(&str, &str)] = &[
     ("Esc", "cancel"),
 ];
 
+const OPEN_HINTS: &[(&str, &str)] = &[
+    ("1-9", "pick"),
+    ("jk", "move"),
+    ("Enter", "open"),
+    ("type", "filter"),
+    ("Esc", "close"),
+    ("gR", "reveal"),
+    ("yP", "copy UNC path"),
+];
+
 const VISUAL_HINTS: &[(&str, &str)] = &[
     ("motions", "extend"),
     ("y", "yank"),
@@ -510,6 +520,8 @@ pub fn draw_hints(f: &mut Frame, area: Rect, app: &App) {
         FULL_PREVIEW_HINTS
     } else if app.mode == Mode::Jobs {
         JOBS_HINTS
+    } else if app.mode == Mode::OpenWith {
+        OPEN_HINTS
     } else if app.mode == Mode::SyncPreview {
         SYNC_HINTS
     } else if app.visual.is_some() {

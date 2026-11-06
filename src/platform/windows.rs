@@ -721,6 +721,89 @@ pub fn oem_to_string(bytes: &[u8]) -> String {
     String::from_utf16_lossy(&wide[..n.max(0) as usize])
 }
 
+// ------------------------------------------------------------------ open-with (M5)
+
+/// `App Paths\<exe>`: where an app registered itself (per user first, then machine), as
+/// Explorer's Run box finds it. `exe` is a file name like `Revu.exe`.
+pub fn app_path(exe: &str) -> Option<String> {
+    use windows::Win32::System::Registry::{
+        HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW,
+    };
+    let key = HSTRING::from(format!(
+        r"Software\Microsoft\Windows\CurrentVersion\App Paths\{exe}"
+    ));
+    for hive in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        let mut buf = vec![0u16; 1024];
+        let mut len = (buf.len() * 2) as u32;
+        // SAFETY: the key string outlives the call; buf is `len` bytes long; a null value
+        // name reads the key's default value.
+        let r = unsafe {
+            RegGetValueW(
+                hive,
+                &key,
+                PCWSTR::null(),
+                RRF_RT_REG_SZ,
+                None,
+                Some(buf.as_mut_ptr().cast()),
+                Some(&mut len),
+            )
+        };
+        if r == ERROR_SUCCESS {
+            let n = (len as usize / 2).min(buf.len());
+            let s = String::from_utf16_lossy(&buf[..n]);
+            let s = s.trim_end_matches('\0').trim_matches('"').to_string();
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
+/// Windows' own "Open with" chooser (including "always use this app"). Modal: blocks
+/// until it closes, so call it from its own thread.
+pub fn open_with_dialog(path: &str) -> io::Result<()> {
+    use windows::Win32::UI::Shell::{
+        OAIF_ALLOW_REGISTRATION, OAIF_EXEC, OAIF_REGISTER_EXT, OPENASINFO, SHOpenWithDialog,
+    };
+    // SAFETY: no reserved pointer; flags are valid COINIT values.
+    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+    let file = HSTRING::from(path);
+    let info = OPENASINFO {
+        pcszFile: PCWSTR(file.as_ptr()),
+        pcszClass: PCWSTR::null(),
+        oaifInFlags: OAIF_ALLOW_REGISTRATION | OAIF_REGISTER_EXT | OAIF_EXEC,
+    };
+    // SAFETY: `info` and the string it points to live across the call.
+    unsafe { SHOpenWithDialog(None, &info) }.map_err(io::Error::other)
+}
+
+/// The Properties sheet of a file or folder (Explorer's Alt-Enter). Windows shows it on a
+/// thread of its own; it lives as long as this process does.
+pub fn show_properties(path: &str) -> io::Result<()> {
+    use windows::Win32::UI::Shell::{SHOP_FILEPATH, SHObjectProperties};
+    // SAFETY: no reserved pointer; flags are valid COINIT values.
+    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+    let file = HSTRING::from(path);
+    // SAFETY: the path string outlives the call; no property page name.
+    let ok = unsafe { SHObjectProperties(None, SHOP_FILEPATH, &file, PCWSTR::null()) };
+    if ok.as_bool() {
+        Ok(())
+    } else {
+        Err(io::Error::other("Windows couldn't show its properties"))
+    }
+}
+
+/// An Explorer window with `path` selected (`explorer /select,"path"`). The argument is
+/// passed as written: explorer parses it itself and doesn't take standard quoting.
+pub fn reveal(path: &str) -> io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    std::process::Command::new("explorer.exe")
+        .raw_arg(format!("/select,\"{path}\""))
+        .spawn()
+        .map(|_| ())
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;

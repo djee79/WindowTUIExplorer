@@ -9,6 +9,7 @@ mod jobs;
 mod keymap;
 mod locations;
 mod machines;
+mod open;
 mod picker;
 mod pins;
 mod platform;

@@ -76,6 +76,19 @@ pub enum AppEvent {
         token: u64,
         result: Result<(Box<crate::jobs::robocopy::Tracker>, i32), String>,
     },
+    /// open.toml read (or the defaults), its problems, every opener's program (None: not
+    /// found), and the last opener used per extension.
+    OpenConfig {
+        cfg: Box<crate::open::rules::OpenConfig>,
+        problems: Vec<String>,
+        resolved: std::collections::BTreeMap<String, Option<String>>,
+        last: crate::open::run::LastUsed,
+    },
+    /// Something was started, shown or copied (`what`), or why not.
+    Ran {
+        what: String,
+        result: Result<(), String>,
+    },
     /// Whether the server of `open` answered on port 445 (a share that won't list).
     SmbAnswer {
         open: String,

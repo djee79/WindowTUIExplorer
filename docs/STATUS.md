@@ -779,3 +779,43 @@ Manual checklist:
 - [ ] `:backup new` with 7-Zip installed: engine 7zip; a big project zips noticeably faster
       than builtin; the zip opens in Explorer.
 - [ ] `^e` on that backup: change keep; `pins.toml` shows the new value.
+
+## M5 open-with, slice 1: rules, openers, `o` / `O` (code complete 2026-11-06, manual check pending)
+
+- `%APPDATA%\sentier\open.toml` (`open/rules.rs`): `[opener.<name>]` (`desc`, `run` with
+  `{path} {paths} {dir} {name} {stem} {ext}`, `mode = inline | detached | tab`,
+  `for = all | each`), `[[open.rule]]` (`match` glob on the name, or `"dir"`; `use`, in
+  order), `[open] remember / o_uses_last`. First matching rule wins; built-in rules stay
+  last (folders: enter, explorer, terminal-here, copy-path, copy-unc; files: default,
+  reveal, copy-path, copy-unc), so with no file at all everything opens as before.
+  Bad openers / rules / unknown names are skipped and reported in the status bar + log.
+- Built-in openers: `default` (ShellExecute), `reveal` (`explorer /select,"…"`),
+  `explorer`, `terminal-here` (`wezterm cli spawn --cwd`), `enter`, `copy-path`,
+  `copy-unc` (mapped drive → `\server\share\…`), `openwith` (`SHOpenWithDialog`, on its
+  own thread), `properties` (`SHObjectProperties`). `pin:<name>` runs an `app` pin with
+  the paths appended.
+- Programs are found once at startup on the worker: a path as given, else PATH (PATHEXT),
+  else `App Paths` (HKCU, then HKLM). Not found → greyed "not found: …" in the menu.
+- `o` / `Enter` / `l` on a file: the rule's first opener, on the selection's files when
+  there is one (`for = all` → one process). Folders still enter.
+- `O`: the menu (09-open-with): configured section with the rule's pattern, then Open
+  with… and Properties. `1`–`9`, `j`/`k` / arrows / `^n` `^p`, Enter, typing filters
+  (`Esc` clears the filter, then closes). The pick is remembered per extension
+  (`%LOCALAPPDATA%\sentier\open_last.json`): `★ last`, moved to the top; `o` uses it only
+  with `o_uses_last = true`.
+- Inline openers suspend the TUI (as `:rename` does) and re-list the folder after;
+  detached ones start with no console window, output in `logs\openers.log`.
+- New keys: `O`, `gR` reveal, `Alt-Enter` Properties, `yp` / `yP` / `yn` (copy path / UNC
+  path / name; M6's path utilities, pulled forward), `gx` Explorer here, `gw` WezTerm tab
+  here. New crate: `arboard` (stack table), no default features.
+
+Not yet (slice 2): "Windows suggests" (`SHAssocEnumHandlers` + `IAssocHandler::Invoke`),
+the default app's name next to "Default app".
+
+Manual checklist:
+- [ ] `Alt-Enter` on a file and on a folder: the Properties sheet appears and stays open.
+- [ ] `O` → Open with…: Windows' chooser; "always use this app" works.
+- [ ] `gR` on a file on a share: Explorer opens with it selected.
+- [ ] An `inline` nvim opener: Neovim in this terminal, sentier back intact after `:q`.
+- [ ] `yP` on a mapped drive file pastes `\server\share\…` into Teams.
+- [ ] `gw` inside WezTerm: a new tab in this folder.

@@ -335,6 +335,19 @@ pub enum Action {
     Sync(String, bool),
     /// `:backup <preset>` (asks once). No name: the backup preset picker.
     Backup(String),
+    /// `O`: the open-with menu.
+    OpenWith,
+    /// `gR`: reveal in Explorer (the item selected in an Explorer window).
+    Reveal,
+    /// `Alt-Enter`: Windows Properties.
+    Properties,
+    /// `yp` / `yP` / `yn`: copy the path / the UNC-resolved path / the name.
+    CopyPath,
+    CopyUnc,
+    CopyName,
+    /// `gx` / `gw`: the current folder in Explorer / a new WezTerm tab.
+    ExplorerHere,
+    TerminalHere,
     /// `<leader>rs`: the pins picker filtered to sync presets.
     SyncPicker,
     /// `g<Space>`: the `:cd ` prompt, ready for a path (Yazi's `g<Space>`).
@@ -430,6 +443,14 @@ const NAMED: &[(&str, Action)] = &[
     ("paste-overwrite", Action::PasteOverwrite),
     ("jobs", Action::Jobs),
     ("sync-picker", Action::SyncPicker),
+    ("open-with", Action::OpenWith),
+    ("reveal", Action::Reveal),
+    ("properties", Action::Properties),
+    ("copy-path", Action::CopyPath),
+    ("copy-unc", Action::CopyUnc),
+    ("copy-name", Action::CopyName),
+    ("explorer-here", Action::ExplorerHere),
+    ("terminal-here", Action::TerminalHere),
     ("repeat-paste", Action::RepeatPaste),
     ("goto-path", Action::GotoPath),
     ("help", Action::Help),
@@ -582,6 +603,14 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("<CR>", Open, ""),
         // Until open.toml (M5), the first opener is ShellExecute / enter.
         ("o", Open, "open with the first opener"),
+        ("O", OpenWith, "open with… (menu)"),
+        ("gR", Reveal, "reveal in Explorer"),
+        ("<A-CR>", Properties, "Windows Properties"),
+        ("yp", CopyPath, "copy path"),
+        ("yP", CopyUnc, "copy UNC path (mapped drives resolved)"),
+        ("yn", CopyName, "copy name"),
+        ("gx", ExplorerHere, "this folder in Explorer"),
+        ("gw", TerminalHere, "new WezTerm tab here"),
         ("gg", Top, "top (or line n)"),
         ("<Home>", Top, ""),
         ("G", Bottom, "bottom (or line n)"),

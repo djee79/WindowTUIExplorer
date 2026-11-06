@@ -636,7 +636,12 @@ fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Drawn>
             // them. An iTerm2 picture is written after the frame and would cover them.
             let covered = matches!(
                 app.mode,
-                Mode::Help | Mode::Picker | Mode::Credentials | Mode::NetList | Mode::SyncPreview
+                Mode::Help
+                    | Mode::Picker
+                    | Mode::Credentials
+                    | Mode::NetList
+                    | Mode::SyncPreview
+                    | Mode::OpenWith
             ) || app.which_key_visible();
             if !covered && size.width <= area.width && size.height <= area.height {
                 let rect = Rect {

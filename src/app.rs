@@ -12,6 +12,8 @@ pub use jobs::JobRow;
 mod backup;
 mod keys;
 mod machines;
+mod open;
+pub use open::OpenMenu;
 mod picker;
 mod pins;
 mod preview;
@@ -104,6 +106,8 @@ pub enum Mode {
     Credentials,
     /// A sync preset's dry-run preview (Enter runs it, `u` mirror/update, `Tab` all).
     SyncPreview,
+    /// `O`: the open-with menu.
+    OpenWith,
     /// `J`: the jobs panel (list, detail, report).
     Jobs,
 }
@@ -278,6 +282,12 @@ pub struct App {
     pub preset_runs: crate::jobs::preset::Runs,
     /// Where 7-Zip is installed, if it is (found once at startup).
     pub seven_zip: Option<String>,
+    /// Open with (M5): open.toml (or the defaults), each opener's program (None: not
+    /// found), the last opener per extension, the `O` menu.
+    pub open_cfg: crate::open::rules::OpenConfig,
+    pub open_resolved: std::collections::BTreeMap<String, Option<String>>,
+    pub open_last: crate::open::run::LastUsed,
+    pub open_menu: Option<OpenMenu>,
     sync_token: u64,
     /// File operations: the open rename / delete prompt's subject, how many are running,
     /// the name to put the cursor on when the listing comes back, and a program to run
@@ -393,6 +403,10 @@ impl App {
             sync_preview: None,
             preset_runs: Default::default(),
             seven_zip: None,
+            open_cfg: Default::default(),
+            open_resolved: Default::default(),
+            open_last: Default::default(),
+            open_menu: None,
             sync_token: 0,
             op_draft: None,
             ops_running: 0,
@@ -421,6 +435,7 @@ impl App {
         app.worker.load_job_reports();
         app.worker.load_preset_runs();
         app.worker.find_7z();
+        app.worker.load_open_config();
         app.set_cwd(start, None);
         app
     }
@@ -597,6 +612,13 @@ impl App {
         }
         match self.cwd.join(&name) {
             Ok(target) if container => self.navigate(target, None),
+            // A file: its rule's first opener (open.toml; by default the Windows app),
+            // on the selection when there is one.
+            Ok(target) if target.as_fs().is_some() => {
+                let mut targets = self.open_targets();
+                targets.retain(|t| !t.is_dir);
+                self.open_with_first(targets);
+            }
             Ok(target) => {
                 self.set_status(format!("opening {name}…"), false);
                 self.worker.open(target);
@@ -1008,6 +1030,13 @@ impl App {
             AppEvent::AvevaChecked { token, hits } => self.on_aveva_checked(token, hits),
             AppEvent::SyncPreviewed { token, result } => self.on_sync_previewed(token, result),
             AppEvent::SevenZip(path) => self.seven_zip = path,
+            AppEvent::OpenConfig {
+                cfg,
+                problems,
+                resolved,
+                last,
+            } => self.on_open_config(*cfg, problems, resolved, last),
+            AppEvent::Ran { what, result } => self.on_ran(what, result),
             AppEvent::SmbAnswer { open, up } => self.on_smb_answer(open, up),
             AppEvent::PresetRuns(runs) => {
                 // A run recorded before the file was read is newer: keep it.
@@ -4572,6 +4601,116 @@ mod job_tests {
             "{}",
             status(&l.app)
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `o` runs a file's first opener (inline here: the TUI would suspend), on the
+    /// selection too; `O` lists the rule's openers, remembers the pick per extension,
+    /// greys a missing program, and filters as you type.
+    #[test]
+    fn open_with_first_opener_and_the_menu() {
+        let dir = temp_tree();
+        let mut l = Live::new(&dir);
+        l.cd(&dir.join("src"));
+        let (cfg, problems) = crate::open::rules::parse(
+            r#"
+            [opener.echo]
+            desc = "Echo"
+            run = ["cmd", "/c", "echo", "{paths}"]
+            mode = "inline"
+            [opener.gone]
+            desc = "Gone"
+            run = ['C:\nope\gone.exe', "{path}"]
+            [[open.rule]]
+            match = "*.txt"
+            use = ["echo", "gone", "default", "copy-path"]
+            "#,
+        );
+        assert!(problems.is_empty(), "{problems:?}");
+        l.app.open_cfg = cfg;
+        l.app.open_resolved.insert("gone".into(), None);
+        let a = dir.join("src").join("a.txt").display().to_string();
+        let b = dir.join("src").join("b.txt").display().to_string();
+
+        // o on a.txt: the inline opener, with its path.
+        l.goto("a.txt");
+        press(&mut l.app, "o");
+        let Some(req) = l.app.inline.take() else {
+            panic!("inline opener expected; status {}", status(&l.app))
+        };
+        assert_eq!(req.program, "cmd");
+        assert_eq!(req.args, ["/c", "echo", a.as_str()]);
+        // A selection: every selected file, one process (for = all).
+        press(&mut l.app, "<Tab><Tab>");
+        l.goto("a.txt");
+        press(&mut l.app, "<CR>");
+        let Some(req) = l.app.inline.take() else {
+            panic!()
+        };
+        assert_eq!(req.args, ["/c", "echo", a.as_str(), b.as_str()]);
+        press(&mut l.app, "<Esc>");
+
+        // O: the menu.
+        l.goto("a.txt");
+        press(&mut l.app, "O");
+        assert_eq!(l.app.mode, Mode::OpenWith);
+        let ids = |app: &App| -> Vec<String> {
+            app.open_menu
+                .as_ref()
+                .map(|m| m.items.iter().map(|i| i.id.clone()).collect())
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            ids(&l.app),
+            [
+                "echo",
+                "gone",
+                "default",
+                "copy-path",
+                "openwith",
+                "properties"
+            ]
+        );
+        let screen = render(&mut l.app, 140, 40);
+        assert!(screen.contains("Open a.txt with"), "{screen}");
+        assert!(screen.contains("configured (*.txt)"), "{screen}");
+        assert!(screen.contains("not found"), "{screen}");
+        // The missing one can't run: the menu stays.
+        press(&mut l.app, "2");
+        assert_eq!(l.app.mode, Mode::OpenWith);
+        assert!(status(&l.app).contains("not found"));
+        // Typing filters; Esc clears the filter first, then closes.
+        type_text(&mut l.app, "ech");
+        assert_eq!(l.app.open_menu.as_ref().map(|m| m.shown().len()), Some(1));
+        press(&mut l.app, "<Esc>");
+        assert_eq!(l.app.open_menu.as_ref().map(|m| m.shown().len()), Some(6));
+        // 1 picks Echo, and it's remembered for .txt.
+        press(&mut l.app, "1");
+        assert_eq!(l.app.mode, Mode::Normal);
+        assert!(l.app.inline.take().is_some());
+        assert_eq!(l.app.open_last.get("txt").map(String::as_str), Some("echo"));
+        press(&mut l.app, "O");
+        assert!(
+            l.app
+                .open_menu
+                .as_ref()
+                .is_some_and(|m| m.items[0].id == "echo" && m.items[0].last)
+        );
+        press(&mut l.app, "<Esc>");
+        assert_eq!(l.app.mode, Mode::Normal);
+
+        // Folders: their own rule (the defaults: enter first).
+        l.goto("proj");
+        press(&mut l.app, "O");
+        assert_eq!(ids(&l.app).first().map(String::as_str), Some("enter"));
+        press(&mut l.app, "<CR>");
+        l.until(|a| a.cwd.display().ends_with("proj") && a.view_listing.is_some());
+
+        // Locations has nothing to open with.
+        press(&mut l.app, "gl");
+        press(&mut l.app, "O");
+        assert_ne!(l.app.mode, Mode::OpenWith);
+        assert!(status(&l.app).contains("O opens files and folders"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -180,6 +180,7 @@ impl App {
             Mode::NetList => self.on_net_list_key(key),
             Mode::Jobs => self.on_jobs_key(key),
             Mode::SyncPreview => self.on_sync_preview_key(key),
+            Mode::OpenWith => self.on_open_menu_key(key),
             Mode::Normal => self.on_normal_key(key),
         }
     }
@@ -394,6 +395,14 @@ impl App {
             Action::Net(arg) => self.net_command(&arg),
             Action::Sync(name, skip) => self.sync_command(&name, skip),
             Action::SyncPicker => self.sync_command("", false),
+            Action::OpenWith => self.open_menu(),
+            Action::Reveal => self.open_targets_with("reveal"),
+            Action::Properties => self.open_targets_with("properties"),
+            Action::CopyPath => self.open_targets_with("copy-path"),
+            Action::CopyUnc => self.open_targets_with("copy-unc"),
+            Action::CopyName => self.copy_names(),
+            Action::ExplorerHere => self.open_here("explorer"),
+            Action::TerminalHere => self.open_here("terminal-here"),
             Action::Backup(name) => self.backup_command(&name),
             Action::PrevPage => self.step_page(n, false),
             Action::GotoPage => match count {

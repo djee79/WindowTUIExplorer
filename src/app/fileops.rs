@@ -43,6 +43,8 @@ pub struct Inline {
 pub enum InlineThen {
     /// `:rename` in `dir`, of these names.
     BulkRename { dir: FsPath, names: Vec<String> },
+    /// An inline opener (Neovim…): list the folder again after, it may have changed.
+    Refresh { what: String },
 }
 
 /// How the inline program went: its exit, and the file's text afterwards.
@@ -338,6 +340,14 @@ impl App {
         self.mode = Mode::Normal;
         self.dirty = true;
         match then {
+            InlineThen::Refresh { what } => {
+                self.refresh();
+                match r.status {
+                    Ok(0) => self.set_status(format!("back from {what}"), false),
+                    Ok(code) => self.set_status(format!("{what} exited with {code}"), true),
+                    Err(e) => self.set_status(format!("couldn't run {what}: {e}"), true),
+                }
+            }
             InlineThen::BulkRename { dir, names } => {
                 if let Err(e) = r.status {
                     return self.set_status(format!(":rename: couldn't run the editor: {e}"), true);
