@@ -162,6 +162,49 @@ fn port_445(host: &str) -> Result<Duration, String> {
     Err(last)
 }
 
+/// A UNC path, or a drive letter Windows says is a network drive. Blocking.
+fn no_recycle_bin(path: &str) -> bool {
+    if path.starts_with(r"\\") {
+        return true;
+    }
+    let b = path.as_bytes();
+    b.len() >= 2
+        && b[1] == b':'
+        && b[0].is_ascii_alphabetic()
+        && platform::drive_kind((b[0] as char).to_ascii_uppercase()) == platform::DriveKind::Network
+}
+
+/// `%LOCALAPPDATA%\sentier\audit.log` (a temp file in tests).
+pub fn audit_path() -> Option<std::path::PathBuf> {
+    if cfg!(test) {
+        return Some(std::env::temp_dir().join("sentier-test-audit.log"));
+    }
+    let base = std::env::var_os("LOCALAPPDATA")?;
+    Some(
+        std::path::PathBuf::from(base)
+            .join("sentier")
+            .join("audit.log"),
+    )
+}
+
+fn append_audit(line: &str) {
+    use std::io::Write;
+    let Some(path) = audit_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(mut f) => {
+            let _ = writeln!(f, "{line}");
+        }
+        Err(e) => tracing::warn!(error = %e, "writing the audit log"),
+    }
+}
+
 /// Runs `cmd` through `cmd.exe /D /C`, hidden (no console window), and returns what it
 /// printed. Killed after `limit`. Its stderr goes to the log, never the screen (rule 6).
 /// Blocking.
@@ -989,6 +1032,30 @@ impl Worker {
                 .map(|d| crate::jobs::load_reports(&d))
                 .unwrap_or_default();
             let _ = tx.send(AppEvent::JobReports(reports));
+        });
+    }
+
+    /// Runs a file operation on the blocking pool: one `FileOpDone`. With `audit` (an
+    /// admin share's machine and user) the change is appended to `audit.log`.
+    pub fn file_op(&self, op: crate::fs::ops::FileOp, audit: Option<(String, Option<String>)>) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            use crate::fs::ops::FileOp;
+            // Windows deletes for good where there's no Recycle Bin: never let a "to the
+            // Recycle Bin" through on a share or a mapped drive.
+            let result = match &op {
+                FileOp::Trash(paths) if paths.iter().any(|p| no_recycle_bin(p)) => {
+                    Err("no Recycle Bin on a network drive; D deletes permanently".to_string())
+                }
+                _ => op.run(),
+            };
+            if let Some((host, user)) = audit {
+                let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                let line =
+                    crate::fs::ops::audit_line(&now, &host, user.as_deref(), &op, result.is_ok());
+                append_audit(&line);
+            }
+            let _ = tx.send(AppEvent::FileOpDone { op, result });
         });
     }
 

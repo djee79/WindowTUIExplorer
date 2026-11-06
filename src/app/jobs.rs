@@ -2,7 +2,7 @@
 //!
 //! - `Tab` toggles the item under the cursor and moves down (with a count: n items).
 //!   `v` / `V` start visual mode: the range from where it started to the cursor, moved
-//!   with any motion; `y` `x` `d` act on it, `Esc` / `v` leave. Plain `Esc` clears the
+//!   with any motion; `y` yanks, `x` cuts, `d` / `D` delete it, `Esc` / `v` leave. Plain `Esc` clears the
 //!   selection.
 //! - `yy` / `x` put the selection (or the visual range, or `n` items from the cursor)
 //!   in the register as a copy / a move. `p` pastes into the current folder without
@@ -153,7 +153,9 @@ impl App {
         }
         match ev.code {
             KeyCode::Char('y') => self.yank(Op::Copy, 1),
-            KeyCode::Char('x' | 'd') => self.yank(Op::Move, 1),
+            KeyCode::Char('x') => self.yank(Op::Move, 1),
+            KeyCode::Char('d') => self.start_delete(false, 1),
+            KeyCode::Char('D') => self.start_delete(true, 1),
             KeyCode::Char('v' | 'V') | KeyCode::Esc => self.visual = None,
             KeyCode::Tab => {
                 // Visual range into the selection, as Tab would.
@@ -296,6 +298,9 @@ impl App {
     /// Asks when it replaces files (`P`) or touches an AVEVA project; else starts.
     fn confirm_paste(&mut self, req: Request, plan: Plan, aveva: Vec<String>) {
         let mut why = Vec::new();
+        if let Some(prefix) = self.admin_prefix() {
+            why.push(format!("{prefix}{} {} here.", req.op.word(), plan.title));
+        }
         if !aveva.is_empty() {
             let names: Vec<String> = aveva
                 .iter()

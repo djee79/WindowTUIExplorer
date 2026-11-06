@@ -5,6 +5,8 @@
 //! to the [`AppEvent`]s that come back.
 
 pub mod auth;
+mod fileops;
+pub use fileops::Suspend;
 mod jobs;
 pub use jobs::JobRow;
 mod keys;
@@ -263,6 +265,13 @@ pub struct App {
     paste_token: u64,
     pending_paste: Option<jobs::PendingPaste>,
     last_paste: Option<(jobs::Register, bool)>,
+    /// File operations: the open rename / delete prompt's subject, how many are running,
+    /// the name to put the cursor on when the listing comes back, and a program to run
+    /// with the TUI suspended (`:rename` in the editor).
+    op_draft: Option<fileops::OpDraft>,
+    ops_running: usize,
+    select_next: Option<String>,
+    pub inline: Option<fileops::Inline>,
     last_job_id: u64,
     /// `:net drop <server>` waiting for the connection list; `:net list` shown.
     net_drop_server: Option<String>,
@@ -366,6 +375,10 @@ impl App {
             paste_token: 0,
             pending_paste: None,
             last_paste: None,
+            op_draft: None,
+            ops_running: 0,
+            select_next: None,
+            inline: None,
             last_job_id: 0,
             net_drop_server: None,
             net_listing: None,
@@ -437,7 +450,7 @@ impl App {
     }
 
     pub fn is_busy(&self) -> bool {
-        !self.pending.is_empty() || self.searching() || self.image_busy()
+        !self.pending.is_empty() || self.searching() || self.image_busy() || self.ops_running > 0
     }
 
     pub fn dir(&self, loc: &Loc) -> Option<&DirState> {
@@ -481,6 +494,7 @@ impl App {
         self.cursor = 0;
         self.marked.clear();
         self.visual = None;
+        self.select_next = None;
         self.offset = 0;
 
         // A machine view, or a path on a machine's admin share: remember the machine and
@@ -826,8 +840,9 @@ impl App {
     /// Rebuilds the visible cwd rows from its listing, keeping the selection by name.
     fn rebuild_view(&mut self) {
         let keep = self
-            .selected()
-            .map(|e| e.name.clone())
+            .select_next
+            .clone()
+            .or_else(|| self.selected().map(|e| e.name.clone()))
             .or_else(|| self.remembered.get(&self.cwd).cloned());
         let in_results = matches!(self.cwd, Loc::Results { .. });
         let listing = if in_results {
@@ -850,6 +865,9 @@ impl App {
                 .iter()
                 .position(|&i| entries[i].name.eq_ignore_ascii_case(&name))
         });
+        if found.is_some() {
+            self.select_next = None;
+        }
         let cursor = found.unwrap_or(self.cursor.min(self.view.len().saturating_sub(1)));
         if cursor != self.cursor || found.is_none() {
             self.schedule_preview();
@@ -940,6 +958,7 @@ impl App {
             AppEvent::RecentMachines(result) => self.on_recent_machines(result),
             AppEvent::MachineSources(results) => self.on_machine_sources(results),
             AppEvent::Job { id, ev } => self.on_job_event(id, ev),
+            AppEvent::FileOpDone { op, result } => self.on_file_op_done(op, result),
             AppEvent::JobReports(reports) => self.on_job_reports(reports),
             AppEvent::AvevaChecked { token, hits } => self.on_aveva_checked(token, hits),
             AppEvent::NetDropped(results) => self.on_net_dropped(results),
@@ -1121,7 +1140,12 @@ pub fn visible_indices(listing: &Listing, show_hidden: bool, filter: &str) -> Ve
 
 /// The UI loop: drain events, tick, draw when dirty (capped at ~60 fps), sleep until the
 /// next event or the next time-driven change. Returns how the user quit.
-pub fn run(terminal: &mut DefaultTerminal, app: &mut App, rx: &EventRx) -> anyhow::Result<Quit> {
+pub fn run(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    rx: &EventRx,
+    term: &dyn Suspend,
+) -> anyhow::Result<Quit> {
     let mut last_draw = Instant::now() - FRAME;
     // Where the last frame put a picture, and which one (by address).
     let mut last_image: Option<ratatui::layout::Rect> = None;
@@ -1193,6 +1217,14 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App, rx: &EventRx) -> anyho
         }
         while let Ok(ev) = rx.try_recv() {
             app.handle(ev);
+        }
+        // `:rename` (and later inline openers): the program gets the terminal.
+        if let Some(req) = app.inline.take() {
+            let result = fileops::run_inline(&req, term);
+            terminal.clear()?;
+            first_frame = true;
+            last_image = None;
+            app.inline_done(req.then, result);
         }
     }
 }
@@ -3359,8 +3391,11 @@ mod job_tests {
             while !done(&self.app) {
                 assert!(
                     Instant::now() < end,
-                    "timed out; status {:?}",
-                    self.app.status
+                    "timed out; status {:?}, view {:?}, cursor on {:?}, ops {}",
+                    self.app.status.as_ref().map(|s| s.text.clone()),
+                    self.names(),
+                    self.app.selected().map(|e| e.name.clone()),
+                    self.app.ops_running
                 );
                 if let Ok(ev) = self.rx.recv_timeout(Duration::from_millis(20)) {
                     self.app.handle(ev);
@@ -3704,5 +3739,298 @@ mod job_tests {
             "{}",
             status(&app)
         );
+    }
+
+    // ------------------------------------------------------------ file operations
+
+    fn prompt_text(app: &App) -> (String, usize, String) {
+        app.prompt
+            .as_ref()
+            .map(|p| (p.editor.text(), p.editor.cursor(), p.note.clone()))
+            .unwrap_or_default()
+    }
+
+    fn selected_name(app: &App) -> String {
+        app.selected().map(|e| e.name.clone()).unwrap_or_default()
+    }
+
+    #[test]
+    fn rename_new_and_delete() {
+        let dir = temp_tree();
+        let src = dir.join("src");
+        let mut l = Live::new(&src);
+        // r: the cursor starts before the extension.
+        l.goto("a.txt");
+        press(&mut l.app, "r");
+        assert_eq!(prompt_text(&l.app).0, "a.txt");
+        assert_eq!(prompt_text(&l.app).1, 1);
+        press(&mut l.app, "x<CR>");
+        l.until(|a| a.ops_running == 0 && selected_name(a) == "ax.txt");
+        assert!(src.join("ax.txt").exists() && !src.join("a.txt").exists());
+        // cw too; a bad name keeps the prompt open and says why.
+        press(&mut l.app, "cw<C-u>con<CR>");
+        assert_eq!(l.app.mode, Mode::Prompt);
+        assert!(
+            prompt_text(&l.app).2.contains("reserved"),
+            "{:?}",
+            prompt_text(&l.app)
+        );
+        press(&mut l.app, "<Esc><Esc>");
+        assert_eq!(l.app.mode, Mode::Normal);
+
+        // a: a file, with a new parent folder; the cursor lands on what appeared.
+        press(&mut l.app, "a");
+        for c in r"notes\todo.txt".chars() {
+            l.app.handle(AppEvent::Term(Event::Key(KeyEvent::new(
+                crossterm_char(c),
+                ratatui::crossterm::event::KeyModifiers::NONE,
+            ))));
+        }
+        press(&mut l.app, "<CR>");
+        l.until(|a| a.ops_running == 0 && selected_name(a) == "notes");
+        assert!(src.join("notes").join("todo.txt").is_file());
+        // a with a trailing \ and A: folders.
+        press(&mut l.app, "a");
+        for c in r"made\".chars() {
+            l.app.handle(AppEvent::Term(Event::Key(KeyEvent::new(
+                crossterm_char(c),
+                ratatui::crossterm::event::KeyModifiers::NONE,
+            ))));
+        }
+        press(&mut l.app, "<CR>");
+        l.until(|a| a.ops_running == 0 && selected_name(a) == "made");
+        press(&mut l.app, "Afolder<CR>");
+        l.until(|a| a.ops_running == 0 && selected_name(a) == "folder");
+        assert!(src.join("made").is_dir() && src.join("folder").is_dir());
+        // An existing name fails with a message.
+        press(&mut l.app, "Afolder<CR>");
+        l.until(|a| a.ops_running == 0);
+        assert!(
+            status(&l.app).contains("already exists"),
+            "{}",
+            status(&l.app)
+        );
+
+        // dd asks (Recycle Bin, local); n keeps it.
+        l.goto("b.txt");
+        press(&mut l.app, "dd");
+        assert!(
+            l.app
+                .confirm_note()
+                .contains("move b.txt to the Recycle Bin?"),
+            "{}",
+            l.app.confirm_note()
+        );
+        press(&mut l.app, "n");
+        assert!(src.join("b.txt").exists());
+        // Visual d: the range.
+        l.goto("folder");
+        press(&mut l.app, "vjd");
+        assert!(
+            l.app
+                .confirm_note()
+                .contains("move 2 items to the Recycle Bin?"),
+            "{}",
+            l.app.confirm_note()
+        );
+        press(&mut l.app, "n");
+        // D: only a typed yes deletes.
+        l.goto("made");
+        press(&mut l.app, "D");
+        assert!(
+            prompt_text(&l.app).2.contains("PERMANENTLY"),
+            "{:?}",
+            prompt_text(&l.app)
+        );
+        press(&mut l.app, "y<CR>");
+        assert!(src.join("made").exists(), "y alone isn't yes");
+        press(&mut l.app, "Dyes<CR>");
+        l.until(|a| a.ops_running == 0 && !a.view.is_empty() && !src.join("made").exists());
+        assert!(status(&l.app).contains("deleted"), "{}", status(&l.app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bulk_rename_through_the_editor() {
+        let dir = temp_tree();
+        let src = dir.join("src");
+        let mut l = Live::new(&src);
+        // Two selected: a.txt, b.txt.
+        l.goto("a.txt");
+        press(&mut l.app, "2<Tab>:rename<CR>");
+        let Some(req) = l.app.inline.take() else {
+            panic!("no editor request")
+        };
+        let (_, text) = req.file.clone().unwrap_or_default();
+        assert_eq!(text, "a.txt\r\nb.txt\r\n");
+        assert_eq!(req.args.last().map(|a| a.ends_with(".txt")), Some(true));
+        // The user swaps them in the editor.
+        l.app.inline_done(
+            req.then,
+            fileops::InlineResult {
+                status: Ok(0),
+                text: Some("b.txt\r\na.txt\r\n".into()),
+            },
+        );
+        assert!(
+            l.app
+                .confirm_note()
+                .contains("rename a.txt → b.txt, b.txt → a.txt?"),
+            "{}",
+            l.app.confirm_note()
+        );
+        press(&mut l.app, "y");
+        l.until(|a| a.ops_running == 0);
+        assert_eq!(
+            std::fs::read_to_string(src.join("a.txt")).ok().as_deref(),
+            Some("bb")
+        );
+        assert_eq!(
+            std::fs::read_to_string(src.join("b.txt")).ok().as_deref(),
+            Some("a")
+        );
+
+        // A wrong line count renames nothing.
+        press(&mut l.app, ":rename<CR>");
+        let Some(req) = l.app.inline.take() else {
+            panic!()
+        };
+        l.app.inline_done(
+            req.then,
+            fileops::InlineResult {
+                status: Ok(0),
+                text: Some("x\n".into()),
+            },
+        );
+        assert!(
+            status(&l.app).contains("one line per name"),
+            "{}",
+            status(&l.app)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_inline_suspends_and_reads_back() {
+        struct Count(std::sync::atomic::AtomicU32);
+        impl fileops::Suspend for Count {
+            fn suspend(&self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+            fn resume(&self) {
+                self.0.fetch_add(10, Ordering::SeqCst);
+            }
+        }
+        let dir = temp_tree();
+        let file = dir.join("list.txt");
+        let req = fileops::Inline {
+            program: "cmd".into(),
+            args: vec![
+                "/D".into(),
+                "/C".into(),
+                format!("echo z.txt>{}", file.display()),
+            ],
+            file: Some((file.clone(), "a.txt\r\n".into())),
+            then: fileops::InlineThen::BulkRename {
+                dir: match Loc::parse(&dir.display().to_string()) {
+                    Ok(Loc::Fs(p)) => p,
+                    _ => panic!(),
+                },
+                names: vec!["a.txt".into()],
+            },
+        };
+        let c = Count(std::sync::atomic::AtomicU32::new(0));
+        let r = fileops::run_inline(&req, &c);
+        assert_eq!(
+            c.0.load(Ordering::SeqCst),
+            11,
+            "suspended once, resumed once"
+        );
+        assert_eq!(r.status, Ok(0));
+        assert_eq!(r.text.as_deref().map(str::trim), Some("z.txt"));
+        assert!(!file.exists(), "the list is removed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn network_and_admin_share_questions() {
+        let (mut app, _rt) = fixture();
+        let show = |app: &mut App, path: &str, names: &[&str]| {
+            let Ok(loc) = Loc::parse(path) else { panic!() };
+            let entries = names
+                .iter()
+                .map(|n| super::tests::entry(n, EntryKind::File, 1, false))
+                .collect();
+            app.dirs.insert(
+                loc.clone(),
+                DirState {
+                    listing: Some(super::tests::listing(entries)),
+                    ..DirState::default()
+                },
+            );
+            app.set_cwd(loc, None);
+            app.pending.clear();
+        };
+        show(&mut app, r"\\srv01\p\HIT", &["x.pdf"]);
+        press(&mut app, "dd");
+        let note = app.confirm_note();
+        assert!(
+            note.contains("delete x.pdf? Permanent: no Recycle Bin over the network."),
+            "{note}"
+        );
+        press(&mut app, "n");
+
+        // An admin share names the machine (and its user once known) for every change.
+        show(&mut app, r"\\PC-042\C$\Users\jdoe", &["x.txt"]);
+        app.handle(AppEvent::MachineUsers {
+            host: "PC-042".into(),
+            result: Ok(crate::fs::worker::MachineUsers {
+                logged_on: vec!["jdoe".into()],
+                profiles: vec![],
+                likely: None,
+            }),
+        });
+        press(&mut app, "dd");
+        let note = app.confirm_note();
+        assert!(
+            note.starts_with("On PC-042 (jdoe's machine): delete x.txt? Permanent"),
+            "{note}"
+        );
+        press(&mut app, "n");
+        press(&mut app, "r<C-e><C-u>y.txt<CR>");
+        let note = app.confirm_note();
+        assert_eq!(app.mode, Mode::Prompt);
+        assert!(
+            note.contains("On PC-042 (jdoe's machine): rename x.txt → y.txt?"),
+            "{note}"
+        );
+        press(&mut app, "n");
+        // A paste there asks too.
+        app.register = Some(super::jobs::Register {
+            op: crate::jobs::Op::Copy,
+            items: vec![crate::jobs::Item {
+                path: match Loc::parse(r"C:\work\notes.txt") {
+                    Ok(Loc::Fs(p)) => p,
+                    _ => panic!(),
+                },
+                is_dir: false,
+                size: 3,
+            }],
+        });
+        press(&mut app, "p");
+        let note = app.confirm_note();
+        assert!(
+            note.starts_with("On PC-042 (jdoe's machine): copy notes.txt → jdoe here."),
+            "{note}"
+        );
+        press(&mut app, "n");
+        press(&mut app, "Anew<CR>");
+        assert!(app.confirm_note().contains("create folder new?"));
+        press(&mut app, "n");
+        assert_eq!(status(&app), "unchanged");
+        // Nothing to delete in Locations' sense with D.
+        press(&mut app, "gl");
+        press(&mut app, "D");
+        assert!(status(&app).contains("in Locations dd removes"));
     }
 }

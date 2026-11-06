@@ -292,7 +292,15 @@ pub enum Action {
     PinItem,
     /// `T` on a pin in Locations: edit its tags. `r` there renames it.
     EditPinTags,
-    RenamePin,
+    /// `r` / `cw`: rename the item under the cursor (in Locations: a pin).
+    Rename,
+    /// `a`: new file (a trailing `\` makes a folder); `A`: new folder.
+    NewFile,
+    NewDir,
+    /// `D`: delete permanently (type yes).
+    DeletePermanent,
+    /// `:rename`: bulk rename in `$EDITOR`.
+    BulkRename,
     /// `<leader>p`: the pin picker.
     PinPicker,
     /// `<leader>t` / `:tags`: the tag picker.
@@ -396,7 +404,13 @@ const NAMED: &[(&str, Action)] = &[
     ("jump-mark", Action::JumpMark('\0')),
     ("pin-item", Action::PinItem),
     ("edit-pin-tags", Action::EditPinTags),
-    ("rename-pin", Action::RenamePin),
+    ("rename-pin", Action::Rename),
+    ("rename-item", Action::Rename),
+    ("new-file", Action::NewFile),
+    ("new-dir", Action::NewDir),
+    ("delete-permanent", Action::DeletePermanent),
+    ("rename", Action::BulkRename),
+    ("bulk-rename", Action::BulkRename),
     ("pin-picker", Action::PinPicker),
     ("tag-picker", Action::TagPicker),
     ("machine-picker", Action::MachinePicker),
@@ -442,7 +456,6 @@ const LATER: &[(&str, &str)] = &[
     ("sync!", "M4b"),
     ("backup", "M4b"),
     ("import-wtm", "M5"),
-    ("rename", "M6"),
 ];
 
 impl Action {
@@ -599,7 +612,11 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("m<char>", SetMark('\0'), "pin this folder under a key"),
         ("M", PinItem, "pin the item under the cursor"),
         ("T", EditPinTags, "edit a pin's tags (Locations)"),
-        ("r", RenamePin, "rename (Locations: a pin)"),
+        ("r", Rename, "rename (Locations: a pin)"),
+        ("cw", Rename, "rename"),
+        ("a", NewFile, "new file (end in \\ for a folder)"),
+        ("A", NewDir, "new folder"),
+        ("D", DeletePermanent, "delete permanently (type yes)"),
         ("~", Cd("~".to_string()), "home"),
         ("gl", Locations, "Locations"),
         ("gm", Machines, "Machines (user PCs)"),
@@ -623,7 +640,11 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("P", PasteOverwrite, "paste, replacing (asks)"),
         (".", RepeatPaste, "repeat the last paste here"),
         ("R", Refresh, "retry / refresh / re-probe"),
-        ("dd", Delete, "delete (Locations: remove saved share)"),
+        (
+            "dd",
+            Delete,
+            "delete to the Recycle Bin (Locations: remove)",
+        ),
         (":", CommandLine, "command line"),
         ("q", Quit, "quit"),
         ("ZZ", QuitWriteCwd, "quit and cd the shell here"),
@@ -644,6 +665,7 @@ fn group_label(prefix: &[Key], leader: Key) -> &'static str {
             KeyCode::Char('\'') => "jump to a pin",
             KeyCode::Char('m') => "pin this folder as",
             KeyCode::Char('y') => "yank",
+            KeyCode::Char('c') => "change",
             KeyCode::Char(',') => "results",
             _ => "more",
         },

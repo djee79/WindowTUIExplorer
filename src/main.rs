@@ -87,7 +87,7 @@ fn real_main() -> Result<()> {
     spawn_input_thread(tx);
 
     let mut app = App::new(worker, start);
-    let result = app::run(&mut terminal, &mut app, &rx);
+    let result = app::run(&mut terminal, &mut app, &rx, &TermHooks);
     restore_terminal();
 
     // Don't wait for readers stuck on dead shares; the OS reclaims them at exit.
@@ -192,6 +192,21 @@ fn setup_terminal() -> Result<DefaultTerminal> {
         restore_terminal();
         return Err(e).context("entering the alternate screen");
     }
+    push_keyboard_flags();
+    tracing::info!(
+        keyboard_enhancement = KEYBOARD_ENHANCED.load(Ordering::Relaxed),
+        "terminal ready"
+    );
+    match Terminal::new(CrosstermBackend::new(std::io::stdout())) {
+        Ok(t) => Ok(t),
+        Err(e) => {
+            restore_terminal();
+            Err(e).context("creating the terminal")
+        }
+    }
+}
+
+fn push_keyboard_flags() {
     // Distinct Ctrl-Space / Shift-Enter / Ctrl-i where the terminal can say so. Every
     // binding that needs this has a plain-key equivalent (CLAUDE.md "Terminal key
     // caveats"), so not having it is fine. examples/probe_keys.rs shows what arrives.
@@ -204,16 +219,31 @@ fn setup_terminal() -> Result<DefaultTerminal> {
     {
         KEYBOARD_ENHANCED.store(true, Ordering::Relaxed);
     }
-    tracing::info!(
-        keyboard_enhancement = KEYBOARD_ENHANCED.load(Ordering::Relaxed),
-        "terminal ready"
-    );
-    match Terminal::new(CrosstermBackend::new(std::io::stdout())) {
-        Ok(t) => Ok(t),
-        Err(e) => {
-            restore_terminal();
-            Err(e).context("creating the terminal")
+}
+
+/// Set while an inline program (`:rename` in the editor) has the terminal: the input
+/// thread stops reading keys (and says so with `INPUT_PARKED`).
+static INPUT_PAUSED: AtomicBool = AtomicBool::new(false);
+static INPUT_PARKED: AtomicBool = AtomicBool::new(false);
+
+/// Suspends and resumes the TUI around an inline program.
+struct TermHooks;
+
+impl app::Suspend for TermHooks {
+    fn suspend(&self) {
+        INPUT_PAUSED.store(true, Ordering::SeqCst);
+        let end = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        while !INPUT_PARKED.load(Ordering::SeqCst) && std::time::Instant::now() < end {
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
+        restore_terminal();
+    }
+
+    fn resume(&self) {
+        let _ = enable_raw_mode();
+        let _ = execute!(std::io::stdout(), EnterAlternateScreen);
+        push_keyboard_flags();
+        INPUT_PAUSED.store(false, Ordering::SeqCst);
     }
 }
 
@@ -242,6 +272,21 @@ fn spawn_input_thread(tx: event::EventTx) {
         .name("sentier-input".to_string())
         .spawn(move || {
             loop {
+                // Paused while an inline program owns the terminal: don't steal its keys.
+                if INPUT_PAUSED.load(Ordering::SeqCst) {
+                    INPUT_PARKED.store(true, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                INPUT_PARKED.store(false, Ordering::SeqCst);
+                match ratatui::crossterm::event::poll(std::time::Duration::from_millis(50)) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::InputClosed(e.to_string()));
+                        return;
+                    }
+                }
                 match ratatui::crossterm::event::read() {
                     Ok(ev) => {
                         if tx.send(AppEvent::Term(ev)).is_err() {

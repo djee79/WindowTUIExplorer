@@ -1,5 +1,6 @@
 //! Filesystem model: entries, listings, sorting. All I/O goes through [`worker`].
 
+pub mod ops;
 pub mod path;
 pub mod worker;
 

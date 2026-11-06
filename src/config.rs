@@ -44,6 +44,8 @@ pub struct MachinesSection {
     pub inventory_csv: Option<String>,
     /// A command that prints machines as JSON (e.g. `getad`), for the machine picker.
     pub source_cmd: Option<String>,
+    /// Log changes made on admin shares to `audit.log` (default on).
+    pub audit: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]

@@ -601,3 +601,37 @@ Manual checklist (office):
 - [ ] `c` mid-copy stops robocopy; the report says what was done.
 - [ ] A folder with accents in names; the current file shows them correctly.
 - [ ] Unplug / dead share as destination: fails with ERROR 53 explained, UI stays responsive.
+
+Decision 2026-11-06: the "who has this project open" check (`NetFileEnum`, `jobs/inuse.rs`,
+`check_in_use` on presets) is dropped: it can't work in the author's office environment.
+The AVEVA marker guard stays as the only "is it open?" warning.
+
+## File operations (section 5) (code complete 2026-11-06, manual check pending)
+
+- `r` / `cw`: rename the item under the cursor; the prompt starts with the cursor before
+  the extension. In Locations `r` still renames a pin. Case-only renames work; an existing
+  target is refused.
+- `a`: new file (`sub\x.txt` makes `sub` too; a trailing `\` makes a folder). `A`: new
+  folder. Bad names (reserved `CON`/`COM1`, `:*?`, trailing dot/space) keep the prompt open
+  with the reason. The cursor lands on what appeared.
+- `dd`: to the Recycle Bin (`trash` crate) after a y/n; with counts (`3dd`), the selection
+  or the visual range (`vjd`). On a share or a mapped drive the question says it's
+  permanent (no Recycle Bin over the network), and the worker refuses a Recycle Bin delete
+  on a network drive anyway (Windows would delete for good). `D`: permanent; type `yes`.
+  Read-only files are made writable first, junctions are removed, never followed.
+- `:rename`: the selection's names (or the whole folder's) in `$VISUAL`/`$EDITOR` (default
+  `nvim`), one per line; a y/n lists the changes; applied through temporary names so swaps
+  work; wrong line counts, duplicates and bad names rename nothing.
+- Inline programs: the TUI suspends (input thread paused so it doesn't steal keys, raw mode
+  and alternate screen left), the program runs in this terminal, then everything comes back
+  and is fully redrawn. M5's inline openers will reuse this (`app::Suspend`).
+- Admin shares (`\HOST\C$…`): every change (paste, rename, new, delete, bulk rename) asks
+  first, naming the machine and its user ("On PC-042 (jdoe's machine): delete x.txt?
+  Permanent…"), and is appended to `%LOCALAPPDATA%\sentier\audit.log` (time, host, user,
+  operation, ok/FAILED, paths). `[machines] audit = false` turns the log off.
+
+Manual checklist:
+- [ ] `dd` a local file: it's in the Recycle Bin. `dd` on a share: the question says permanent.
+- [ ] `:rename` opens Neovim in the same terminal; after `:wq` sentier comes back intact.
+- [ ] `r` on `report.pdf`: cursor before `.pdf`.
+- [ ] On a colleague's `C$`: rename asks naming the machine; `audit.log` has the line.

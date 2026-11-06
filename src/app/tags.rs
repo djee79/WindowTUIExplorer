@@ -34,6 +34,11 @@ pub enum Confirm {
         plan: Box<crate::jobs::Plan>,
         why: String,
     },
+    /// A delete, or a change on an admin share / a bulk rename.
+    FileOp {
+        op: crate::fs::ops::FileOp,
+        why: String,
+    },
 }
 
 impl Confirm {
@@ -42,7 +47,7 @@ impl Confirm {
             Confirm::DeleteView { reopen, .. }
             | Confirm::RenameTag { reopen, .. }
             | Confirm::DeleteTag { reopen, .. } => reopen,
-            Confirm::Paste { .. } => None,
+            Confirm::Paste { .. } | Confirm::FileOp { .. } => None,
         }
     }
 }
@@ -206,6 +211,7 @@ impl App {
                 let n = self.pins.tag_count(tag);
                 format!("remove #{tag} from {}? {yes}", pins_word(n))
             }
+            Some(Confirm::FileOp { why, .. }) => format!("{why} y = yes, anything else keeps it"),
             Some(Confirm::Paste { why, .. }) => {
                 format!("{why} Go ahead? y = yes, anything else cancels")
             }
@@ -296,6 +302,9 @@ impl App {
         if let Confirm::Paste { req, plan, .. } = c {
             return self.start_job(*req, *plan);
         }
+        if let Confirm::FileOp { op, .. } = c {
+            return self.run_op(op);
+        }
         let msg = match &c {
             Confirm::DeleteView { idx, .. } if *idx < self.pins.views.len() => {
                 let v = self.pins.views.remove(*idx);
@@ -310,7 +319,7 @@ impl App {
                 let n = self.pins.delete_tag(tag);
                 format!("removed #{tag} from {}", pins_word(n))
             }
-            Confirm::Paste { .. } => String::new(),
+            Confirm::Paste { .. } | Confirm::FileOp { .. } => String::new(),
         };
         self.save_pins();
         self.set_status(msg, false);

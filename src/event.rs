@@ -59,6 +59,11 @@ pub enum AppEvent {
     PinsSaveFailed(String),
     /// A picker's matcher has new results.
     Wake,
+    /// A file operation finished (rename, new, delete…).
+    FileOpDone {
+        op: crate::fs::ops::FileOp,
+        result: Result<crate::fs::ops::Done, String>,
+    },
     /// A job's progress, from the worker (M4).
     Job {
         id: u64,

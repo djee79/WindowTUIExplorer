@@ -22,6 +22,9 @@ const HINTS: &[(&str, &str)] = &[
     ("hjkl", "move"),
     ("Tab/v", "select"),
     ("yy/x/p", "copy · cut · paste"),
+    ("dd", "trash"),
+    ("r", "rename"),
+    ("a/A", "new file / folder"),
     ("/", "find here"),
     ("s", "search below"),
     ("S", "grep below"),
@@ -48,7 +51,8 @@ const JOBS_HINTS: &[(&str, &str)] = &[
 const VISUAL_HINTS: &[(&str, &str)] = &[
     ("motions", "extend"),
     ("y", "yank"),
-    ("x/d", "cut"),
+    ("x", "cut"),
+    ("d/D", "delete"),
     ("Tab", "keep as selection"),
     ("Esc/v", "leave"),
 ];

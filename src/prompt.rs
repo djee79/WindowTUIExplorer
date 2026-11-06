@@ -89,6 +89,11 @@ impl LineEditor {
         self.cursor
     }
 
+    /// Puts the cursor at `at` (chars), clamped to the line.
+    pub fn set_cursor(&mut self, at: usize) {
+        self.cursor = at.min(self.chars.len());
+    }
+
     /// Replaces the whole line (Tab completion), cursor at the end, insert mode.
     pub fn set_text(&mut self, text: &str) {
         self.snapshot();

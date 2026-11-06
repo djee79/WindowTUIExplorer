@@ -47,6 +47,13 @@ pub enum PromptKind {
     GotoPage,
     /// `u` in a machine view: whose folders the templates open.
     MachineUser,
+    /// `r` / `cw`: the item's new name.
+    Rename,
+    /// `a` / `A`: a new file / folder's name.
+    NewFile,
+    NewDir,
+    /// `D`: type `yes` to delete permanently.
+    TypeYes,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +87,10 @@ impl Prompt {
             PromptKind::TagRename => "rename tag to: ",
             PromptKind::GotoPage => "go to page: ",
             PromptKind::MachineUser => "templates for user: ",
+            PromptKind::Rename => "rename to: ",
+            PromptKind::NewFile => "new file: ",
+            PromptKind::NewDir => "new folder: ",
+            PromptKind::TypeYes => "",
         }
     }
 }
@@ -300,17 +311,22 @@ impl App {
                 self.unpin_selected()
             }
             Action::Delete if self.at_root() => self.forget_selected_share(),
-            Action::Delete => self.set_status(
-                "dd (to the Recycle Bin) arrives with file operations (M6)".into(),
+            Action::Delete => self.start_delete(false, n),
+            Action::DeletePermanent if self.at_root() => self.set_status(
+                "D deletes files; in Locations dd removes an entry".into(),
                 false,
             ),
+            Action::DeletePermanent => self.start_delete(true, n),
+            Action::NewFile => self.start_new(false),
+            Action::NewDir => self.start_new(true),
+            Action::BulkRename => self.start_bulk_rename(),
             Action::CommandLine => self.open_prompt(PromptKind::Command),
             Action::GotoPath => self.open_prompt_with(PromptKind::Command, "cd "),
             Action::SetMark(c) => self.set_mark(c),
             Action::JumpMark(c) => self.jump_mark(c),
             Action::PinItem => self.pin_item(),
             Action::EditPinTags => self.edit_pin_tags(),
-            Action::RenamePin => self.rename_pin(),
+            Action::Rename => self.start_rename(),
             Action::PinPicker => self.open_pin_picker(""),
             Action::TagPicker => self.open_tag_picker(),
             Action::MachinePicker => self.open_machine_picker(""),
@@ -620,7 +636,11 @@ impl App {
             | PromptKind::ViewName
             | PromptKind::ViewKey
             | PromptKind::TagRename
+            | PromptKind::Rename
             | PromptKind::GotoPage => p.note.clear(),
+            PromptKind::NewFile => p.note = r"end in \ for a folder; sub\name makes sub too".into(),
+            PromptKind::NewDir => p.note = r"sub\name makes both".into(),
+            PromptKind::TypeYes => {}
             PromptKind::MachineUser => {
                 let choices = self.machine_user_choices();
                 p.note = if choices.is_empty() {
@@ -682,6 +702,14 @@ impl App {
                 }
             }
             PromptKind::MachineUser => self.machine_user_picked(&text),
+            PromptKind::Rename | PromptKind::NewFile | PromptKind::NewDir | PromptKind::TypeYes => {
+                if let Err(note) = self.fileop_submit(p.kind, &text) {
+                    let mut p = p;
+                    p.note = note;
+                    self.prompt = Some(p);
+                    self.mode = Mode::Prompt;
+                }
+            }
             PromptKind::GotoPage => match text.trim().parse::<usize>() {
                 Ok(n) if n > 0 => self.goto_page(n),
                 _ if text.trim().is_empty() => {}
@@ -711,6 +739,9 @@ impl App {
             | PromptKind::TagRename => self.pin_cancel(p.kind),
             PromptKind::GotoPage => {}
             PromptKind::MachineUser => self.machine_user_host = None,
+            PromptKind::Rename | PromptKind::NewFile | PromptKind::NewDir | PromptKind::TypeYes => {
+                self.fileop_cancel()
+            }
         }
     }
 
