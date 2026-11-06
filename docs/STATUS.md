@@ -402,3 +402,24 @@ Manual checklist:
 - [ ] A drawing PDF: page fills the column, caption names the sheet size.
 - [ ] `]p` `[p` `10]p` `gP` on a long PDF; leave and come back: same page.
 - [ ] A PDF on the NAS; one over 50 MB says so.
+
+## M2b previews, slice 3: Windows thumbnails (code complete 2026-11-06, manual check pending)
+
+- `platform::shell_thumbnail`: `SHCreateItemFromParsingName` → `IShellItemImageFactory::
+  GetImage` (`SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK`: no icon fallback) → HBITMAP →
+  `GetDIBits` (32-bit, top-down) → premultiplied BGRA to straight RGBA. Bitmap always
+  freed. Feature `Win32_Graphics_Gdi`. Measured: ~200 ms for a PNG/JPEG thumbnail; a file
+  without a handler fails in ~6 ms (Windows gives an empty message).
+- `PreviewKind::Thumbnail`: every extension that isn't a picture / PDF and isn't on a skip
+  list (text, code, PML, archives, programs, temp files). Office files, videos, HEIC, DWG
+  (with Autodesk's handler), Revit… get one when a handler is installed.
+- Same encoder, placement and cache as pictures. Timed as one call (Windows reads the file):
+  3 s on the network, 5 s locally. Network files over 50 MB skipped.
+- UI: the file info shows while Windows is asked and when there's no thumbnail (no spinner,
+  no error); with one, the picture and `Windows thumbnail · 1.2 MB`.
+
+Note: on this machine PDFs have no thumbnail handler; they use Windows.Data.Pdf anyway.
+
+Manual checklist:
+- [ ] A .docx / .xlsx / .mp4: thumbnail or file info, never a spinner flash.
+- [ ] At the office: a .dwg with Autodesk's thumbnail handler installed.

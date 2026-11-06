@@ -239,8 +239,20 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) -> Option<Drawn> {
     if !entry.is_container() {
         if app.search_state(&app.cwd).is_some_and(|s| s.content) {
             super::grep::draw(f, inner, app, entry);
-        } else if PreviewKind::of(&entry.name).is_some() {
-            return draw_image(f, inner, app, entry);
+        } else if let Some(kind) = PreviewKind::of(&entry.name) {
+            // Most files have no Windows thumbnail: they show their info, also while
+            // the shell is being asked (no spinner flashing on every file).
+            let thumbnail_ready = || {
+                app.cwd
+                    .join(&entry.name)
+                    .ok()
+                    .and_then(|loc| app.image_of(&loc))
+                    .is_some_and(|s| matches!(s.result, Some(Ok(_))))
+            };
+            if kind != PreviewKind::Thumbnail || thumbnail_ready() {
+                return draw_image(f, inner, app, entry);
+            }
+            draw_file_info(f, inner, app, entry);
         } else {
             draw_file_info(f, inner, app, entry);
         }
@@ -561,6 +573,7 @@ fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Drawn>
             caption = match &p.pdf {
                 // `page 2 / 14 · A3 landscape · 420×297 mm (16.5×11.7 in) · 1.2 MB`
                 Some(info) => format!("{} · {}", info.caption(), human_size(e.size)),
+                None if p.thumbnail => format!("Windows thumbnail · {}", human_size(e.size)),
                 None => format!(
                     "{}×{} · {} · {}",
                     p.width,

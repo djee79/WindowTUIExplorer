@@ -47,6 +47,8 @@ pub struct ImagePreview {
     pub format: String,
     /// For a PDF page: which page, of how many, and its size.
     pub pdf: Option<super::PdfInfo>,
+    /// A Windows shell thumbnail (its own size says little: no "1280×853 · PNG").
+    pub thumbnail: bool,
 }
 
 impl std::fmt::Debug for ImagePreview {
@@ -98,6 +100,7 @@ pub fn decode(bytes: &[u8], picker: &Picker, cols: u16, rows: u16) -> Result<Ima
         height,
         format,
         pdf: None,
+        thumbnail: false,
     })
 }
 
@@ -127,6 +130,32 @@ pub fn pdf(
             rendered.width_dip,
             rendered.height_dip,
         )),
+        thumbnail: false,
+    })
+}
+
+/// The Windows thumbnail of the file at `path` (an OS path string), fitted to
+/// `cols`×`rows` cells. Windows reads the file itself: the caller times the whole call.
+pub fn thumbnail(
+    path: &str,
+    picker: &Picker,
+    cols: u16,
+    rows: u16,
+) -> Result<ImagePreview, String> {
+    let longest = (f64::from(cols) * CELL_W).max(f64::from(rows) * CELL_H) * SHARPNESS;
+    // Windows gives an empty message when there's simply no thumbnail handler.
+    let th = crate::platform::shell_thumbnail(path, longest as u32)
+        .map_err(|_| "no Windows thumbnail".to_string())?;
+    let rgba = image::RgbaImage::from_raw(th.width, th.height, th.rgba)
+        .ok_or_else(|| "bad thumbnail size".to_string())?;
+    let img = DynamicImage::ImageRgba8(rgba);
+    Ok(ImagePreview {
+        picture: encode(img, picker, cols, rows)?,
+        width: th.width,
+        height: th.height,
+        format: "Windows thumbnail".to_string(),
+        pdf: None,
+        thumbnail: true,
     })
 }
 

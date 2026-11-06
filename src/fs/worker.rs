@@ -425,6 +425,27 @@ impl Worker {
                 let _ = tx.send(AppEvent::ImagePreview { key, result });
                 return;
             }
+            // Shell thumbnails read the file themselves: the whole call is timed, with the
+            // usual network timeout (CLAUDE.md section 11).
+            let kind = preview::PreviewKind::of(&key.loc.name());
+            if kind == Some(preview::PreviewKind::Thumbnail) {
+                let timeout = if network {
+                    timeouts.network
+                } else {
+                    IMAGE_PREVIEW_LOCAL
+                };
+                let (cols, rows) = (key.cols, key.rows);
+                let call = tokio::task::spawn_blocking(move || {
+                    preview::image::thumbnail(&path, &picker, cols, rows).map(Arc::new)
+                });
+                let result = match tokio::time::timeout(timeout, call).await {
+                    Ok(Ok(r)) => r,
+                    Ok(Err(e)) => Err(e.to_string()),
+                    Err(_) => Err(format!("thumbnail timed out after {} s", timeout.as_secs())),
+                };
+                let _ = tx.send(AppEvent::ImagePreview { key, result });
+                return;
+            }
             let timeout = if network {
                 IMAGE_PREVIEW_NETWORK
             } else {

@@ -40,9 +40,74 @@ pub enum PreviewKind {
     Image,
     /// A page of a PDF, rendered by Windows (`platform::pdf_page`).
     Pdf,
+    /// Whatever thumbnail Windows has for it (`platform::shell_thumbnail`): Office files,
+    /// videos, HEIC, DWG with Autodesk's handler… Files without one show their info.
+    Thumbnail,
 }
 
+/// Extensions Windows never has a thumbnail for (text, code, archives, programs): skipped
+/// so the cursor doesn't ask the shell for nothing. Measured: a miss costs ~6 ms anyway.
+const NO_THUMBNAIL: &[&str] = &[
+    "txt",
+    "log",
+    "md",
+    "csv",
+    "json",
+    "toml",
+    "ini",
+    "cfg",
+    "conf",
+    "xml",
+    "yaml",
+    "yml",
+    "html",
+    "htm",
+    "css",
+    "js",
+    "ts",
+    "rs",
+    "py",
+    "c",
+    "h",
+    "cpp",
+    "cs",
+    "java",
+    "go",
+    "ps1",
+    "psm1",
+    "bat",
+    "cmd",
+    "sh",
+    "lua",
+    "sql",
+    "pml",
+    "pmlmac",
+    "pmlfrm",
+    "pmlfnc",
+    "pmldat",
+    "mac",
+    "zip",
+    "7z",
+    "rar",
+    "gz",
+    "xz",
+    "tar",
+    "iso",
+    "exe",
+    "dll",
+    "sys",
+    "msi",
+    "lnk",
+    "url",
+    "tmp",
+    "bak",
+    "dat",
+    "db",
+    "crdownload",
+];
+
 impl PreviewKind {
+    /// What the preview column tries for a file named `name`. None: just the file info.
     pub fn of(name: &str) -> Option<PreviewKind> {
         let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
         match ext.as_str() {
@@ -50,7 +115,8 @@ impl PreviewKind {
                 Some(PreviewKind::Image)
             }
             "pdf" => Some(PreviewKind::Pdf),
-            _ => None,
+            e if e.is_empty() || NO_THUMBNAIL.contains(&e) => None,
+            _ => Some(PreviewKind::Thumbnail),
         }
     }
 }
@@ -266,8 +332,24 @@ mod tests {
         ] {
             assert_eq!(PreviewKind::of(name), Some(PreviewKind::Image), "{name}");
         }
-        for name in ["a.docx", "png", "a.png.txt", "dwg", ""] {
+        for name in [
+            "png",
+            "a.png.txt",
+            "dwg",
+            "",
+            "setup.EXE",
+            "a.zip",
+            "x.pmlmac",
+            "a.",
+        ] {
             assert_eq!(PreviewKind::of(name), None, "{name}");
+        }
+        for name in ["a.docx", "Plan.DWG", "clip.mp4", "photo.heic", "model.rvt"] {
+            assert_eq!(
+                PreviewKind::of(name),
+                Some(PreviewKind::Thumbnail),
+                "{name}"
+            );
         }
     }
 

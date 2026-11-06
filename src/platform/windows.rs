@@ -375,6 +375,128 @@ pub fn pdf_page(bytes: &[u8], index: u32, width: u32) -> io::Result<PdfPage> {
     })
 }
 
+/// A thumbnail as Windows Explorer would show it, in RGBA.
+pub struct Thumbnail {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// The shell thumbnail of `path` (`IShellItemImageFactory`), at most `max_px` on its long
+/// side. Works for anything an installed thumbnail handler covers (Office files, videos,
+/// HEIC, DWG with Autodesk's handler…). No icon fallback: a file without a handler is an
+/// error. Windows reads the file itself, so the caller times the whole call.
+pub fn shell_thumbnail(path: &str, max_px: u32) -> io::Result<Thumbnail> {
+    use windows::Win32::Foundation::SIZE;
+    use windows::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
+        DeleteObject, GetDIBits, GetObjectW, HBITMAP, HGDIOBJ,
+    };
+    use windows::Win32::UI::Shell::{
+        IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK,
+        SIIGBF_THUMBNAILONLY,
+    };
+
+    /// Frees the bitmap however this function returns.
+    struct Owned(HBITMAP);
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            // SAFETY: the bitmap came from GetImage and is ours to delete, once.
+            let _ = unsafe { DeleteObject(HGDIOBJ(self.0.0)) };
+        }
+    }
+
+    let err = |e: windows::core::Error| io::Error::other(e.message());
+    // The shell wants COM; S_FALSE / RPC_E_CHANGED_MODE (already initialized) are fine.
+    // SAFETY: no reserved pointer; flags are valid COINIT values.
+    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+    let wide = HSTRING::from(path);
+    // SAFETY: `wide` is a valid NUL-terminated string that outlives the call.
+    let factory: IShellItemImageFactory =
+        unsafe { SHCreateItemFromParsingName(&wide, None) }.map_err(err)?;
+    let side = i32::try_from(max_px.clamp(16, 2560)).unwrap_or(256);
+    // SAFETY: a plain COM call; the returned bitmap is owned below.
+    let bitmap = unsafe {
+        factory.GetImage(
+            SIZE { cx: side, cy: side },
+            SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK,
+        )
+    }
+    .map_err(err)?;
+    let bitmap = Owned(bitmap);
+
+    let mut bm = BITMAP::default();
+    // SAFETY: `bm` is a BITMAP and we pass its exact size.
+    let got = unsafe {
+        GetObjectW(
+            HGDIOBJ(bitmap.0.0),
+            std::mem::size_of::<BITMAP>() as i32,
+            Some((&mut bm as *mut BITMAP).cast()),
+        )
+    };
+    if got == 0 || bm.bmWidth <= 0 || bm.bmHeight == 0 {
+        return Err(io::Error::other("unreadable thumbnail bitmap"));
+    }
+    let (w, h) = (bm.bmWidth, bm.bmHeight.abs());
+    let mut info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w,
+            // Negative: rows top to bottom.
+            biHeight: -h,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let (wu, hu) = (w.unsigned_abs(), h.unsigned_abs());
+    let mut pixels = vec![0u8; wu as usize * hu as usize * 4];
+    // SAFETY: a memory DC, freed right after; `pixels` holds w×h 32-bit pixels, which is
+    // what `info` asks for.
+    let lines = unsafe {
+        let dc = CreateCompatibleDC(None);
+        let lines = GetDIBits(
+            dc,
+            bitmap.0,
+            0,
+            hu,
+            Some(pixels.as_mut_ptr().cast()),
+            &mut info,
+            DIB_RGB_COLORS,
+        );
+        let _ = DeleteDC(dc);
+        lines
+    };
+    if lines == 0 {
+        return Err(io::Error::other("couldn't read the thumbnail pixels"));
+    }
+    bgra_premultiplied_to_rgba(&mut pixels);
+    Ok(Thumbnail {
+        width: wu,
+        height: hu,
+        rgba: pixels,
+    })
+}
+
+/// Shell bitmaps are BGRA with premultiplied alpha; a bitmap without alpha has 0 alpha
+/// everywhere. Turns that into straight RGBA in place.
+fn bgra_premultiplied_to_rgba(px: &mut [u8]) {
+    let no_alpha = px.chunks_exact(4).all(|p| p[3] == 0);
+    for p in px.chunks_exact_mut(4) {
+        p.swap(0, 2);
+        if no_alpha {
+            p[3] = 255;
+        } else if p[3] > 0 && p[3] < 255 {
+            let a = u32::from(p[3]);
+            for c in &mut p[..3] {
+                *c = (u32::from(*c) * 255 / a).min(255) as u8;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -451,5 +573,41 @@ pub(crate) mod tests {
         assert!(last.width_dip > last.height_dip, "landscape");
 
         assert!(pdf_page(b"not a pdf", 0, 100).is_err());
+    }
+
+    #[test]
+    fn bgra_premultiplied_becomes_rgba() {
+        // Opaque blue, half-transparent premultiplied red (128,0,0,128), and a bitmap
+        // without alpha.
+        let mut px = vec![255, 0, 0, 255, 0, 0, 128, 128];
+        bgra_premultiplied_to_rgba(&mut px);
+        assert_eq!(px, [0, 0, 255, 255, 255, 0, 0, 128]);
+        let mut no_alpha = vec![10, 20, 30, 0];
+        bgra_premultiplied_to_rgba(&mut no_alpha);
+        assert_eq!(no_alpha, [30, 20, 10, 255]);
+    }
+
+    #[test]
+    fn shell_thumbnail_of_a_png() {
+        let dir = std::env::temp_dir().join(format!("sentier-thumb-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("wide.png");
+        let img = image::RgbaImage::from_pixel(600, 300, image::Rgba([0, 128, 255, 255]));
+        assert!(img.save(&path).is_ok());
+        let got = shell_thumbnail(&path.to_string_lossy(), 256);
+        let missing = shell_thumbnail(&dir.join("nope.png").to_string_lossy(), 256);
+        let _ = std::fs::remove_dir_all(&dir);
+        let th = match got {
+            Ok(t) => t,
+            Err(e) => panic!("{e}"),
+        };
+        assert!(
+            th.width > th.height,
+            "keeps the shape: {}×{}",
+            th.width,
+            th.height
+        );
+        assert_eq!(th.rgba.len(), (th.width * th.height * 4) as usize);
+        assert!(missing.is_err());
     }
 }

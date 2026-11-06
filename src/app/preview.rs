@@ -41,7 +41,7 @@ impl App {
         let loc = self.cwd.join(&e.name).ok()?;
         let page = match kind {
             PreviewKind::Pdf => self.pdf_pages.get(&loc).copied().unwrap_or(0),
-            PreviewKind::Image => 0,
+            PreviewKind::Image | PreviewKind::Thumbnail => 0,
         };
         Some(ImageKey {
             loc,

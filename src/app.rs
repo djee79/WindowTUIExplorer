@@ -2374,4 +2374,79 @@ mod preview_tests {
         press(&mut app, "k]p");
         assert!(status(&app).contains("PDF under the cursor"));
     }
+
+    #[test]
+    fn thumbnails_fall_back_to_file_info() {
+        let (mut app, _rt, _) = with_photo();
+        let cwd = app.cwd.clone();
+        app.dirs.insert(
+            cwd.clone(),
+            DirState {
+                listing: Some(listing(vec![
+                    entry("notes.txt", EntryKind::File, 1536, false),
+                    entry("spec.docx", EntryKind::File, 20480, false),
+                ])),
+                ..DirState::default()
+            },
+        );
+        app.set_cwd(cwd, None);
+        render(&mut app, 120, 30);
+        press(&mut app, "j"); // spec.docx
+        settle(&mut app);
+        let Some(key) = app.image.as_ref().map(|s| s.key.clone()) else {
+            panic!("a thumbnail is asked for")
+        };
+        // While Windows is asked, and when it has none: the file info, no spinner.
+        let screen = render(&mut app, 120, 30);
+        assert!(
+            screen.contains("Size") && !screen.contains("rendering"),
+            "{screen}"
+        );
+        app.handle(AppEvent::ImagePreview {
+            key: key.clone(),
+            result: Err("no Windows thumbnail".into()),
+        });
+        let screen = render(&mut app, 120, 30);
+        assert!(
+            screen.contains("Size") && !screen.contains("no Windows thumbnail"),
+            "{screen}"
+        );
+        assert!(app.image_drawn.is_none());
+
+        // With one: the picture and its caption.
+        let mut png = Vec::new();
+        assert!(
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                80,
+                60,
+                image::Rgba([9, 9, 9, 255])
+            ))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .is_ok()
+        );
+        let Ok(mut thumb) = crate::preview::image::decode(&png, &app.graphics, key.cols, key.rows)
+        else {
+            panic!()
+        };
+        thumb.thumbnail = true;
+        app.image = None;
+        app.image_cache = crate::preview::Lru::new(4);
+        settle(&mut app);
+        app.handle(AppEvent::ImagePreview {
+            key,
+            result: Ok(Arc::new(thumb)),
+        });
+        let screen = render(&mut app, 120, 30);
+        assert!(screen.contains("Windows thumbnail · 20.0 KB"), "{screen}");
+        assert!(app.image_drawn.is_some());
+
+        // Text files aren't even asked about.
+        press(&mut app, "k");
+        settle(&mut app);
+        assert!(
+            app.image
+                .as_ref()
+                .is_some_and(|s| s.key.loc.name() == "spec.docx")
+        );
+    }
 }
