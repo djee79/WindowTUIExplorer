@@ -120,11 +120,7 @@ impl Pin {
     }
 
     pub fn key_char(&self) -> Option<char> {
-        let mut chars = self.key.as_deref()?.chars();
-        match (chars.next(), chars.next()) {
-            (Some(c), None) => Some(c),
-            _ => None,
-        }
+        single_char(self.key.as_deref()?)
     }
 
     /// Where a folder or file pin points (`~` is the home folder). None for other kinds
@@ -213,18 +209,165 @@ pub fn parse_tags(text: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// A saved query (`:view save <name>`): `#aveva on:srv01`. Opening it opens the
+/// pin picker with that query. Shares the `'` key space with pins.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct View {
+    pub name: String,
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(flatten)]
+    pub extra: toml::Table,
+}
+
+impl View {
+    pub fn new(name: &str, query: &str) -> View {
+        View {
+            name: name.to_string(),
+            query: query.to_string(),
+            key: None,
+            extra: toml::Table::new(),
+        }
+    }
+
+    pub fn key_char(&self) -> Option<char> {
+        single_char(self.key.as_deref()?)
+    }
+}
+
+fn single_char(s: &str) -> Option<char> {
+    let mut chars = s.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    }
+}
+
+/// Who holds a `'` key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyOwner {
+    Pin(usize),
+    View(usize),
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PinStore {
     pub pins: Vec<Pin>,
-    /// `[[pin]]` tables that didn't load, written back unchanged.
+    pub views: Vec<View>,
+    /// `[[pin]]` / `[[view]]` tables that didn't load, written back unchanged.
     broken: Vec<toml::Value>,
-    /// Everything else in the file (`[[view]]`, `[tags.*]`, …), written back unchanged.
+    broken_views: Vec<toml::Value>,
+    /// Everything else in the file (`[tags.*]`, …), written back unchanged.
     rest: toml::Table,
 }
 
 impl PinStore {
     pub fn by_key(&self, c: char) -> Option<&Pin> {
         self.pins.iter().find(|p| p.key_char() == Some(c))
+    }
+
+    /// The pin or view holding key `c`.
+    pub fn key_owner(&self, c: char) -> Option<KeyOwner> {
+        if let Some(i) = self.pins.iter().position(|p| p.key_char() == Some(c)) {
+            return Some(KeyOwner::Pin(i));
+        }
+        self.views
+            .iter()
+            .position(|v| v.key_char() == Some(c))
+            .map(KeyOwner::View)
+    }
+
+    /// Takes key `c` away from everyone but `keep`; returns the name it was taken from.
+    fn release_key(&mut self, c: char, keep: KeyOwner) -> Option<String> {
+        let mut previous = None;
+        for (i, p) in self.pins.iter_mut().enumerate() {
+            if keep != KeyOwner::Pin(i) && p.key_char() == Some(c) {
+                p.key = None;
+                previous = Some(p.name.clone());
+            }
+        }
+        for (i, v) in self.views.iter_mut().enumerate() {
+            if keep != KeyOwner::View(i) && v.key_char() == Some(c) {
+                v.key = None;
+                previous = Some(v.name.clone());
+            }
+        }
+        previous
+    }
+
+    /// Gives view `idx` the key `c` (taken from whoever had it). Returns that name.
+    pub fn set_view_key(&mut self, idx: usize, c: Option<char>) -> Option<String> {
+        let previous = c.and_then(|c| self.release_key(c, KeyOwner::View(idx)));
+        if let Some(v) = self.views.get_mut(idx) {
+            v.key = c.map(String::from);
+        }
+        previous
+    }
+
+    /// Saves `view`, replacing a view of the same name (case-insensitive). Its index.
+    pub fn save_view(&mut self, view: View) -> usize {
+        match self
+            .views
+            .iter()
+            .position(|v| v.name.eq_ignore_ascii_case(&view.name))
+        {
+            Some(i) => {
+                let key = self.views[i].key.take();
+                self.views[i] = View { key, ..view };
+                i
+            }
+            None => {
+                self.views.push(view);
+                self.views.len() - 1
+            }
+        }
+    }
+
+    /// The number of pins tagged exactly `tag`.
+    pub fn tag_count(&self, tag: &str) -> usize {
+        self.pins
+            .iter()
+            .filter(|p| p.tags.iter().any(|t| t == tag))
+            .count()
+    }
+
+    /// `:tag rename`: `old` becomes `new` on every pin (merged where both are there),
+    /// and its `[tags.old]` settings move along. Returns the pins changed.
+    pub fn rename_tag(&mut self, old: &str, new: &str) -> usize {
+        let mut changed = 0;
+        for p in &mut self.pins {
+            let Some(i) = p.tags.iter().position(|t| t == old) else {
+                continue;
+            };
+            changed += 1;
+            if p.tags.iter().any(|t| t == new) {
+                p.tags.remove(i);
+            } else {
+                p.tags[i] = new.to_string();
+            }
+        }
+        if let Some(toml::Value::Table(tags)) = self.rest.get_mut("tags")
+            && let Some(settings) = tags.remove(old)
+        {
+            tags.entry(new.to_string()).or_insert(settings);
+        }
+        changed
+    }
+
+    /// `:tag delete`: removes `tag` from every pin, and its settings. Returns the pins
+    /// changed.
+    pub fn delete_tag(&mut self, tag: &str) -> usize {
+        let mut changed = 0;
+        for p in &mut self.pins {
+            let before = p.tags.len();
+            p.tags.retain(|t| t != tag);
+            changed += usize::from(p.tags.len() != before);
+        }
+        if let Some(toml::Value::Table(tags)) = self.rest.get_mut("tags") {
+            tags.remove(tag);
+        }
+        changed
     }
 
     /// The pin of this kind that points at `loc`.
@@ -237,15 +380,7 @@ impl PinStore {
     /// Gives pin `idx` the key `c`, taking it from whichever pin had it (vim marks are
     /// overwritten the same way). Returns that pin's name.
     pub fn set_key(&mut self, idx: usize, c: Option<char>) -> Option<String> {
-        let mut previous = None;
-        if let Some(c) = c {
-            for (i, p) in self.pins.iter_mut().enumerate() {
-                if i != idx && p.key_char() == Some(c) {
-                    p.key = None;
-                    previous = Some(p.name.clone());
-                }
-            }
-        }
+        let previous = c.and_then(|c| self.release_key(c, KeyOwner::Pin(idx)));
         if let Some(p) = self.pins.get_mut(idx) {
             p.key = c.map(String::from);
         }
@@ -301,8 +436,63 @@ pub fn parse(text: &str) -> Result<(PinStore, Vec<String>), String> {
             rest.insert("pin".to_string(), other);
         }
     }
+    match rest.remove("view") {
+        None => {}
+        Some(toml::Value::Array(values)) => {
+            for value in values {
+                match load_view(&value, &store) {
+                    Ok((view, mut notes)) => {
+                        problems.append(&mut notes);
+                        store.views.push(view);
+                    }
+                    Err(e) => {
+                        problems.push(e);
+                        store.broken_views.push(value);
+                    }
+                }
+            }
+        }
+        Some(other) => {
+            problems.push("pins.toml: `view` must be [[view]] tables".to_string());
+            rest.insert("view".to_string(), other);
+        }
+    }
     store.rest = rest;
     Ok((store, problems))
+}
+
+fn load_view(value: &toml::Value, so_far: &PinStore) -> Result<(View, Vec<String>), String> {
+    let label = value.get("name").and_then(|v| v.as_str()).map_or_else(
+        || "a view with no name".to_string(),
+        |n| format!("view {n:?}"),
+    );
+    let mut view: View = value
+        .clone()
+        .try_into()
+        .map_err(|e: toml::de::Error| format!("pins.toml: {label}: {}", e.message()))?;
+    view.name = view.name.trim().to_string();
+    if view.name.is_empty() {
+        return Err(format!("pins.toml: {label}: empty name"));
+    }
+    let mut notes = Vec::new();
+    if view.key.is_some() {
+        match view.key_char().filter(|c| valid_key(*c)) {
+            Some(c) if so_far.key_owner(c).is_some() => {
+                notes.push(format!(
+                    "pins.toml: {label}: key '{c} is already used, dropped"
+                ));
+                view.key = None;
+            }
+            Some(_) => {}
+            None => {
+                notes.push(format!(
+                    "pins.toml: {label}: key must be one letter or digit, dropped"
+                ));
+                view.key = None;
+            }
+        }
+    }
+    Ok((view, notes))
 }
 
 /// One `[[pin]]`: Err keeps it out of use (it's written back as is); the notes are
@@ -362,6 +552,14 @@ pub fn serialize(store: &PinStore) -> Result<String, String> {
     pins.extend(store.broken.iter().cloned());
     if !pins.is_empty() {
         table.insert("pin".to_string(), toml::Value::Array(pins));
+    }
+    let mut views = Vec::with_capacity(store.views.len() + store.broken_views.len());
+    for view in &store.views {
+        views.push(toml::Value::try_from(view).map_err(|e| e.to_string())?);
+    }
+    views.extend(store.broken_views.iter().cloned());
+    if !views.is_empty() {
+        table.insert("view".to_string(), toml::Value::Array(views));
     }
     let body = toml::to_string(&table).map_err(|e| e.to_string())?;
     Ok(format!("{HEADER}{body}"))
@@ -604,5 +802,78 @@ key  = "xy"
         assert!(save(&path, &store).is_ok());
         assert!(load(&path).is_ok_and(|(s, _)| s == store));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn views_load_save_and_share_the_key_space() {
+        let (mut store, _) = sample();
+        assert_eq!(store.views.len(), 1);
+        assert_eq!(store.views[0].query, "#aveva on:srv01");
+
+        // 'a belongs to a pin; giving it to the view takes it away.
+        let moved = store.set_view_key(0, Some('a'));
+        assert_eq!(moved.as_deref(), Some("AVEVA projects"));
+        assert_eq!(store.key_owner('a'), Some(KeyOwner::View(0)));
+        assert!(store.by_key('a').is_none());
+        // And back.
+        store.set_key(0, Some('a'));
+        assert_eq!(store.key_owner('a'), Some(KeyOwner::Pin(0)));
+        assert_eq!(store.views[0].key, None);
+
+        // Saving under the same name replaces the query, keeps the key.
+        store.set_view_key(0, Some('v'));
+        let i = store.save_view(View::new("MAIN server", "#aveva is:unc"));
+        assert_eq!((i, store.views.len()), (0, 1));
+        assert_eq!(store.views[0].query, "#aveva is:unc");
+        assert_eq!(store.views[0].key_char(), Some('v'));
+        store.save_view(View::new("other", "#acme"));
+
+        let Ok(text) = serialize(&store) else {
+            panic!()
+        };
+        let Ok((again, _)) = parse(&text) else {
+            panic!("{text}")
+        };
+        assert_eq!(again.views, store.views, "{text}");
+
+        let dup = "[[pin]]\nkind='folder'\nname='p'\npath='C:\\p'\nkey='q'\n\
+                   [[view]]\nname='v'\nquery='#x'\nkey='q'\n[[view]]\nquery='no name'\n";
+        let Ok((s, problems)) = parse(dup) else {
+            panic!()
+        };
+        assert_eq!(s.views.len(), 1);
+        assert_eq!(s.views[0].key, None, "key already used by a pin");
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(
+            serialize(&s).is_ok_and(|t| t.contains("no name")),
+            "broken view kept"
+        );
+    }
+
+    #[test]
+    fn rename_and_delete_tags_across_pins() {
+        let (mut store, _) = sample();
+        store.pins[1].tags = vec!["acme".into(), "aveva".into()];
+        assert_eq!(store.tag_count("aveva"), 2);
+        // Pin 1 has both: the old one goes, no duplicate.
+        assert_eq!(store.rename_tag("aveva", "acme"), 2);
+        assert_eq!(store.pins[0].tags, ["acme", "servers"]);
+        assert_eq!(store.pins[1].tags, ["acme"]);
+        let Ok(text) = serialize(&store) else {
+            panic!()
+        };
+        assert!(
+            text.contains("[tags.acme]") && !text.contains("[tags.aveva]"),
+            "{text}"
+        );
+
+        assert_eq!(store.delete_tag("acme"), 2);
+        assert_eq!(store.tag_count("acme"), 0);
+        assert_eq!(store.pins[0].tags, ["servers"]);
+        let Ok(text) = serialize(&store) else {
+            panic!()
+        };
+        assert!(!text.contains("[tags.acme]"), "{text}");
+        assert_eq!(store.rename_tag("nope", "x"), 0);
     }
 }

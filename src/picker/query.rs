@@ -3,7 +3,7 @@
 //!
 //! - `#aveva` → pins tagged aveva (tags match by prefix: `#av` works)
 //! - `#aveva #servers` → both (AND) · `#aveva,autodesk` → either (OR) · `!#archive` → not
-//! - `is:folder|file|app|web|sync|backup|unc|local|unreachable` (and `!is:…`)
+//! - `is:folder|file|app|web|sync|backup|unc|local|unreachable|view` (and `!is:…`)|file|app|web|sync|backup|unc|local|unreachable` (and `!is:…`)
 //! - `on:srv01` → pins on that server (mapped drives resolved by the caller)
 //! - everything else is fuzzy text, matched by nucleo
 //!
@@ -17,6 +17,7 @@ pub enum Is {
     Unc,
     Local,
     Unreachable,
+    View,
 }
 
 /// The `is:` words, in the order completion offers them.
@@ -30,6 +31,7 @@ pub const IS_WORDS: &[&str] = &[
     "unc",
     "local",
     "unreachable",
+    "view",
 ];
 
 impl Is {
@@ -44,6 +46,7 @@ impl Is {
             "unc" => Is::Unc,
             "local" => Is::Local,
             "unreachable" => Is::Unreachable,
+            "view" => Is::View,
             _ => return None,
         })
     }
@@ -54,6 +57,8 @@ impl Is {
 #[derive(Debug, Clone, Default)]
 pub struct Facts<'a> {
     pub kind: Option<PinKind>,
+    /// A saved view (`is:view`).
+    pub view: bool,
     pub tags: &'a [String],
     /// The path is a `\\server\share` path.
     pub unc: bool,
@@ -72,6 +77,7 @@ impl Facts<'_> {
             Is::Unc => self.unc,
             Is::Local => self.local,
             Is::Unreachable => self.unreachable,
+            Is::View => self.view,
         }
     }
 
@@ -230,6 +236,7 @@ mod tests {
     fn facts<'a>(kind: PinKind, tags: &'a [String], server: Option<&str>) -> Facts<'a> {
         Facts {
             kind: Some(kind),
+            view: false,
             tags,
             unc: server.is_some(),
             local: server.is_none(),

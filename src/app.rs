@@ -8,6 +8,7 @@ mod keys;
 mod picker;
 mod pins;
 mod search;
+mod tags;
 
 pub use keys::{Prompt, PromptKind};
 pub use search::SearchState;
@@ -183,6 +184,12 @@ pub struct App {
     pub picker: Option<crate::picker::Picker>,
     picker_count: Option<usize>,
     picker_pending: Option<picker::PickerPending>,
+    /// The pin picker's query when it last closed, for `:view save`.
+    last_picker_query: String,
+    /// A y/n question pending (`:tag rename`, deleting a view…), and view / tag edits.
+    confirm: Option<tags::Confirm>,
+    view_draft: Option<tags::ViewDraft>,
+    tag_draft: Option<String>,
     /// Reachability of Locations entries, keyed by the location each one opens.
     pub reach: HashMap<Loc, Reach>,
     last_probe_round: Option<Instant>,
@@ -239,6 +246,10 @@ impl App {
             picker: None,
             picker_count: None,
             picker_pending: None,
+            last_picker_query: String::new(),
+            confirm: None,
+            view_draft: None,
+            tag_draft: None,
             reach: HashMap::new(),
             last_probe_round: None,
             status: None,
@@ -658,6 +669,8 @@ impl App {
         // Results already honour the query's `hidden:`; don't hide them again.
         let show_hidden = self.show_hidden || in_results;
         self.view = match &listing {
+            // The Locations filter speaks the pin query: `#aveva is:unc on:srv01 hit`.
+            Some(l) if self.at_root() => self.root_visible(l),
             Some(l) => visible_indices(l, show_hidden, &self.filter),
             None => Vec::new(),
         };
@@ -1218,11 +1231,11 @@ mod tests {
 
         press(&mut app, ":frobnicate<CR>");
         assert!(app.status.as_ref().is_some_and(|s| s.is_error));
-        press(&mut app, ":pin<CR>");
+        press(&mut app, ":sync<CR>");
         assert!(
             app.status
                 .as_ref()
-                .is_some_and(|s| s.text.contains("arrives in M3"))
+                .is_some_and(|s| s.text.contains("arrives in M4b"))
         );
         press(&mut app, ":set nornu<CR>");
         assert!(!app.relative_number && app.number);
@@ -1885,5 +1898,165 @@ mod pin_tests {
         press(&mut app, "<C-x>y");
         assert_eq!(app.pins.pins.len(), 1);
         assert_eq!(app.mode, Mode::Picker);
+    }
+
+    fn prompt_note(app: &App) -> String {
+        app.prompt
+            .as_ref()
+            .map(|p| p.note.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn views_save_jump_and_delete() {
+        let (mut app, _rt) = two_pins();
+        press(&mut app, ":view save nothing<CR>");
+        assert!(
+            status(&app).contains("no query to save"),
+            "{}",
+            status(&app)
+        );
+
+        press(&mut app, "<Space>p#servers<Esc>q");
+        assert_eq!(app.last_picker_query, "#servers");
+        press(&mut app, ":view save main server<CR>");
+        assert_eq!(
+            app.prompt.as_ref().map(|p| p.kind),
+            Some(PromptKind::ViewKey)
+        );
+        press(&mut app, "v<CR>");
+        let v = &app.pins.views[0];
+        assert_eq!(
+            (v.name.as_str(), v.query.as_str(), v.key_char()),
+            ("main server", "#servers", Some('v'))
+        );
+
+        // 'v opens the picker with the view's query.
+        press(&mut app, "'v");
+        assert_eq!(app.mode, Mode::Picker);
+        settle(&mut app);
+        assert_eq!(picker_names(&app), ["HIT"]);
+        press(&mut app, "<Esc>q");
+
+        // The view is a row in the pin picker; ^x deletes it after a y.
+        press(&mut app, "<Space>pis:view");
+        settle(&mut app);
+        assert_eq!(picker_names(&app), ["main server"]);
+        press(&mut app, "<C-x>");
+        assert!(prompt_note(&app).contains("delete view main server"));
+        press(&mut app, "y");
+        assert!(app.pins.views.is_empty());
+        assert_eq!(app.mode, Mode::Picker, "back in the picker");
+    }
+
+    #[test]
+    fn tag_rename_and_delete_ask_first() {
+        let (mut app, _rt) = two_pins();
+        press(&mut app, ":tag rename aveva e3d<CR>");
+        assert!(
+            prompt_note(&app).contains("#aveva → #e3d on 2 pins"),
+            "{}",
+            prompt_note(&app)
+        );
+        press(&mut app, "y");
+        assert_eq!(app.pins.tag_count("e3d"), 2);
+        assert_eq!(app.pins.tag_count("aveva"), 0);
+
+        press(&mut app, ":tag delete servers<CR>");
+        assert!(prompt_note(&app).contains("from 1 pin"));
+        press(&mut app, "n");
+        assert_eq!(app.pins.tag_count("servers"), 1, "n keeps it");
+        press(&mut app, ":tag delete nope<CR>");
+        assert!(status(&app).contains("no pin is tagged #nope"));
+    }
+
+    #[test]
+    fn tag_picker_chooses_and_renames() {
+        let (mut app, _rt) = two_pins();
+        press(&mut app, "<Space>t");
+        settle(&mut app);
+        assert_eq!(picker_names(&app), ["aveva", "servers"], "most used first");
+        press(&mut app, "<Tab><Tab><CR>");
+        assert_eq!(
+            app.picker.as_ref().map(|p| p.editor.text()).as_deref(),
+            Some("#aveva #servers "),
+            "both chosen tags, all required"
+        );
+        settle(&mut app);
+        assert_eq!(picker_names(&app), ["HIT"]);
+        press(&mut app, "<Esc>q");
+
+        press(&mut app, ":tags<CR>");
+        settle(&mut app);
+        press(&mut app, "<C-e>");
+        assert_eq!(prompt_text(&app).as_deref(), Some("aveva"));
+        press(&mut app, "<C-u>e3d<CR>y");
+        assert_eq!(app.pins.tag_count("e3d"), 2);
+        assert_eq!(app.mode, Mode::Picker, "back in the tag picker");
+        settle(&mut app);
+        assert_eq!(picker_names(&app)[0], "e3d");
+    }
+
+    #[test]
+    fn locations_filter_takes_the_pin_query() {
+        use crate::platform::DriveKind;
+        let (mut app, _rt) = two_pins();
+        let mut entries = app.pin_entries();
+        entries.push(Entry::virtual_entry(
+            "C:".into(),
+            EntryKind::Drive(DriveKind::Fixed),
+            "Windows".into(),
+        ));
+        entries.push(Entry::virtual_entry(
+            r"\\srv01\project".into(),
+            EntryKind::Share,
+            String::new(),
+        ));
+        app.dirs.insert(
+            Loc::Root,
+            DirState {
+                listing: Some(listing_unsorted(entries)),
+                ..DirState::default()
+            },
+        );
+        app.set_cwd(Loc::Root, None);
+        app.pending.clear();
+        assert_eq!(app.view.len(), 4);
+        let shown = |app: &App| -> Vec<String> {
+            app.view_listing
+                .as_ref()
+                .map(|l| {
+                    app.view
+                        .iter()
+                        .map(|&i| l.entries[i].name.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        press(&mut app, "f#servers<CR>");
+        assert_eq!(shown(&app), [r"C:\work\HIT"]);
+        press(&mut app, "f<C-u>is:unc<CR>");
+        assert_eq!(shown(&app), [r"\\srv01\project"]);
+        press(&mut app, "f<C-u>is:local windows<CR>");
+        assert_eq!(shown(&app), ["C:"]);
+        press(&mut app, "f<C-u>on:srv01<CR>");
+        assert_eq!(shown(&app), [r"\\srv01\project"]);
+    }
+
+    #[test]
+    fn pin_command_pins_or_edits_the_cwd() {
+        let (mut app, _rt) = loaded();
+        press(&mut app, ":pin<CR>");
+        assert_eq!(prompt_text(&app).as_deref(), Some("work"));
+        press(&mut app, "<CR><CR>w<CR>");
+        assert_eq!(app.pins.pins[0].key_char(), Some('w'));
+        press(&mut app, ":pin<CR>");
+        assert_eq!(
+            prompt_text(&app).as_deref(),
+            Some("work"),
+            "edits the existing pin"
+        );
+        press(&mut app, "<Esc><Esc>");
+        assert_eq!(app.pins.pins.len(), 1);
     }
 }

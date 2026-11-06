@@ -36,6 +36,13 @@ pub enum PromptKind {
     PinKey,
     /// `y` unpins, any other key keeps the pin.
     ConfirmUnpin,
+    /// A y/n for a store change (tag rename/delete, view delete).
+    Confirm,
+    /// Saved views: rename, then key.
+    ViewName,
+    ViewKey,
+    /// The tag picker's `^e`: the tag's new name.
+    TagRename,
 }
 
 #[derive(Debug, Clone)]
@@ -63,7 +70,10 @@ impl Prompt {
             PromptKind::PinName => "pin name: ",
             PromptKind::PinTags => "tags: ",
             PromptKind::PinKey => "key (empty = none): ",
-            PromptKind::ConfirmUnpin => "",
+            PromptKind::ConfirmUnpin | PromptKind::Confirm => "",
+            PromptKind::ViewName => "view name: ",
+            PromptKind::ViewKey => "view key (empty = none): ",
+            PromptKind::TagRename => "rename tag to: ",
         }
     }
 }
@@ -280,6 +290,12 @@ impl App {
             Action::EditPinTags => self.edit_pin_tags(),
             Action::RenamePin => self.rename_pin(),
             Action::PinPicker => self.open_pin_picker(""),
+            Action::TagPicker => self.open_tag_picker(),
+            Action::PinCwd => self.pin_cwd(),
+            Action::TagRename(old, new) => self.tag_rename(&old, &new, None),
+            Action::TagDelete(tag) => self.tag_delete(&tag, None),
+            Action::ViewSave(name) => self.view_save(&name),
+            Action::ViewDelete(name) => self.view_delete(&name),
             Action::Help => self.mode = Mode::Help,
             Action::Quit | Action::QuitNoWrite => self.quit = Some(Quit::Plain),
             Action::QuitWriteCwd => self.quit = Some(Quit::WithCwd),
@@ -411,7 +427,7 @@ impl App {
             completion: None,
         };
         match kind {
-            PromptKind::ConfirmUnpin => p.note = self.pin_prompt_note(kind),
+            PromptKind::ConfirmUnpin | PromptKind::Confirm => p.note = self.pin_prompt_note(kind),
             PromptKind::PinTags => self.prompt_changed(&mut p),
             _ => {}
         }
@@ -425,7 +441,7 @@ impl App {
             return;
         };
         // A yes/no question: `y` confirms, any other key is a no.
-        if p.kind == PromptKind::ConfirmUnpin {
+        if matches!(p.kind, PromptKind::ConfirmUnpin | PromptKind::Confirm) {
             self.mode = Mode::Normal;
             if ev.code == KeyCode::Char('y') && !ev.modifiers.contains(KeyModifiers::CONTROL) {
                 self.prompt_submit(p);
@@ -540,7 +556,13 @@ impl App {
                     (false, Ok(_)) => format!("Tab: {}", shown.join(" · ")),
                 };
             }
-            PromptKind::PinName | PromptKind::PinKey | PromptKind::ConfirmUnpin => p.note.clear(),
+            PromptKind::PinName
+            | PromptKind::PinKey
+            | PromptKind::ConfirmUnpin
+            | PromptKind::Confirm
+            | PromptKind::ViewName
+            | PromptKind::ViewKey
+            | PromptKind::TagRename => p.note.clear(),
         }
     }
 
@@ -580,7 +602,11 @@ impl App {
             PromptKind::PinName
             | PromptKind::PinTags
             | PromptKind::PinKey
-            | PromptKind::ConfirmUnpin => {
+            | PromptKind::ConfirmUnpin
+            | PromptKind::Confirm
+            | PromptKind::ViewName
+            | PromptKind::ViewKey
+            | PromptKind::TagRename => {
                 if let Err(note) = self.pin_submit(p.kind, &text) {
                     // Stay in the prompt and say what's wrong.
                     let mut p = p;
@@ -606,7 +632,11 @@ impl App {
             PromptKind::PinName
             | PromptKind::PinTags
             | PromptKind::PinKey
-            | PromptKind::ConfirmUnpin => self.pin_cancel(p.kind),
+            | PromptKind::ConfirmUnpin
+            | PromptKind::Confirm
+            | PromptKind::ViewName
+            | PromptKind::ViewKey
+            | PromptKind::TagRename => self.pin_cancel(p.kind),
         }
     }
 

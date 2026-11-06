@@ -6,9 +6,10 @@
 //! at any step pins nothing. Every change saves the whole store through the worker.
 
 use super::keys::PromptKind;
+use super::picker::Reopen;
 use super::{App, Loc};
 use crate::fs::{Entry, EntryKind};
-use crate::pins::{self, Pin, PinKind, PinStore};
+use crate::pins::{self, KeyOwner, Pin, PinKind, PinStore};
 
 #[derive(Debug, Clone)]
 pub struct PinDraft {
@@ -21,8 +22,8 @@ pub struct PinDraft {
     ask_key: bool,
     /// One step only (rename or tags), then save.
     single: bool,
-    /// Started from the picker: reopen it with this query when done.
-    reopen: Option<String>,
+    /// Started from a picker: reopen it when done.
+    reopen: Option<Reopen>,
 }
 
 impl PinDraft {
@@ -88,7 +89,7 @@ impl App {
 
     /// Pins can change only once the store has been read; otherwise a save would
     /// overwrite pins we never saw.
-    fn pins_ready(&mut self) -> bool {
+    pub(super) fn pins_ready(&mut self) -> bool {
         if !self.pins_loaded {
             self.set_status(
                 "pins.toml isn't loaded (see the message above); not changing it".into(),
@@ -98,7 +99,7 @@ impl App {
         self.pins_loaded
     }
 
-    fn save_pins(&mut self) {
+    pub(super) fn save_pins(&mut self) {
         self.worker.save_pins(self.pins.clone());
         self.reload_root();
     }
@@ -140,10 +141,35 @@ impl App {
         self.start_draft(PinDraft::new(pin, Some(c), false));
     }
 
-    /// `'{c}`: open the pin with that key.
+    /// `:pin`: pin the current folder, asking for name, tags and key.
+    pub(super) fn pin_cwd(&mut self) {
+        let loc = match &self.cwd {
+            Loc::Fs(_) | Loc::Server(_) => self.cwd.clone(),
+            _ => {
+                self.set_status("only a folder can be pinned (M pins an item)".into(), true);
+                return;
+            }
+        };
+        if !self.pins_ready() {
+            return;
+        }
+        if let Some(idx) = self.pins.find(PinKind::Folder, &loc) {
+            self.edit_pin(idx, false, None);
+            return;
+        }
+        let pin = Pin::for_loc(PinKind::Folder, &loc.name(), &loc);
+        self.start_draft(PinDraft::new(pin, None, true));
+    }
+
+    /// `'{c}`: open the pin with that key, or the pin picker with that view's query.
     pub(super) fn jump_mark(&mut self, c: char) {
-        match self.pins.pins.iter().position(|p| p.key_char() == Some(c)) {
-            Some(idx) => self.open_pin(idx),
+        match self.pins.key_owner(c) {
+            Some(KeyOwner::Pin(idx)) => self.open_pin(idx),
+            Some(KeyOwner::View(idx)) => {
+                if let Some(q) = self.pins.views.get(idx).map(|v| v.query.clone()) {
+                    self.open_pin_picker(&format!("{q} "));
+                }
+            }
             None if self.pins_loaded => {
                 self.set_status(format!("no pin on '{c} (m{c} pins this folder)"), false)
             }
@@ -275,7 +301,7 @@ impl App {
         }
     }
 
-    fn edit_draft(&self, idx: usize, reopen: Option<String>) -> Option<PinDraft> {
+    fn edit_draft(&self, idx: usize, reopen: Option<Reopen>) -> Option<PinDraft> {
         let pin = self.pins.pins.get(idx)?.clone();
         Some(PinDraft {
             key: pin.key_char(),
@@ -289,7 +315,7 @@ impl App {
 
     /// Edit pin `idx`: all of it (name → tags → key), or only its tags. `reopen` is the
     /// picker query to come back to.
-    pub(super) fn edit_pin(&mut self, idx: usize, tags_only: bool, reopen: Option<String>) {
+    pub(super) fn edit_pin(&mut self, idx: usize, tags_only: bool, reopen: Option<Reopen>) {
         if !self.pins_ready() {
             return;
         }
@@ -307,7 +333,7 @@ impl App {
     }
 
     /// Ask, then unpin `idx`.
-    pub(super) fn confirm_unpin(&mut self, idx: usize, reopen: Option<String>) {
+    pub(super) fn confirm_unpin(&mut self, idx: usize, reopen: Option<Reopen>) {
         if !self.pins_ready() {
             return;
         }
@@ -329,6 +355,9 @@ impl App {
 
     /// The question a pin prompt asks, shown after the prompt prefix.
     pub fn pin_prompt_note(&self, kind: PromptKind) -> String {
+        if kind == PromptKind::Confirm {
+            return self.confirm_note();
+        }
         let Some(d) = &self.pin_draft else {
             return String::new();
         };
@@ -346,6 +375,15 @@ impl App {
 
     /// Enter on a pin prompt. Err keeps the prompt open with that note.
     pub(super) fn pin_submit(&mut self, kind: PromptKind, text: &str) -> Result<(), String> {
+        if matches!(
+            kind,
+            PromptKind::Confirm
+                | PromptKind::ViewName
+                | PromptKind::ViewKey
+                | PromptKind::TagRename
+        ) {
+            return self.store_submit(kind, text);
+        }
         let Some(mut d) = self.pin_draft.take() else {
             return Ok(());
         };
@@ -407,6 +445,15 @@ impl App {
     }
 
     pub(super) fn pin_cancel(&mut self, kind: PromptKind) {
+        if matches!(
+            kind,
+            PromptKind::Confirm
+                | PromptKind::ViewName
+                | PromptKind::ViewKey
+                | PromptKind::TagRename
+        ) {
+            return self.store_cancel(kind);
+        }
         if let Some(d) = self.pin_draft.take() {
             let msg = match (kind, d.editing) {
                 (PromptKind::ConfirmUnpin, _) => format!("kept {}", d.pin.name),
@@ -418,9 +465,11 @@ impl App {
         }
     }
 
-    fn reopen_picker(&mut self, query: Option<String>) {
-        if let Some(q) = query {
-            self.open_pin_picker(&q);
+    pub(super) fn reopen_picker(&mut self, reopen: Option<Reopen>) {
+        match reopen {
+            Some(Reopen::Pins(q)) => self.open_pin_picker(&q),
+            Some(Reopen::Tags) => self.open_tag_picker(),
+            None => {}
         }
     }
 

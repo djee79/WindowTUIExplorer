@@ -6,7 +6,7 @@ use super::theme::{self, ACCENT, BORDER, DIM, ERR, FG, NET, OK, SEL_BG};
 use super::{spinner, truncate, truncate_left, width};
 use crate::app::App;
 use crate::fs::EntryKind;
-use crate::picker::{PickItem, PickerMode};
+use crate::picker::{ItemKind, PickItem, PickerMode, Source};
 use crate::pins::PinKind;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -103,7 +103,8 @@ fn draw_results(f: &mut Frame, area: Rect, app: &mut App) {
             p.match_indices(item).into_iter().collect()
         };
         let gutter = normal.then(|| gutter_cell(row, p.cursor, gw, number, relative));
-        lines.push(result_line(item, &hits, w, row == p.cursor, gutter));
+        let chosen = p.is_chosen(item.id);
+        lines.push(result_line(item, &hits, w, row == p.cursor, chosen, gutter));
     }
     if p.view.is_empty() && !p.running {
         lines.push(Line::from(Span::styled(
@@ -125,6 +126,19 @@ fn draw_results(f: &mut Frame, area: Rect, app: &mut App) {
 /// The tag bar (`#aveva 23   #acme 40 …`), or the completion candidates while a filter
 /// word is being typed.
 fn top_bar(p: &crate::picker::Picker, w: usize) -> Line<'static> {
+    if p.source == Source::Tags {
+        let chosen = match p.chosen.len() {
+            0 => "none chosen".to_string(),
+            n => format!("{n} chosen"),
+        };
+        return Line::from(vec![
+            Span::styled(" Tab", theme::bold(FG)),
+            Span::styled(" choose   ", theme::dim()),
+            Span::styled("Enter", theme::bold(FG)),
+            Span::styled(" pins with all of them   ", theme::dim()),
+            Span::styled(chosen, theme::fg(ACCENT)),
+        ]);
+    }
     if let Some(c) = &p.completion {
         let mut spans = vec![Span::styled(" Tab ", theme::bold(ACCENT))];
         for (name, n) in c.candidates.iter().take(8) {
@@ -171,6 +185,13 @@ fn separator(w: usize) -> Line<'static> {
 
 fn help_lines(p: &crate::picker::Picker, w: usize) -> Vec<Line<'static>> {
     let mut out = vec![separator(w)];
+    if p.source == Source::Tags {
+        out.push(Line::from(Span::styled(
+            " ^e renames, ^x deletes a tag across all pins (asks first)",
+            theme::dim(),
+        )));
+        return out;
+    }
     if let Some(problem) = p.query.problems.first() {
         out.push(Line::from(Span::styled(
             format!(" {problem}"),
@@ -187,13 +208,28 @@ fn help_lines(p: &crate::picker::Picker, w: usize) -> Vec<Line<'static>> {
     out
 }
 
-fn kind_color(kind: PinKind) -> ratatui::style::Color {
+fn kind_color(kind: ItemKind) -> ratatui::style::Color {
     match kind {
-        PinKind::Folder => theme::DIR,
-        PinKind::File => FG,
-        PinKind::App => OK,
-        PinKind::Web => NET,
-        PinKind::Sync | PinKind::Backup => theme::WARN,
+        ItemKind::Pin(PinKind::Folder) => theme::DIR,
+        ItemKind::Pin(PinKind::File) => FG,
+        ItemKind::Pin(PinKind::App) => OK,
+        ItemKind::Pin(PinKind::Web) | ItemKind::Tag => NET,
+        ItemKind::Pin(PinKind::Sync | PinKind::Backup) => theme::WARN,
+        ItemKind::View => ACCENT,
+    }
+}
+
+/// The reachability dot (pins with a place), or the chosen mark (tag picker).
+fn lead_mark(item: &PickItem, chosen: bool) -> Span<'static> {
+    match (item.kind, chosen, item.reachable) {
+        (ItemKind::Tag, true, _) => Span::styled("✓", theme::bold(ACCENT)),
+        (ItemKind::Tag, false, _) => Span::styled("·", theme::dim()),
+        (_, _, Some(true)) => Span::styled("●", theme::fg(OK)),
+        (_, _, Some(false)) => Span::styled("×", theme::fg(ERR)),
+        (ItemKind::Pin(PinKind::Folder | PinKind::File), _, None) => {
+            Span::styled("○", theme::dim())
+        }
+        _ => Span::raw(" "),
     }
 }
 
@@ -203,6 +239,7 @@ fn result_line(
     hits: &HashSet<u32>,
     w: usize,
     is_cursor: bool,
+    chosen: bool,
     gutter: Option<Span<'static>>,
 ) -> Line<'static> {
     let base = if is_cursor {
@@ -217,6 +254,9 @@ fn result_line(
         spans.push(g.patch_style(base));
         spans.push(Span::styled(" ", base));
     }
+    spans.push(lead_mark(item, chosen).patch_style(base));
+    spans.push(Span::styled(" ", base));
+    used += 2;
     let kind = format!("[{}]", item.kind.label());
     spans.push(Span::styled(
         format!("{kind:<KIND_W$}"),
@@ -260,18 +300,23 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
     let title = item.as_ref().map(|i| i.name.clone()).unwrap_or_default();
     let block = panel(title, false);
     let block = match &item {
-        Some(i) => block.title(
-            Line::from(Span::styled(
-                format!(" {} pin ", i.kind.label()),
-                theme::dim(),
-            ))
-            .right_aligned(),
-        ),
+        Some(i) => {
+            let what = match i.kind {
+                ItemKind::Pin(k) => format!(" {} pin ", k.label()),
+                other => format!(" {} ", other.label()),
+            };
+            block.title(Line::from(Span::styled(what, theme::dim())).right_aligned())
+        }
         None => block,
     };
     let inner = block.inner(area);
     f.render_widget(block, area);
     let Some(item) = item else { return };
+    match item.kind {
+        ItemKind::View => return draw_view_preview(f, inner, app, &item),
+        ItemKind::Tag => return draw_tag_preview(f, inner, app, &item),
+        ItemKind::Pin(_) => {}
+    }
     let Some(pin) = app.pins.pins.get(item.id) else {
         return;
     };
@@ -423,4 +468,96 @@ fn listing_lines(app: &App, pin: &crate::pins::Pin, h: usize, w: usize) -> Vec<L
         out.push(Line::from(Span::styled(" empty", theme::fg(DIM))));
     }
     out
+}
+
+/// Fills `lines` to the panel height and ends with a key hint line.
+fn with_hints(
+    mut lines: Vec<Line<'static>>,
+    h: usize,
+    hints: &[(&str, &str)],
+) -> Vec<Line<'static>> {
+    lines.truncate(h.saturating_sub(2));
+    while lines.len() < h.saturating_sub(1) {
+        lines.push(Line::default());
+    }
+    let mut spans = Vec::new();
+    for (k, what) in hints {
+        spans.push(Span::styled(format!(" {k}"), theme::bold(FG)));
+        spans.push(Span::styled(format!(" {what}  "), theme::dim()));
+    }
+    lines.push(Line::from(spans));
+    lines
+}
+
+fn draw_view_preview(f: &mut Frame, inner: Rect, app: &App, item: &PickItem) {
+    let mut lines = vec![
+        Line::default(),
+        info_line("Query", item.detail.clone()),
+        info_line(
+            "Key",
+            item.key.map_or("none".to_string(), |c| format!("'{c}")),
+        ),
+        Line::default(),
+        Line::from(Span::styled(
+            " A saved view: Enter opens the pin picker with this query.",
+            theme::dim(),
+        )),
+    ];
+    // What it currently matches (filters only; the fuzzy part needs the matcher).
+    let q = crate::picker::query::PinQuery::parse(&item.detail);
+    let n = app
+        .pins
+        .pins
+        .iter()
+        .filter(|p| {
+            q.matches(&crate::picker::query::Facts {
+                kind: Some(p.kind),
+                tags: &p.tags,
+                ..Default::default()
+            })
+        })
+        .count();
+    if !q.tags.is_empty() || !q.not_tags.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!(" Its tags match {n} pins now."),
+            theme::dim(),
+        )));
+    }
+    let lines = with_hints(
+        lines,
+        inner.height as usize,
+        &[("Enter", "open"), ("^e", "rename / key"), ("^x", "delete")],
+    );
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_tag_preview(f: &mut Frame, inner: Rect, app: &App, item: &PickItem) {
+    let mut lines = vec![
+        Line::default(),
+        Line::from(vec![
+            Span::styled(format!(" #{}", item.name), theme::bold(NET)),
+            Span::styled(format!("  {}", item.detail), theme::dim()),
+        ]),
+        Line::default(),
+    ];
+    for p in app.pins.pins.iter().filter(|p| p.tags.contains(&item.name)) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {:<9}", format!("[{}]", p.kind.label())),
+                theme::dim(),
+            ),
+            Span::styled(p.name.clone(), theme::fg(FG)),
+        ]));
+    }
+    let lines = with_hints(
+        lines,
+        inner.height as usize,
+        &[
+            ("Tab", "choose"),
+            ("Enter", "pins with all chosen"),
+            ("^e", "rename"),
+            ("^x", "delete"),
+        ],
+    );
+    f.render_widget(Paragraph::new(lines), inner);
 }

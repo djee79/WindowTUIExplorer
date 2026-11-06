@@ -21,31 +21,56 @@ use std::sync::Arc;
 /// Most matches the tier sort looks at; beyond that, nucleo's order stands.
 const RANK_CAP: u32 = 5_000;
 
+/// What a row is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemKind {
+    Pin(PinKind),
+    /// A saved view (`[[view]]`): opening it opens the pin picker with its query.
+    View,
+    /// A tag, in the tag picker.
+    Tag,
+}
+
+impl ItemKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            ItemKind::Pin(k) => k.label(),
+            ItemKind::View => "view",
+            ItemKind::Tag => "tag",
+        }
+    }
+}
+
 /// One row of a picker.
 #[derive(Debug, Clone)]
 pub struct PickItem {
-    /// Where it came from: the index of the pin in the store.
+    /// Where it came from: the index of the pin / view in the store, or of the tag.
     pub id: usize,
     pub name: String,
-    /// Path, command or URL.
+    /// Path, command, URL, or a view's query.
     pub detail: String,
-    pub kind: PinKind,
+    pub kind: ItemKind,
     pub key: Option<char>,
     pub tags: Vec<String>,
     pub unc: bool,
     pub local: bool,
-    pub unreachable: bool,
+    /// The last probe: Some(true) reachable, Some(false) failed, None not checked.
+    pub reachable: Option<bool>,
     pub server: Option<String>,
 }
 
 impl PickItem {
     fn facts(&self) -> Facts<'_> {
         Facts {
-            kind: Some(self.kind),
+            kind: match self.kind {
+                ItemKind::Pin(k) => Some(k),
+                _ => None,
+            },
+            view: self.kind == ItemKind::View,
             tags: &self.tags,
             unc: self.unc,
             local: self.local,
-            unreachable: self.unreachable,
+            unreachable: self.reachable == Some(false),
             server: self.server.clone(),
         }
     }
@@ -71,6 +96,15 @@ impl PickItem {
     }
 }
 
+/// What a picker lists, which decides what its keys do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// Pins and saved views (`<leader>p`).
+    Pins,
+    /// Tags with their counts (`<leader>t`, `:tags`): Tab chooses, Enter filters.
+    Tags,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerMode {
     Insert,
@@ -79,6 +113,9 @@ pub enum PickerMode {
 
 pub struct Picker {
     pub title: &'static str,
+    pub source: Source,
+    /// Rows chosen with Tab (their ids), in the order chosen.
+    pub chosen: Vec<usize>,
     nucleo: Nucleo<Arc<PickItem>>,
     /// Everything the source gave, before filters.
     items: Vec<Arc<PickItem>>,
@@ -111,6 +148,7 @@ impl Picker {
     /// `notify` is called from the matcher threads when results change, to wake the UI.
     pub fn new(
         title: &'static str,
+        source: Source,
         items: Vec<PickItem>,
         notify: Arc<dyn Fn() + Send + Sync>,
         query: &str,
@@ -139,6 +177,8 @@ impl Picker {
             .collect();
         let mut p = Picker {
             title,
+            source,
+            chosen: Vec::new(),
             nucleo: Nucleo::new(Config::DEFAULT, notify, None, 1),
             items,
             editor: LineEditor::new(query),
@@ -223,6 +263,24 @@ impl Picker {
 
     pub fn selected(&self) -> Option<&Arc<PickItem>> {
         self.view.get(self.cursor)
+    }
+
+    /// Tab (multi-select): choose or unchoose the row under the cursor, then move down.
+    pub fn toggle_chosen(&mut self) {
+        let Some(id) = self.selected().map(|i| i.id) else {
+            return;
+        };
+        match self.chosen.iter().position(|c| *c == id) {
+            Some(i) => {
+                self.chosen.remove(i);
+            }
+            None => self.chosen.push(id),
+        }
+        self.move_cursor(1);
+    }
+
+    pub fn is_chosen(&self, id: usize) -> bool {
+        self.chosen.contains(&id)
     }
 
     pub fn move_cursor(&mut self, delta: isize) {
@@ -312,12 +370,12 @@ mod tests {
             id,
             name: name.to_string(),
             detail: detail.to_string(),
-            kind,
+            kind: ItemKind::Pin(kind),
             key: None,
             tags: tags.iter().map(|t| t.to_string()).collect(),
             unc: detail.starts_with(r"\\"),
             local: !detail.starts_with(r"\\"),
-            unreachable: false,
+            reachable: None,
             server: detail
                 .strip_prefix(r"\\")
                 .and_then(|r| r.split('\\').next())
@@ -364,7 +422,7 @@ mod tests {
             ),
             item(5, "Specs with hit", r"C:\docs", PinKind::Folder, &["docs"]),
         ];
-        let mut p = Picker::new("Pins", items, Arc::new(|| {}), query);
+        let mut p = Picker::new("Pins", Source::Pins, items, Arc::new(|| {}), query);
         settle(&mut p);
         p
     }

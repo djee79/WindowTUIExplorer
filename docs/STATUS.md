@@ -264,3 +264,35 @@ Manual checklist:
 - [ ] `Esc`, `5j`, `gg`, `]t` `]t` `[t`, `i`, `q`.
 - [ ] `^t` / `^e` / `^x` on a pin: back in the picker afterwards with the query kept.
 - [ ] Preview of a folder pin on the NAS lists its contents; a dead one says so, no stall.
+
+## M3 pins, slice 3: views, tag management, Locations query (code complete 2026-11-06)
+
+M3 is code complete with this slice; the manual checks below are pending.
+
+- Saved views (`[[view]]` in pins.toml: name, query, optional key; lenient load like pins,
+  broken ones kept). `:view save <name>` saves the pin picker's last query (the query it
+  had when it closed), then asks for a key; `:view delete <name>`. Views and pins share
+  the `'` key space (a key moves like a vim mark). `'v` on a view opens the pin picker
+  with its query. In the pin picker views are `[view]` rows (`is:view`): Enter applies,
+  `^e` rename + key, `^x` delete.
+- Tags: `:tags` / `<leader>t` open the tag picker (counts, most used first; preview lists
+  the pins). `Tab` chooses, `Enter` opens the pin picker with `#a #b` (all required; type
+  `#a,b` in the pin picker for "either"). `^e` renames, `^x` deletes.
+  `:tag rename <old> <new>` / `:tag delete <tag>`: y/n first, saying how many pins change
+  (and when a rename merges into an existing tag). `[tags.<name>]` settings move along.
+- `:pin` pins the current folder (or edits its pin).
+- Locations `f` takes the pin query: `#tag`, `is:unc|local|unreachable|folder`, `on:`,
+  plus words as substrings of the name/detail.
+- Picker rows show the reachability dot (● × ○); the tag picker shows ✓ for chosen.
+- y/n questions share one `Confirm` prompt (app/tags.rs).
+
+Left for later milestones (by design): empty-query grouping by first tag and frecency
+(launcher, M5), `^y` / `^v` (M6 / M5), Tab multi-select in the pin picker (M4 jobs),
+`[picker.insert]` keymap tables (with config, M6), per-tag colors on the chips.
+
+Manual checklist:
+- [ ] `<Space>p`, type `#aveva is:unc`, `Esc q`, `:view save aveva shares`, key `v`;
+      then `'v` from anywhere; `'` + wait lists the view.
+- [ ] `<Space>t`: Tab two tags, Enter: pin picker shows pins with both.
+- [ ] `:tag rename x y` says how many pins, `y` applies; pins.toml shows it.
+- [ ] `gl`, `f#nas<CR>`, `f is:unc`: Locations narrows; `Esc` clears.

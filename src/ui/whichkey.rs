@@ -19,13 +19,17 @@ const COL_W: usize = 48;
 /// `m`: the keys already taken (pressing one moves it here, like a vim mark).
 fn char_rows(app: &App) -> Vec<Continuation> {
     let action = app.keymap.char_action(&app.keys_pending);
-    let mut keyed: Vec<_> = app
-        .pins
-        .pins
-        .iter()
-        .filter_map(|p| Some((p.key_char()?, p)))
-        .collect();
-    keyed.sort_by_key(|(c, _)| *c);
+    // (key, name, what it opens) for pins and saved views.
+    let mut keyed: Vec<(char, String, String)> =
+        app.pins
+            .pins
+            .iter()
+            .filter_map(|p| Some((p.key_char()?, p.name.clone(), p.detail())))
+            .chain(app.pins.views.iter().filter_map(|v| {
+                Some((v.key_char()?, v.name.clone(), format!("[view] {}", v.query)))
+            }))
+            .collect();
+    keyed.sort_by_key(|(c, _, _)| *c);
     let row = |c: char, desc: String| Continuation {
         key: Key::plain(KeyCode::Char(c)),
         desc,
@@ -34,11 +38,11 @@ fn char_rows(app: &App) -> Vec<Continuation> {
     match action {
         Some(Action::JumpMark(_)) => keyed
             .into_iter()
-            .map(|(c, p)| row(c, format!("{}  {}", p.name, p.detail())))
+            .map(|(c, name, what)| row(c, format!("{name}  {what}")))
             .collect(),
         Some(Action::SetMark(_)) => keyed
             .into_iter()
-            .map(|(c, p)| row(c, format!("taken: {}", p.name)))
+            .map(|(c, name, _)| row(c, format!("taken: {name}")))
             .collect(),
         _ => Vec::new(),
     }

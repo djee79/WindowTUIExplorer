@@ -295,6 +295,16 @@ pub enum Action {
     RenamePin,
     /// `<leader>p`: the pin picker.
     PinPicker,
+    /// `<leader>t` / `:tags`: the tag picker.
+    TagPicker,
+    /// `:pin`: pin the current folder (name, tags, key).
+    PinCwd,
+    /// `:tag rename <old> <new>` / `:tag delete <tag>`, across all pins.
+    TagRename(String, String),
+    TagDelete(String),
+    /// `:view save <name>` (the last pin-picker query) / `:view delete <name>`.
+    ViewSave(String),
+    ViewDelete(String),
     /// `g<Space>`: the `:cd ` prompt, ready for a path (Yazi's `g<Space>`).
     GotoPath,
     Help,
@@ -359,6 +369,7 @@ const NAMED: &[(&str, Action)] = &[
     ("edit-pin-tags", Action::EditPinTags),
     ("rename-pin", Action::RenamePin),
     ("pin-picker", Action::PinPicker),
+    ("tag-picker", Action::TagPicker),
     ("goto-path", Action::GotoPath),
     ("help", Action::Help),
     ("quit", Action::Quit),
@@ -382,11 +393,7 @@ const NAMED: &[(&str, Action)] = &[
 /// Commands from the spec that later milestones bring; named so the message says "not
 /// yet" instead of "unknown".
 const LATER: &[(&str, &str)] = &[
-    ("pin", "M3"),
-    ("view", "M3"),
-    ("tags", "M3"),
-    ("tag", "M3"),
-    ("picker", "M3"),
+    ("picker", "M6"),
     ("sync", "M4b"),
     ("sync!", "M4b"),
     ("backup", "M4b"),
@@ -409,6 +416,25 @@ impl Action {
             } else {
                 arg.to_string()
             })),
+            "pin" if arg.is_empty() => Ok(Action::PinCwd),
+            "tags" if arg.is_empty() => Ok(Action::TagPicker),
+            "tag" => {
+                let words: Vec<&str> = arg.split_whitespace().collect();
+                match words.as_slice() {
+                    ["rename", old, new] => Ok(Action::TagRename(old.to_string(), new.to_string())),
+                    ["delete", tag] => Ok(Action::TagDelete(tag.to_string())),
+                    _ => Err("tag rename <old> <new> | tag delete <tag>".to_string()),
+                }
+            }
+            "view" => match arg.split_once(char::is_whitespace) {
+                Some(("save", name)) if !name.trim().is_empty() => {
+                    Ok(Action::ViewSave(name.trim().to_string()))
+                }
+                Some(("delete", name)) if !name.trim().is_empty() => {
+                    Ok(Action::ViewDelete(name.trim().to_string()))
+                }
+                _ => Err("view save <name> | view delete <name>".to_string()),
+            },
             "set" | "se" => match arg {
                 "nu" | "number" => Ok(Action::SetNumber(true)),
                 "nonu" | "nonumber" => Ok(Action::SetNumber(false)),
@@ -534,6 +560,7 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("g?", Help, "help"),
         ("<leader>l", Locations, "Locations"),
         ("<leader>p", PinPicker, "pins picker"),
+        ("<leader>t", TagPicker, "tags: pick, filter, rename"),
         ("R", Refresh, "retry / refresh / re-probe"),
         ("dd", Delete, "delete (Locations: remove saved share)"),
         (":", CommandLine, "command line"),
@@ -896,6 +923,21 @@ mod tests {
             ("set nornu", Action::SetRelativeNumber(false)),
             ("se nu", Action::SetNumber(true)),
             ("set nonumber", Action::SetNumber(false)),
+            ("pin", Action::PinCwd),
+            ("tags", Action::TagPicker),
+            (
+                "tag rename aveva e3d",
+                Action::TagRename("aveva".into(), "e3d".into()),
+            ),
+            ("tag delete old", Action::TagDelete("old".into())),
+            (
+                "view save main server",
+                Action::ViewSave("main server".into()),
+            ),
+            (
+                "view delete main server",
+                Action::ViewDelete("main server".into()),
+            ),
         ];
         for (s, want) in ok {
             assert_eq!(Action::parse(s).as_ref(), Ok(want), "{s}");
@@ -904,10 +946,14 @@ mod tests {
             ("", "empty"),
             ("nope", "unknown command"),
             ("q now", "no argument"),
-            ("picker files", "arrives in M3"),
+            ("picker files", "arrives in M6"),
             ("sync HIT", "arrives in M4b"),
             ("set", "set what"),
             ("set list", "unknown option"),
+            ("tag rename x", "tag rename <old> <new>"),
+            ("tag", "tag rename"),
+            ("view save", "view save <name>"),
+            ("view list", "view save <name>"),
         ];
         for (s, want) in err {
             let got = Action::parse(s).err().unwrap_or_default();
@@ -1020,7 +1066,7 @@ mod tests {
             }
         ));
         assert_eq!(problems.len(), 2, "{problems:?}");
-        assert!(problems[0].contains("arrives in M3"), "{problems:?}");
+        assert!(problems[0].contains("arrives in M6"), "{problems:?}");
         assert!(problems[1].contains("unknown modifier"), "{problems:?}");
     }
 
