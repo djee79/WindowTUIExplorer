@@ -19,9 +19,10 @@
 
 use super::{App, Mode};
 use crate::auth::{self, Secret};
+use crate::fs::EntryKind;
 use crate::fs::path::Loc;
 use crate::fs::worker::{ConnectHow, ListError};
-use crate::platform::NetConnection;
+use crate::platform::{DriveKind, NetConnection};
 use crate::prompt::{Edit, LineEditor};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use zeroize::Zeroizing;
@@ -54,6 +55,8 @@ pub struct CredPrompt {
     pub busy: bool,
     /// Error 1219 came back: `d` / `a` pick a fix (the password is kept for it).
     pub conflict: bool,
+    /// Where to go once connected (`:connect` from Locations on a share or pin).
+    open: Option<String>,
 }
 
 impl CredPrompt {
@@ -101,13 +104,62 @@ impl App {
     }
 
     /// `:connect`: the prompt for the cwd's share, whatever happened before.
-    pub(super) fn connect_here(&mut self) {
+    /// `:connect [path]`. With a path, or on a share / pin / mapped drive under the cursor
+    /// (Locations, a server node), it logs in there and opens it once connected;
+    /// otherwise it logs in to the share the cwd is on.
+    pub(super) fn connect_here(&mut self, path: &str) {
+        let path = path.trim();
+        let wanted = if path.is_empty() {
+            self.connect_under_cursor()
+        } else {
+            match Loc::resolve(&self.cwd, path) {
+                Ok(loc) => Some(loc.display()),
+                Err(e) => return self.set_status(format!(":connect {path}: {e}"), true),
+            }
+        };
+        if let Some(open) = wanted {
+            let target = Loc::parse(&open)
+                .ok()
+                .and_then(|l| auth::connect_target(&l));
+            return match target {
+                Some(t) => {
+                    self.open_credentials(t, format!("log in to open {open}"));
+                    if let Some(p) = self.cred.as_mut() {
+                        p.open = Some(open);
+                    }
+                }
+                None => self.set_status(format!("{open} isn't on a \\\\server\\share"), true),
+            };
+        }
         match auth::connect_target(&self.cwd) {
             Some(target) => {
                 self.open_credentials(target, "connect with another account".to_string());
             }
-            None => self.set_status(":connect works on a \\\\server\\share path".into(), false),
+            None => self.set_status(
+                ":connect \\\\server\\share, or on a share or pin in Locations".into(),
+                false,
+            ),
         }
+    }
+
+    /// The network folder under the cursor, if it is one: a saved share, a share in a
+    /// server node, a pinned UNC folder, a mapped drive (its `\\server\share`).
+    fn connect_under_cursor(&self) -> Option<String> {
+        let e = self.selected()?;
+        let path = match e.kind {
+            EntryKind::Share if e.name.starts_with(r"\\") => e.name.clone(),
+            EntryKind::Share => match &self.cwd {
+                Loc::Server(s) => format!(r"\\{s}\{}", e.name),
+                _ => return None,
+            },
+            EntryKind::Pin => e.name.clone(),
+            EntryKind::Drive(DriveKind::Network) => {
+                let at = e.detail.find(r"\\")?;
+                e.detail[at..].split_whitespace().next()?.to_string()
+            }
+            _ => return None,
+        };
+        path.starts_with(r"\\").then_some(path)
     }
 
     fn open_credentials(&mut self, target: String, reason: String) {
@@ -133,6 +185,7 @@ impl App {
             tries: 0,
             busy: false,
             conflict: false,
+            open: None,
         });
         self.mode = Mode::Credentials;
         self.dirty = true;
@@ -250,6 +303,11 @@ impl App {
                 self.connections_made.insert(target.clone());
                 self.cred_asked
                     .remove(&auth::server_of(&requested).to_lowercase());
+                let open = if ours {
+                    self.cred.as_mut().and_then(|p| p.open.take())
+                } else {
+                    None
+                };
                 if ours {
                     self.close_credentials();
                 }
@@ -264,9 +322,15 @@ impl App {
                 }
                 if target != requested {
                     // Through an alias: the same folder on the alias name.
-                    let here = self.cwd.real().display();
+                    let here = open.unwrap_or_else(|| self.cwd.real().display());
                     let alias = auth::server_of(&target).to_string();
                     self.cd(&auth::with_server(&here, &alias));
+                } else if let Some(path) = open {
+                    // Logged in from Locations (or `:connect <path>`): go there now.
+                    let t = target.to_lowercase();
+                    self.reach
+                        .retain(|loc, _| !loc.display().to_lowercase().starts_with(&t));
+                    self.cd(&path);
                 } else {
                     self.refresh();
                 }

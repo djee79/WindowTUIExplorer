@@ -355,8 +355,9 @@ pub enum Action {
     Net(String),
     /// `gm`: the Machines list.
     Machines,
-    /// `:connect`: the credential prompt for the cwd's share.
-    Connect,
+    /// `:connect [path]`: the credential prompt for a share: the path given, the item under
+    /// the cursor (Locations: a saved share, a pin, a mapped drive), or the cwd's share.
+    Connect(String),
     /// `zp`: full-screen preview (zoom, pan, next file).
     FullPreview,
     PrevPage,
@@ -439,7 +440,7 @@ const NAMED: &[(&str, Action)] = &[
     ("content-search", Action::ContentSearch),
     ("next-page", Action::NextPage),
     ("full-preview", Action::FullPreview),
-    ("connect", Action::Connect),
+    ("connect", Action::Connect(String::new())),
     ("machines", Action::Machines),
     ("prev-page", Action::PrevPage),
     ("goto-page", Action::GotoPage),
@@ -476,6 +477,7 @@ impl Action {
                 arg.to_string()
             })),
             "net" => Ok(Action::Net(arg.to_string())),
+            "connect" => Ok(Action::Connect(arg.to_string())),
             "sync" => Ok(Action::Sync(arg.to_string(), false)),
             "sync!" => Ok(Action::Sync(arg.to_string(), true)),
             "backup" => Ok(Action::Backup(arg.to_string())),

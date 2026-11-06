@@ -1755,6 +1755,78 @@ mod tests {
         l
     }
 
+    /// `:connect` in Locations logs in to the share (or mapped drive) under the cursor,
+    /// then opens it; `:connect <path>` works from anywhere.
+    #[test]
+    fn connect_from_locations_logs_in_then_opens() {
+        let (mut app, _rt) = root_fixture();
+        let at = |app: &App, name: &str| {
+            let Some(l) = &app.view_listing else { panic!() };
+            app.view
+                .iter()
+                .position(|&i| l.entries[i].name == name)
+                .unwrap_or_else(|| panic!("{name}"))
+        };
+        let i = at(&app, r"\\nas02\archive");
+        app.set_cursor(i);
+        press(&mut app, ":connect<CR>");
+        assert_eq!(app.mode, Mode::Credentials);
+        let target = app
+            .cred
+            .as_ref()
+            .map(|c| (c.target.clone(), c.reason.clone()));
+        assert_eq!(
+            target,
+            Some((
+                r"\\nas02\archive".to_string(),
+                r"log in to open \\nas02\archive".to_string()
+            ))
+        );
+        press(&mut app, "me<Tab>pw<CR>");
+        assert!(app.cred.as_ref().is_some_and(|c| c.busy));
+        app.handle(AppEvent::Connected {
+            requested: r"\\nas02\archive".into(),
+            target: r"\\nas02\archive".into(),
+            user: "me".into(),
+            result: Ok(()),
+            remembered: None,
+            dropped: Vec::new(),
+        });
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(
+            app.cwd.display(),
+            r"\\nas02\archive",
+            "opened once logged in"
+        );
+
+        // A mapped drive: its UNC target. A path: that share, then that folder.
+        press(&mut app, "gl");
+        let i = at(&app, "P:");
+        app.set_cursor(i);
+        press(&mut app, ":connect<CR>");
+        assert_eq!(
+            app.cred.as_ref().map(|c| c.target.as_str()),
+            Some(r"\\srv01\project")
+        );
+        press(&mut app, "<Esc>");
+        press(&mut app, r":connect \\nas02\archive\old<CR>");
+        assert_eq!(
+            app.cred.as_ref().map(|c| c.target.as_str()),
+            Some(r"\\nas02\archive")
+        );
+        press(&mut app, "<Esc>");
+        // C: isn't a share: it says what :connect wants.
+        let i = at(&app, "C:");
+        app.set_cursor(i);
+        press(&mut app, ":connect<CR>");
+        assert_ne!(app.mode, Mode::Credentials);
+        assert!(
+            app.status
+                .as_ref()
+                .is_some_and(|s| s.text.contains(r"\\server\share"))
+        );
+    }
+
     /// The app at the Locations root with two drives and two saved shares, one of which
     /// is known to be unreachable.
     fn root_fixture() -> (App, tokio::runtime::Runtime) {

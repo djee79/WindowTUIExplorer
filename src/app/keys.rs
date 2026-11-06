@@ -389,7 +389,7 @@ impl App {
             Action::ContentSearch => self.open_prompt(PromptKind::ContentSearch),
             Action::NextPage => self.step_page(n, true),
             Action::FullPreview => self.toggle_full_preview(),
-            Action::Connect => self.connect_here(),
+            Action::Connect(path) => self.connect_here(&path),
             Action::Machines => self.open_machines(),
             Action::Net(arg) => self.net_command(&arg),
             Action::Sync(name, skip) => self.sync_command(&name, skip),

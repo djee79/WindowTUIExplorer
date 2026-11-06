@@ -307,10 +307,13 @@ pub(super) fn draw_state(f: &mut Frame, area: Rect, app: &App, state: &DirState,
         )));
         if primary {
             lines.push(Line::default());
-            lines.push(Line::from(Span::styled(
-                " R retry   h go back",
-                theme::dim(),
-            )));
+            // On a share, logging in may be what's missing.
+            let hint = if crate::auth::connect_target(&app.cwd).is_some() {
+                " R retry   :connect log in   h go back"
+            } else {
+                " R retry   h go back"
+            };
+            lines.push(Line::from(Span::styled(hint, theme::dim())));
         }
     } else if let Some(loading) = state.loading {
         let mut text = format!(" {} loading…", spinner(app));
