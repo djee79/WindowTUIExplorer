@@ -581,8 +581,11 @@ fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Drawn>
         .and_then(|loc| app.image_of(&loc));
     let mut caption = human_size(e.size);
     let mut drawn = None;
+    // Photo details for the row above the caption.
+    let mut details: Option<String> = None;
     match state.map(|s| s.result.as_ref()) {
         Some(Some(Ok(p))) => {
+            details = p.photo.as_ref().map(|i| i.line());
             caption = match &p.pdf {
                 // `page 2 / 14 · A3 landscape · 420×297 mm (16.5×11.7 in) · 1.2 MB`
                 Some(info) => format!("{} · {}", info.caption(), human_size(e.size)),
@@ -652,19 +655,29 @@ fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Drawn>
         ))),
         caption_area,
     );
-    // In search results, where the file really is (the row above the caption is free).
-    if app.search_state(&app.cwd).is_some()
-        && let Some(dir) = app.cwd.join(&e.name).ok().and_then(|t| t.parent())
-    {
-        let found = Rect {
-            y: caption_area.y.saturating_sub(1),
-            ..caption_area
-        };
-        let w = (found.width as usize).saturating_sub(12);
-        let dir = format!("{}\\", dir.display().trim_end_matches('\\'));
+    // The row above the caption: in search results, where the file really is; otherwise
+    // a photo's EXIF details.
+    let above = Rect {
+        y: caption_area.y.saturating_sub(1),
+        ..caption_area
+    };
+    if app.search_state(&app.cwd).is_some() {
+        if let Some(dir) = app.cwd.join(&e.name).ok().and_then(|t| t.parent()) {
+            let w = (above.width as usize).saturating_sub(12);
+            let dir = format!("{}\\", dir.display().trim_end_matches('\\'));
+            f.render_widget(
+                Paragraph::new(info_line("Found in", super::truncate_left(&dir, w))),
+                above,
+            );
+        }
+    } else if let Some(d) = details.filter(|d| !d.is_empty()) {
+        let w = (above.width as usize).saturating_sub(2);
         f.render_widget(
-            Paragraph::new(info_line("Found in", super::truncate_left(&dir, w))),
-            found,
+            Paragraph::new(Line::from(Span::styled(
+                format!(" {}", truncate(&d, w)),
+                theme::dim(),
+            ))),
+            above,
         );
     }
     drawn

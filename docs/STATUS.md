@@ -444,3 +444,17 @@ Manual checklist:
 - [ ] `zp` on a photo, `+ + +`, `H J K L`, `=`, `j` to the next photo, `zp` back: no ghost.
 - [ ] `zp` on a drawing PDF, `++`, pan to the title block: text sharp. `]p` pages.
 - [ ] In a folder of photos, `j` after the first preview: the next one appears instantly.
+
+## M2b previews, slice 5: photo EXIF + orientation (code complete 2026-11-06)
+
+- Crate `kamadak-exif` 0.6.2 (in the stack table). `preview::image::photo_info` reads the
+  EXIF of JPEG / TIFF / HEIF / PNG / WebP from the bytes already in memory: date taken
+  (`DateTimeOriginal`, else `DateTime`), camera (make + model, without repeating the maker),
+  GPS yes/no. Shown on the row above the caption:
+  `taken 2024-06-01 14:32 · Apple iPhone 13 · GPS` (search results keep `Found in` there).
+- Pictures are turned upright from their EXIF orientation (`image`'s decoder orientation +
+  `apply_orientation`): portrait phone photos no longer show sideways. The caption's size
+  is the upright one.
+
+M2b is complete except the on-disk thumbnail cache for network paths (spec: 500 MB under
+`%LOCALAPPDATA%\sentier\cache\thumbs\`), left for when previews over SMB prove slow.

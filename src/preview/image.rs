@@ -9,7 +9,7 @@
 //! matters for the shape, and 10×20 has the 1:2 shape of every common terminal font.
 
 use super::View;
-use image::{DynamicImage, ImageReader};
+use image::{DynamicImage, ImageDecoder, ImageReader};
 use ratatui::layout::Size;
 use ratatui_image::Resize;
 use ratatui_image::picker::{Picker, ProtocolType};
@@ -52,6 +52,8 @@ pub struct ImagePreview {
     pub pdf: Option<super::PdfInfo>,
     /// A Windows shell thumbnail (its own size says little: no "1280×853 · PNG").
     pub thumbnail: bool,
+    /// For a photo: what its EXIF says.
+    pub photo: Option<PhotoInfo>,
 }
 
 impl std::fmt::Debug for ImagePreview {
@@ -111,7 +113,13 @@ pub fn decode(
         .format()
         .map(|f| format!("{f:?}").to_uppercase())
         .unwrap_or_else(|| "?".to_string());
-    let img = reader.decode().map_err(|e| e.to_string())?;
+    // Phones store pictures sideways with an EXIF orientation: turn them upright.
+    let mut decoder = reader.into_decoder().map_err(|e| e.to_string())?;
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
+    img.apply_orientation(orientation);
     let (width, height) = (img.width(), img.height());
     let img = apply_view(img, cols, rows, view);
     Ok(ImagePreview {
@@ -121,7 +129,84 @@ pub fn decode(
         format,
         pdf: None,
         thumbnail: false,
+        photo: photo_info(bytes),
     })
+}
+
+/// What a photo's EXIF says (CLAUDE.md section 11: date, camera, GPS yes/no).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PhotoInfo {
+    /// `2024-06-01 14:32`.
+    pub taken: Option<String>,
+    /// `Apple iPhone 13`.
+    pub camera: Option<String>,
+    pub gps: bool,
+}
+
+impl PhotoInfo {
+    /// `taken 2024-06-01 14:32 · Apple iPhone 13 · GPS`.
+    pub fn line(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(t) = &self.taken {
+            parts.push(format!("taken {t}"));
+        }
+        parts.extend(self.camera.clone());
+        if self.gps {
+            parts.push("GPS".to_string());
+        }
+        parts.join(" · ")
+    }
+}
+
+/// The EXIF of a JPEG / TIFF / HEIF / PNG / WebP, if it has any worth showing.
+pub fn photo_info(bytes: &[u8]) -> Option<PhotoInfo> {
+    use exif::{In, Tag, Value};
+    let exif = exif::Reader::new()
+        .read_from_container(&mut std::io::Cursor::new(bytes))
+        .ok()?;
+    let text = |tag: Tag| -> Option<String> {
+        match &exif.get_field(tag, In::PRIMARY)?.value {
+            Value::Ascii(v) => {
+                let s = String::from_utf8_lossy(v.first()?)
+                    .trim_matches(['\0', ' '])
+                    .to_string();
+                (!s.is_empty()).then_some(s)
+            }
+            _ => None,
+        }
+    };
+    let taken = text(Tag::DateTimeOriginal)
+        .or_else(|| text(Tag::DateTime))
+        .map(|d| exif_date(&d));
+    let camera = camera_name(text(Tag::Make), text(Tag::Model));
+    let gps = exif.get_field(Tag::GPSLatitude, In::PRIMARY).is_some();
+    let info = PhotoInfo { taken, camera, gps };
+    (info != PhotoInfo::default()).then_some(info)
+}
+
+/// `2024:06:01 14:32:10` → `2024-06-01 14:32`; anything else as it is.
+fn exif_date(d: &str) -> String {
+    let b = d.as_bytes();
+    if b.len() >= 16 && b[4] == b':' && b[7] == b':' && b[10] == b' ' {
+        format!("{}-{}-{} {}", &d[..4], &d[5..7], &d[8..10], &d[11..16])
+    } else {
+        d.to_string()
+    }
+}
+
+/// `Canon` + `Canon EOS 80D` → `Canon EOS 80D`; `Apple` + `iPhone 13` → `Apple iPhone 13`.
+fn camera_name(make: Option<String>, model: Option<String>) -> Option<String> {
+    match (make, model) {
+        (Some(make), Some(model)) => {
+            let first = make.split_whitespace().next().unwrap_or_default();
+            if model.to_lowercase().starts_with(&first.to_lowercase()) {
+                Some(model)
+            } else {
+                Some(format!("{make} {model}"))
+            }
+        }
+        (make, model) => model.or(make),
+    }
 }
 
 /// Renders page `page` (0-based, clamped) of the PDF in `bytes` and encodes it to fit
@@ -155,6 +240,7 @@ pub fn pdf(
             rendered.height_dip,
         )),
         thumbnail: false,
+        photo: None,
     })
 }
 
@@ -183,6 +269,7 @@ pub fn thumbnail(
         format: "Windows thumbnail".to_string(),
         pdf: None,
         thumbnail: true,
+        photo: None,
     })
 }
 
@@ -470,5 +557,79 @@ mod tests {
         let s = z.picture.size();
         assert!(s.height == 20 || s.width == 40, "fills the box: {s:?}");
         assert_eq!((z.width, z.height), (100, 100), "the picture's own size");
+    }
+
+    #[test]
+    fn exif_dates_and_camera_names() {
+        assert_eq!(exif_date("2024:06:01 14:32:10"), "2024-06-01 14:32");
+        assert_eq!(exif_date("garbage"), "garbage");
+        let s = |v: &str| Some(v.to_string());
+        let cases = [
+            (s("Canon"), s("Canon EOS 80D"), s("Canon EOS 80D")),
+            (s("Apple"), s("iPhone 13"), s("Apple iPhone 13")),
+            (s("NIKON CORPORATION"), s("NIKON D750"), s("NIKON D750")),
+            (None, s("X100V"), s("X100V")),
+            (s("Sony"), None, s("Sony")),
+            (None, None, None),
+        ];
+        for (make, model, want) in cases {
+            assert_eq!(
+                camera_name(make.clone(), model.clone()),
+                want,
+                "{make:?} {model:?}"
+            );
+        }
+        let info = PhotoInfo {
+            taken: s("2024-06-01 14:32"),
+            camera: s("Apple iPhone 13"),
+            gps: true,
+        };
+        assert_eq!(
+            info.line(),
+            "taken 2024-06-01 14:32 · Apple iPhone 13 · GPS"
+        );
+    }
+
+    #[test]
+    fn reads_exif_from_the_file_bytes() {
+        use exif::{Field, In, Rational, Tag, Value};
+        let fields = [
+            Field {
+                tag: Tag::Make,
+                ifd_num: In::PRIMARY,
+                value: Value::Ascii(vec![b"Apple".to_vec()]),
+            },
+            Field {
+                tag: Tag::Model,
+                ifd_num: In::PRIMARY,
+                value: Value::Ascii(vec![b"iPhone 13".to_vec()]),
+            },
+            Field {
+                tag: Tag::DateTimeOriginal,
+                ifd_num: In::PRIMARY,
+                value: Value::Ascii(vec![b"2024:06:01 14:32:10".to_vec()]),
+            },
+            Field {
+                tag: Tag::GPSLatitude,
+                ifd_num: In::PRIMARY,
+                value: Value::Rational(vec![
+                    Rational::from((45, 1)),
+                    Rational::from((30, 1)),
+                    Rational::from((0, 1)),
+                ]),
+            },
+        ];
+        let mut writer = exif::experimental::Writer::new();
+        for f in &fields {
+            writer.push_field(f);
+        }
+        let mut tiff = std::io::Cursor::new(Vec::new());
+        assert!(writer.write(&mut tiff, true).is_ok());
+        let info = photo_info(tiff.get_ref());
+        assert_eq!(
+            info.map(|i| i.line()).as_deref(),
+            Some("taken 2024-06-01 14:32 · Apple iPhone 13 · GPS")
+        );
+        assert_eq!(photo_info(b"not an image"), None);
     }
 }
