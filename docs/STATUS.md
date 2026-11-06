@@ -87,7 +87,7 @@ Manual checklist for M1 "done":
 
 ## Open questions about the mockups (settle before M2–M5)
 
-1. `01-main` top bar shows `tab 1 of 2`. Tabs aren't in CLAUDE.md. Add them to the spec or drop them.
+1. ~~`01-main` top bar shows `tab 1 of 2`.~~ Settled 2026-11-06: tabs added (section 1).
 2. `02-locations` shows `e rename`, `dm delete pin`, `P pin current dir`. The spec says
    `^E`/`^D` in pickers, `P` = pin item under cursor, and `^P` = pin current dir.
 3. `02-locations` counts don't add up: 5 pinned folders are listed, the footer says 4 and
@@ -1027,3 +1027,16 @@ or visual range, or `:rename` (`R` stays retry / refresh); the Neovim flow is
 
 Manual check: rename photos with `$DATE_TAKEN_YYYY-$DATE_TAKEN_MM-$DATE_TAKEN_DD_${padding=3}`
 (enumerate on), a folder of PDFs with `${pdf_title}`, a folder tree with `s`, then `u`.
+
+## Tabs (code complete 2026-11-06, manual check pending)
+
+`t` new tab on this folder · `Alt-1…9` / `{n}gt` tab n · `gt` / `gT` next / previous ·
+`q` / `:q` / `:tabclose` closes a tab (`q` quits on the last; `ZQ` / `:qa` quit
+everything) · `:tabnew [path]`, `:tabnext [n]`, `:tabprevious`. Plain digits stay vim
+counts (user's choice over Yazi's plain `1…9`). Per tab: folder, cursor, scroll, `H`/`L`
+history, `''`, selection, filter (`app/tabs.rs`). Shared: listings cache, jobs, pins,
+search results. Up to 9. The header shows ` 1 HIT  2 Downloads ` from two tabs on. Listed
+in `g?`, which-key (`g`), and the `:` hints.
+
+Manual check: `Alt-1…9` must arrive as Alt+digit under WezTerm / ConPTY
+(`cargo run --example probe_keys`); `gt` / `3gt` always work if not.

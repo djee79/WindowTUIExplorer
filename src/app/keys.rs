@@ -416,7 +416,24 @@ impl App {
             Action::ViewSave(name) => self.view_save(&name),
             Action::ViewDelete(name) => self.view_delete(&name),
             Action::Help => self.mode = Mode::Help,
-            Action::Quit | Action::QuitNoWrite => self.quit = Some(Quit::Plain),
+            Action::Quit => {
+                if !self.close_tab() {
+                    self.quit = Some(Quit::Plain);
+                }
+            }
+            Action::QuitNoWrite => self.quit = Some(Quit::Plain),
+            Action::NewTab(path) => self.new_tab(Some(&path)),
+            Action::CloseTab => {
+                if !self.close_tab() {
+                    self.set_status("the last tab: q quits".into(), false);
+                }
+            }
+            Action::NextTab => match count {
+                Some(c) => self.goto_tab(c),
+                None => self.cycle_tab(1, true),
+            },
+            Action::PrevTab => self.cycle_tab(n, false),
+            Action::GotoTab(i) => self.goto_tab(i),
             Action::QuitWriteCwd => self.quit = Some(Quit::WithCwd),
             Action::Cd(path) => self.cd(&path),
             Action::NameSearch => self.open_prompt(PromptKind::NameSearch),

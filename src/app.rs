@@ -24,6 +24,7 @@ mod preview;
 mod search;
 mod sync;
 pub use sync::{PreviewStatus, SyncPreviewState};
+mod tabs;
 mod tags;
 
 pub use keys::{Prompt, PromptKind};
@@ -207,6 +208,10 @@ pub struct App {
     back: Vec<Loc>,
     forward: Vec<Loc>,
     prev_dir: Option<Loc>,
+    /// Tabs (`t`, `gt`, `Alt-1…9`): every tab, the active one's slot stale while it's shown
+    /// (its state is in the fields above), and which one is active.
+    tabs: Vec<tabs::Tab>,
+    tab: usize,
     /// Recursive searches (`s`), newest last; each is a results folder.
     searches: Vec<SearchState>,
     next_search_id: u64,
@@ -390,6 +395,8 @@ impl App {
             back: Vec::new(),
             forward: Vec::new(),
             prev_dir: None,
+            tabs: vec![tabs::Tab::new(Loc::Root)],
+            tab: 0,
             searches: Vec::new(),
             next_search_id: 1,
             grep_preview: None,
@@ -1569,6 +1576,9 @@ mod tests {
             let mut mods = KeyModifiers::NONE;
             if k.ctrl {
                 mods |= KeyModifiers::CONTROL;
+            }
+            if k.alt {
+                mods |= KeyModifiers::ALT;
             }
             if k.shift {
                 mods |= KeyModifiers::SHIFT;
@@ -5391,6 +5401,78 @@ mod job_tests {
         assert!(l.app.rename_panel.as_ref().is_some_and(|p| p.options.regex));
         press(&mut l.app, "<Esc>q");
         assert_eq!(l.app.mode, Mode::Normal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Tabs: `t` opens one on this folder, each keeps its own folder, history and
+    /// selection; `Alt-n`, `gt` / `gT`, `{n}gt` switch; `q` closes a tab, then quits;
+    /// `:tabnew <path>`; the header lists them.
+    #[test]
+    fn tabs_keep_their_own_folder_history_and_selection() {
+        let dir = std::env::temp_dir().join(format!(
+            "sentier-tabs-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(dir.join("alpha"));
+        let _ = std::fs::create_dir_all(dir.join("beta"));
+        let _ = std::fs::write(dir.join("alpha").join("x.txt"), "x");
+        let _ = std::fs::write(dir.join("alpha").join("y.txt"), "y");
+        let home = dir.display().to_string().to_lowercase();
+        let in_alpha = dir.join("alpha").display().to_string().to_lowercase();
+        let at = |a: &App, want: &str| {
+            a.cwd.display().to_lowercase() == want && a.view_listing.is_some()
+        };
+        let mut l = Live::new(&dir);
+        assert!(l.app.tab_labels().is_empty(), "no tab bar with one tab");
+
+        // Tab 2 goes into alpha and selects x.txt.
+        press(&mut l.app, "t");
+        assert_eq!((l.app.tabs.len(), l.app.tab), (2, 1));
+        l.goto("alpha");
+        press(&mut l.app, "l");
+        l.until(|a| at(a, &in_alpha));
+        l.goto("x.txt");
+        press(&mut l.app, "<Tab>");
+        assert_eq!(l.app.marked.len(), 1);
+
+        // Alt-1: tab 1 is still at the top, with no history and no selection.
+        press(&mut l.app, "<A-1>");
+        l.until(|a| at(a, &home));
+        assert_eq!(l.app.tab, 0);
+        assert!(l.app.marked.is_empty() && l.app.back.is_empty());
+        let screen = render(&mut l.app, 120, 20);
+        assert!(
+            screen.contains(" 1 sentier-tabs") && screen.contains(" 2 alpha "),
+            "{screen}"
+        );
+
+        // gt: back in alpha, x.txt still selected, H goes back to the top.
+        press(&mut l.app, "gt");
+        l.until(|a| at(a, &in_alpha));
+        assert!(l.app.marked.contains("x.txt"));
+        assert_eq!(
+            l.app.selected().map(|e| e.name.clone()).as_deref(),
+            Some("y.txt")
+        );
+        press(&mut l.app, "3gt");
+        assert!(status(&l.app).contains("no tab 3"));
+        press(&mut l.app, "gT");
+        l.until(|a| at(a, &home));
+
+        // :tabnew <path>, then q closes tabs one by one and quits on the last.
+        press(&mut l.app, ":tabnew beta<CR>");
+        l.until(|a| a.cwd.name() == "beta" && a.view_listing.is_some());
+        assert_eq!((l.app.tabs.len(), l.app.tab), (3, 1), "right after tab 1");
+        press(&mut l.app, "q");
+        l.until(|a| at(a, &in_alpha));
+        assert_eq!((l.app.tabs.len(), l.app.tab), (2, 1));
+        assert!(l.app.quit.is_none());
+        press(&mut l.app, "H");
+        l.until(|a| at(a, &home));
+        press(&mut l.app, "qq");
+        assert!(l.app.quit.is_some(), "the last tab quits");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

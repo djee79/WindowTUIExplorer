@@ -178,19 +178,21 @@ fn draw_search_header(f: &mut Frame, area: Rect, app: &App, s: &SearchState) {
         theme::dim(),
     ));
     let rw: usize = right.iter().map(|s| s.width()).sum();
+    let tabs = tab_spans(app);
+    let tw: usize = tabs.iter().map(|s| s.width()).sum();
     let origin = truncate_left(
         &s.origin.display(),
-        (area.width as usize).saturating_sub(rw + 24 + width(&s.query)),
+        (area.width as usize).saturating_sub(rw + tw + 24 + width(&s.query)),
     );
     let color = if s.origin.is_network() { NET } else { FG };
-    let left = vec![
-        badge(" sentier ", ACCENT),
-        Span::raw("  "),
+    let mut left = vec![badge(" sentier ", ACCENT), Span::raw("  ")];
+    left.extend(tabs);
+    left.extend([
         Span::styled(if s.content { "grep " } else { "search " }, theme::dim()),
         Span::styled(format!("\"{}\"", s.query), theme::bold(ACCENT)),
         Span::styled("  in  ", theme::dim()),
         Span::styled(origin, theme::bold(color)),
-    ];
+    ]);
     bar(f, area, left, right);
 }
 
@@ -232,6 +234,9 @@ pub fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     // so nobody forgets whose PC they're in (CLAUDE.md section 14).
     let mut left = vec![badge, Span::raw("  ")];
     let mut used = 12;
+    let tabs = tab_spans(app);
+    used += tabs.iter().map(|s| s.width()).sum::<usize>();
+    left.extend(tabs);
     if let Some(host) = app.cwd.admin_host() {
         let user = app
             .machine_user(host)
@@ -591,4 +596,30 @@ fn selection_summary(app: &App) -> Option<String> {
         s.push_str(&format!(" · {}", human_size(bytes)));
     }
     Some(s)
+}
+
+/// The tab bar (two or more tabs): ` 1 HIT ` chips, the active one highlighted, then a
+/// gap. Empty with one tab.
+fn tab_spans(app: &App) -> Vec<Span<'static>> {
+    let tabs = app.tab_labels();
+    if tabs.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for (n, label, active) in tabs {
+        let text = format!(" {n} {} ", super::truncate(&label, 16));
+        out.push(if active {
+            Span::styled(
+                text,
+                Style::new()
+                    .bg(theme::SEL_BG)
+                    .fg(ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(text, theme::dim())
+        });
+    }
+    out.push(Span::raw("  "));
+    out
 }

@@ -189,6 +189,12 @@ src/
 - Typing a path: `:cd <path>` (or `:e <path>`) accepts any path form from rule 3, with Tab
   completion. Completion also runs in the worker.
 - Status bar: path, item count, selection count, free space (async), share reachability.
+- **Tabs** (Yazi's idea, vim keys): `t` opens a tab on the current folder, `Alt-1`…`Alt-9`
+  or `{n}gt` go to tab n, `gt` / `gT` next / previous, `q` closes a tab (and quits on the
+  last one). `:tabnew [path]`, `:tabnext [n]`, `:tabprevious`, `:tabclose`. Plain digits
+  stay counts. Each tab keeps its own folder, cursor, `H`/`L` history, `''`, selection
+  and filter; listings, jobs, pins and search results are shared. Up to 9 tabs; the header
+  lists them (` 1 HIT  2 Downloads `) once there are two.
 
 ### 2. Locations root (`gl`, or `h` from a drive root)
 
@@ -1036,7 +1042,8 @@ filters) · `dialog` (confirmations, sync preview).
 | `gR` | reveal in Explorer (selects the file in an Explorer window) |
 | `gx` `gw` `go` · `Alt-Enter` | open in Explorer · new WezTerm tab here · editor · Properties |
 | `:` | command line (`:cd`, `:e`, `:pin`, `:sync <preset>`, `:backup <preset>`, `:rename`, `:import-wtm`, `:q`) |
-| `q` / `:q` · `ZZ` · `ZQ` | quit · quit writing cwd (for the shell wrapper) · quit without writing |
+| `t` · `Alt-1`…`9` / `{n}gt` · `gt` `gT` | new tab here · go to tab n · next / previous tab |
+| `q` / `:q` · `ZZ` · `ZQ` | quit (with several tabs: close this one) · quit writing cwd (for the shell wrapper) · quit without writing |
 | `g?` | help overlay (`?` stays vim's backward search). `<leader>sk` searches every keymap. |
 
 ### Leader (Space), LazyVim-style
