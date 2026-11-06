@@ -601,7 +601,10 @@ fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Drawn>
             let size = p.picture.size();
             // Overlays (help, pickers, which-key) cover the column: no picture under
             // them. An iTerm2 picture is written after the frame and would cover them.
-            let covered = matches!(app.mode, Mode::Help | Mode::Picker) || app.which_key_visible();
+            let covered = matches!(
+                app.mode,
+                Mode::Help | Mode::Picker | Mode::Credentials | Mode::NetList
+            ) || app.which_key_visible();
             if !covered && size.width <= area.width && size.height <= area.height {
                 let rect = Rect {
                     width: size.width,

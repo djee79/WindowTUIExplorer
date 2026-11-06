@@ -257,6 +257,16 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         bar(f, area, left, Vec::new());
         return;
     }
+    if app.mode == Mode::Credentials {
+        left.push(badge(" INSERT ", OK));
+        left.push(Span::raw("  "));
+        left.push(Span::styled(
+            "credential prompt  ·  masked  ·  paste allowed",
+            theme::dim(),
+        ));
+        bar(f, area, left, Vec::new());
+        return;
+    }
     if app.mode == Mode::Preview {
         left.push(badge(" PREVIEW ", ACCENT));
         left.push(Span::raw("  "));

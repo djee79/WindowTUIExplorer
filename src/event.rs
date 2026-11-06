@@ -59,6 +59,23 @@ pub enum AppEvent {
     PinsSaveFailed(String),
     /// A picker's matcher has new results.
     Wake,
+    /// config.toml was read (or why not).
+    ConfigLoaded(Result<crate::config::Config, String>),
+    /// A connection with credentials finished: `target` is where it went (an alias for
+    /// the 1219 fix), the Win32 code on failure, whether the credential was remembered
+    /// when asked, and what was disconnected first.
+    Connected {
+        requested: String,
+        target: String,
+        user: String,
+        result: Result<(), u32>,
+        remembered: Option<Result<(), String>>,
+        dropped: Vec<String>,
+    },
+    /// `:net list`: the live connections, or the Win32 code.
+    NetList(Result<Vec<crate::platform::NetConnection>, u32>),
+    /// `:net drop`: what was disconnected, each with its result.
+    NetDropped(Vec<(String, Result<(), u32>)>),
     /// A picture for the preview column, read and encoded (or why not).
     ImagePreview {
         key: ImageKey,

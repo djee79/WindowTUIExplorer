@@ -458,3 +458,40 @@ Manual checklist:
 
 M2b is complete except the on-disk thumbnail cache for network paths (spec: 500 MB under
 `%LOCALAPPDATA%\sentier\cache\thumbs\`), left for when previews over SMB prove slow.
+
+## M2c credentials (code complete 2026-11-06, manual check pending)
+
+Layout note: the spec puts WNet / Credential Manager under `auth/`, but rule "all Win32
+calls live in src/platform/" wins: the calls are in `platform` (`net_connect`,
+`net_disconnect`, `net_connections`, `cred_write`); `src/auth/` is pure (error messages,
+targets, profiles, `Secret`); `src/app/auth.rs` the flow; `src/config.rs` reads
+`[auth.<name>] user = '…'` from `%APPDATA%\sentier\config.toml` (other settings later).
+
+- Listing errors: 1326 / 86 / 1244 / 1330 / 1331 / 1909 are now `ListError::LogonFailure`
+  with plain words (`auth::error_message`), like 5 (access denied).
+- When the cwd on a share is refused, a masked prompt opens (screen 11), once per server
+  until a connection works; `:connect` opens it by hand. Target: the share root, or
+  `\server\IPC$` for a server node. Admin shares (`X$`) prefill `[auth.admin]`.
+  Tab / S-Tab fields, Space toggles Remember (off by default), Enter connects, Esc cancels.
+  Password: `Zeroizing<Vec<char>>` in the prompt, `Secret` (wiped UTF-16) to the worker;
+  never drawn (● only), logged or stored. Pasting works (Windows delivers pasted text as
+  keys; crossterm has no bracketed paste there).
+- `WNetAddConnection2W` (`CONNECT_TEMPORARY`, no letter), 25 s timeout on the blocking pool.
+  Wrong password: asked again with the reason, 3 tries. Remember: `CredWriteW`
+  (`CRED_TYPE_DOMAIN_PASSWORD`, local machine) for the server, only after success.
+- Error 1219 keeps the password and offers `d` (drop every connection to the server, mapped
+  drives included (back at next logon), then connect) or `a` (connect through the server's
+  IPv4 address, then open the same folder on it).
+- `:net list` (overlay: letter, remote, user, made-by-sentier), `:net drop <server>` (not
+  drive letters; says which were left), `:net drop-all` (the ones sentier made).
+- Pictures are hidden under the prompt and the list (they'd cover them).
+
+Not yet: DFS target resolution (`NetDfsGetClientInfo`, rule 3), the "*.domain" wildcard
+option for Remember, `auth = "<profile>"` on pins (comes with machines, M3b).
+
+Manual checklist (home NAS has a saved password):
+- [ ] `:net list` shows the NAS connection and its user.
+- [ ] `:connect` on the NAS share with a wrong password: "logon failure… try 2 of 3".
+- [ ] A second, valid NAS account: error 1219 → `a` (alias) opens the same folder; `:net
+      list` shows both. `:net drop-all` removes the sentier one.
+- [ ] Leave Remember unticked while testing: it would replace the saved NAS credential.

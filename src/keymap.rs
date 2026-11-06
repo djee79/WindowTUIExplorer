@@ -319,6 +319,10 @@ pub enum Action {
     ContentSearch,
     /// `]p` / `[p` / `gP`: page through the PDF under the cursor (counts work).
     NextPage,
+    /// `:net list` / `:net drop <server>` / `:net drop-all`.
+    Net(String),
+    /// `:connect`: the credential prompt for the cwd's share.
+    Connect,
     /// `zp`: full-screen preview (zoom, pan, next file).
     FullPreview,
     PrevPage,
@@ -385,6 +389,7 @@ const NAMED: &[(&str, Action)] = &[
     ("content-search", Action::ContentSearch),
     ("next-page", Action::NextPage),
     ("full-preview", Action::FullPreview),
+    ("connect", Action::Connect),
     ("prev-page", Action::PrevPage),
     ("goto-page", Action::GotoPage),
     ("next-match", Action::NextMatch),
@@ -426,6 +431,7 @@ impl Action {
             } else {
                 arg.to_string()
             })),
+            "net" => Ok(Action::Net(arg.to_string())),
             "pin" if arg.is_empty() => Ok(Action::PinCwd),
             "tags" if arg.is_empty() => Ok(Action::TagPicker),
             "tag" => {

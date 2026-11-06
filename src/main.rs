@@ -1,6 +1,8 @@
 //! sentier: a Windows-first terminal file explorer.
 
 mod app;
+mod auth;
+mod config;
 mod event;
 mod fs;
 mod keymap;

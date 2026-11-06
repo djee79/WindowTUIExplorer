@@ -125,6 +125,8 @@ impl App {
             Mode::Prompt => self.on_prompt_key(key),
             Mode::Picker => self.on_picker_key(key),
             Mode::Preview => self.on_preview_key(key),
+            Mode::Credentials => self.on_credentials_key(key),
+            Mode::NetList => self.on_net_list_key(key),
             Mode::Normal => self.on_normal_key(key),
         }
     }
@@ -308,6 +310,8 @@ impl App {
             Action::ContentSearch => self.open_prompt(PromptKind::ContentSearch),
             Action::NextPage => self.step_page(n, true),
             Action::FullPreview => self.toggle_full_preview(),
+            Action::Connect => self.connect_here(),
+            Action::Net(arg) => self.net_command(&arg),
             Action::PrevPage => self.step_page(n, false),
             Action::GotoPage => match count {
                 Some(c) => self.goto_page(c),
@@ -323,7 +327,7 @@ impl App {
         }
     }
 
-    fn cd(&mut self, text: &str) {
+    pub(super) fn cd(&mut self, text: &str) {
         let target =
             expand_home(text).and_then(|t| Loc::resolve(&self.cwd, &t).map_err(|e| e.to_string()));
         match target {

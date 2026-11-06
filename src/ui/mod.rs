@@ -1,9 +1,11 @@
 //! Drawing. Reads `App` state only; never does I/O.
 
 mod columns;
+mod credentials;
 mod grep;
 mod help;
 mod locations;
+mod netlist;
 mod picker;
 mod statusbar;
 mod theme;
@@ -47,6 +49,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.mode == Mode::Help {
         help::draw(f, body, app);
+    }
+    if app.mode == Mode::NetList {
+        netlist::draw(f, body, app);
+    }
+    if app.mode == Mode::Credentials {
+        credentials::draw(f, body, app);
     }
     if app.which_key_visible() {
         whichkey::draw(f, body, app);

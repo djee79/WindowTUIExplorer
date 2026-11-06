@@ -14,6 +14,8 @@
 
 use super::path::{FsPath, Loc};
 use super::{Entry, EntryKind, Listing, natural_cmp, sort_entries};
+use crate::auth::Secret;
+use crate::config;
 use crate::event::{AppEvent, EventTx};
 use crate::keymap;
 use crate::locations;
@@ -46,6 +48,8 @@ const GREP_PREVIEW_LOCAL: Duration = Duration::from_secs(2);
 /// Reading + encoding a picture for the preview column.
 const IMAGE_PREVIEW_LOCAL: Duration = Duration::from_secs(5);
 const IMAGE_PREVIEW_NETWORK: Duration = Duration::from_secs(15);
+/// Connecting with credentials: a dead host takes ~20 s to give up.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(25);
 /// Context lines around each match, and the most matches a preview collects.
 const GREP_CONTEXT: usize = 2;
 const GREP_MAX_MATCHES: usize = 500;
@@ -80,6 +84,8 @@ pub enum ListError {
     Unreachable(String),
     NotFound,
     AccessDenied,
+    /// The server didn't accept the login (1326, 86, 1244, 1909…): the code.
+    LogonFailure(u32),
     NotADirectory,
     Other(String),
 }
@@ -91,6 +97,7 @@ impl fmt::Display for ListError {
             ListError::Unreachable(m) => write!(f, "unreachable ({m})"),
             ListError::NotFound => f.write_str("not found"),
             ListError::AccessDenied => f.write_str("access denied"),
+            ListError::LogonFailure(code) => f.write_str(&crate::auth::error_message(*code)),
             ListError::NotADirectory => f.write_str("not a directory"),
             ListError::Other(m) => f.write_str(m),
         }
@@ -101,6 +108,9 @@ impl From<io::Error> for ListError {
     fn from(e: io::Error) -> Self {
         // ERROR_BAD_NETPATH, ERROR_NETNAME_DELETED, ERROR_BAD_NET_NAME,
         // ERROR_NO_NETWORK, ERROR_HOST_UNREACHABLE, ERROR_NETWORK_UNREACHABLE.
+        if let Some(code @ (86 | 1244 | 1326 | 1330 | 1331 | 1909)) = e.raw_os_error() {
+            return ListError::LogonFailure(code as u32);
+        }
         if let Some(53 | 64 | 67 | 1222 | 1231 | 1232) = e.raw_os_error() {
             return ListError::Unreachable(e.to_string());
         }
@@ -113,6 +123,26 @@ impl From<io::Error> for ListError {
     }
 }
 
+/// How to connect: plainly, or with one of the two fixes for error 1219 (already connected
+/// to that server as another user).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectHow {
+    Plain,
+    /// Drop every connection to the server first (mapped drives come back at next logon).
+    DropOthersFirst,
+    /// Go through the server's IP address, which Windows treats as another server.
+    ViaAlias,
+}
+
+/// The server's IPv4 address, for connecting through an alias. A blocking DNS lookup.
+fn server_ip(server: &str) -> Option<String> {
+    use std::net::ToSocketAddrs;
+    (server, 445)
+        .to_socket_addrs()
+        .ok()?
+        .find(|a| a.is_ipv4())
+        .map(|a| a.ip().to_string())
+}
 /// Cancels a request. Dropping the token does *not* cancel; call [`CancelToken::cancel`].
 #[derive(Debug, Clone, Default)]
 pub struct CancelToken(Arc<AtomicBool>);
@@ -278,6 +308,136 @@ impl Worker {
                 Err(_) => Err("timed out reading %APPDATA%".to_string()),
             };
             let _ = tx.send(AppEvent::SharesLoaded(result));
+        });
+    }
+
+    /// Reads config.toml. Sends one `ConfigLoaded`; no file sends nothing.
+    pub fn load_config(&self) {
+        let (tx, timeout) = (self.tx.clone(), self.timeouts.network);
+        self.rt.spawn(async move {
+            let call = tokio::task::spawn_blocking(|| {
+                let path = config::store_path()?;
+                match std::fs::read_to_string(&path) {
+                    Ok(text) => Some(config::parse(&text)),
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                    Err(e) => Some(Err(format!("config.toml: {e}"))),
+                }
+            });
+            let result = match tokio::time::timeout(timeout, call).await {
+                Ok(Ok(Some(r))) => r,
+                Ok(Ok(None)) => return,
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(_) => Err("config.toml: timed out reading %APPDATA%".to_string()),
+            };
+            let _ = tx.send(AppEvent::ConfigLoaded(result));
+        });
+    }
+
+    /// Connects to `target` (`\\server\share` or `\\server\IPC$`) as `user`, `how` says
+    /// whether to drop the server's other connections first or go through an alias (the
+    /// two fixes for error 1219). With `remember`, also writes the credential to Windows
+    /// Credential Manager for the server, once the connection worked. Sends one
+    /// `Connected`. The password copy lives in this task only and is wiped when it ends.
+    pub fn net_connect(
+        &self,
+        target: String,
+        user: String,
+        password: Secret,
+        remember: bool,
+        how: ConnectHow,
+    ) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let (t, u) = (target.clone(), user.clone());
+            let call = tokio::task::spawn_blocking(move || {
+                let server = crate::auth::server_of(&t).to_string();
+                let mut dropped = Vec::new();
+                let actual = match how {
+                    ConnectHow::Plain => t.clone(),
+                    ConnectHow::DropOthersFirst => {
+                        let live = platform::net_connections().unwrap_or_default();
+                        for c in live {
+                            if !crate::auth::server_of(&c.remote).eq_ignore_ascii_case(&server) {
+                                continue;
+                            }
+                            // A mapped drive is dropped by its letter; it comes back at the
+                            // next logon (the profile isn't updated).
+                            let name = c.local.clone().unwrap_or_else(|| c.remote.clone());
+                            if platform::net_disconnect(&name).is_ok() {
+                                dropped.push(name);
+                            }
+                        }
+                        t.clone()
+                    }
+                    ConnectHow::ViaAlias => match server_ip(&server) {
+                        Some(ip) => crate::auth::with_server(&t, &ip),
+                        None => return (t.clone(), Err(53), None, dropped),
+                    },
+                };
+                let result = platform::net_connect(&actual, Some(&u), Some(password.with_nul()));
+                let remembered = (remember && result.is_ok()).then(|| {
+                    platform::cred_write(
+                        crate::auth::server_of(&actual),
+                        &u,
+                        password.without_nul(),
+                    )
+                    .map_err(|e| e.to_string())
+                });
+                (actual, result, remembered, dropped)
+            });
+            let (actual, result, remembered, dropped) =
+                match tokio::time::timeout(CONNECT_TIMEOUT, call).await {
+                    Ok(Ok(r)) => r,
+                    Ok(Err(e)) => {
+                        tracing::warn!(error = %e, "connect task failed");
+                        (target.clone(), Err(0), None, Vec::new())
+                    }
+                    // ERROR_SEM_TIMEOUT: "the semaphore timeout period has expired".
+                    Err(_) => (target.clone(), Err(121), None, Vec::new()),
+                };
+            let _ = tx.send(AppEvent::Connected {
+                requested: target,
+                target: actual,
+                user,
+                result,
+                remembered,
+                dropped,
+            });
+        });
+    }
+
+    /// `:net list`: every live connection. Sends one `NetList`.
+    pub fn net_list(&self) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let call = tokio::task::spawn_blocking(platform::net_connections);
+            let result = match tokio::time::timeout(Duration::from_secs(5), call).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(_)) => Err(0),
+                Err(_) => Err(121),
+            };
+            let _ = tx.send(AppEvent::NetList(result));
+        });
+    }
+
+    /// `:net drop`: disconnects each remote name. Sends one `NetDropped` with each result.
+    pub fn net_drop(&self, names: Vec<String>) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let call = tokio::task::spawn_blocking(move || {
+                names
+                    .into_iter()
+                    .map(|n| {
+                        let r = platform::net_disconnect(&n);
+                        (n, r)
+                    })
+                    .collect::<Vec<_>>()
+            });
+            let results = match tokio::time::timeout(CONNECT_TIMEOUT, call).await {
+                Ok(Ok(r)) => r,
+                _ => Vec::new(),
+            };
+            let _ = tx.send(AppEvent::NetDropped(results));
         });
     }
 

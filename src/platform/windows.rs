@@ -497,6 +497,172 @@ fn bgra_premultiplied_to_rgba(px: &mut [u8]) {
     }
 }
 
+// ------------------------------------------------------------------- SMB connections
+
+/// A live connection, as `net use` lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetConnection {
+    /// `\\server\share`.
+    pub remote: String,
+    /// `P:` for a mapped drive.
+    pub local: Option<String>,
+    /// The account it was made with, when Windows says.
+    pub user: Option<String>,
+}
+
+/// A NUL-terminated UTF-16 copy of `s`, for the W APIs.
+fn to_wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Connects to `remote` (`\\server\share`, or `\\server\IPC$` for the server itself) as
+/// `user` with `password` (NUL-terminated UTF-16; the caller wipes it), or with the
+/// current login when both are None. `CONNECT_TEMPORARY`, no drive letter: the
+/// connection lasts until logoff and robocopy, Explorer and other programs reuse it.
+/// Errors are Win32 codes (see `auth::error_message`). Can block ~20 s on a dead host.
+pub fn net_connect(remote: &str, user: Option<&str>, password: Option<&[u16]>) -> Result<(), u32> {
+    use windows::Win32::NetworkManagement::WNet::{
+        CONNECT_TEMPORARY, NETRESOURCEW, RESOURCETYPE_DISK, WNetAddConnection2W,
+    };
+    let mut remote_w = to_wide(remote);
+    let resource = NETRESOURCEW {
+        dwType: RESOURCETYPE_DISK,
+        lpRemoteName: PWSTR(remote_w.as_mut_ptr()),
+        ..Default::default()
+    };
+    let user_w = user.map(to_wide);
+    let user_p = user_w
+        .as_ref()
+        .map_or(PCWSTR::null(), |u| PCWSTR(u.as_ptr()));
+    let pass_p = password.map_or(PCWSTR::null(), |p| PCWSTR(p.as_ptr()));
+    // SAFETY: every pointer is to a NUL-terminated buffer alive for the whole call.
+    let rc = unsafe { WNetAddConnection2W(&resource, pass_p, user_p, CONNECT_TEMPORARY) };
+    if rc == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(rc.0)
+    }
+}
+
+/// Drops the connection to `remote` (`\\server\share` or a drive letter `P:`). Not
+/// forced: Windows refuses while files are open (code 2401).
+pub fn net_disconnect(remote: &str) -> Result<(), u32> {
+    use windows::Win32::NetworkManagement::WNet::{NET_CONNECT_FLAGS, WNetCancelConnection2W};
+    let name = to_wide(remote);
+    // SAFETY: `name` is NUL-terminated and outlives the call.
+    let rc = unsafe { WNetCancelConnection2W(PCWSTR(name.as_ptr()), NET_CONNECT_FLAGS(0), false) };
+    if rc == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(rc.0)
+    }
+}
+
+/// Every live connection of this logon session (`WNetOpenEnum`, `RESOURCE_CONNECTED`),
+/// with the account each one uses (`WNetGetUser`).
+pub fn net_connections() -> Result<Vec<NetConnection>, u32> {
+    use windows::Win32::Foundation::{ERROR_NO_MORE_ITEMS, HANDLE};
+    use windows::Win32::NetworkManagement::WNet::{
+        NETRESOURCEW, RESOURCE_CONNECTED, RESOURCETYPE_ANY, WNET_OPEN_ENUM_USAGE, WNetCloseEnum,
+        WNetEnumResourceW, WNetGetUserW, WNetOpenEnumW,
+    };
+    let mut handle = HANDLE::default();
+    // SAFETY: `handle` receives the enumeration handle, closed below.
+    let rc = unsafe {
+        WNetOpenEnumW(
+            RESOURCE_CONNECTED,
+            RESOURCETYPE_ANY,
+            WNET_OPEN_ENUM_USAGE(0),
+            None,
+            &mut handle,
+        )
+    };
+    if rc != ERROR_SUCCESS {
+        return Err(rc.0);
+    }
+    let mut out = Vec::new();
+    // 16 KB per batch, as the docs suggest; u64 storage keeps NETRESOURCEW aligned.
+    let mut buf = vec![0u64; 2048];
+    let result = loop {
+        let mut count = u32::MAX;
+        let mut size = (buf.len() * 8) as u32;
+        // SAFETY: `buf` is `size` bytes; Windows fills it with `count` NETRESOURCEW
+        // records followed by the strings they point to.
+        let rc =
+            unsafe { WNetEnumResourceW(handle, &mut count, buf.as_mut_ptr().cast(), &mut size) };
+        if rc == ERROR_NO_MORE_ITEMS {
+            break Ok(());
+        }
+        if rc != ERROR_SUCCESS {
+            break Err(rc.0);
+        }
+        let records = buf.as_ptr().cast::<NETRESOURCEW>();
+        for i in 0..count as usize {
+            // SAFETY: Windows wrote `count` records at the start of `buf`.
+            let r = unsafe { &*records.add(i) };
+            let text = |p: PWSTR| -> Option<String> {
+                // SAFETY: a non-null pointer here is a NUL-terminated string inside `buf`.
+                (!p.is_null())
+                    .then(|| unsafe { p.to_string() }.ok())
+                    .flatten()
+            };
+            let Some(remote) = text(r.lpRemoteName) else {
+                continue;
+            };
+            let local = text(r.lpLocalName).filter(|l| !l.is_empty());
+            let mut name = [0u16; 512];
+            let mut len = name.len() as u32;
+            let remote_w = to_wide(&remote);
+            // SAFETY: `name` holds `len` UTF-16 units; `remote_w` is NUL-terminated.
+            let rc = unsafe {
+                WNetGetUserW(
+                    PCWSTR(remote_w.as_ptr()),
+                    PWSTR(name.as_mut_ptr()),
+                    &mut len,
+                )
+            };
+            let user = (rc == ERROR_SUCCESS)
+                .then(|| {
+                    let end = name.iter().position(|c| *c == 0).unwrap_or(name.len());
+                    String::from_utf16_lossy(&name[..end])
+                })
+                .filter(|u| !u.is_empty());
+            out.push(NetConnection {
+                remote,
+                local,
+                user,
+            });
+        }
+    };
+    // SAFETY: closing the handle WNetOpenEnumW gave us, once.
+    let _ = unsafe { WNetCloseEnum(handle) };
+    result.map(|()| out)
+}
+
+/// "Remember in Windows Credential Manager": a `CRED_TYPE_DOMAIN_PASSWORD` entry for
+/// `target` (`server`, or `*.domain` for every machine of a domain). Windows then uses it
+/// by itself, in sentier and everywhere else. `password` is UTF-16 without the NUL; the
+/// caller wipes it.
+pub fn cred_write(target: &str, user: &str, password: &[u16]) -> io::Result<()> {
+    use windows::Win32::Security::Credentials::{
+        CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_DOMAIN_PASSWORD, CREDENTIALW, CredWriteW,
+    };
+    let mut target_w = to_wide(target);
+    let mut user_w = to_wide(user);
+    let cred = CREDENTIALW {
+        Type: CRED_TYPE_DOMAIN_PASSWORD,
+        TargetName: PWSTR(target_w.as_mut_ptr()),
+        CredentialBlobSize: u32::try_from(password.len() * 2)
+            .map_err(|_| io::Error::other("password too long"))?,
+        CredentialBlob: password.as_ptr().cast_mut().cast(),
+        Persist: CRED_PERSIST_LOCAL_MACHINE,
+        UserName: PWSTR(user_w.as_mut_ptr()),
+        ..Default::default()
+    };
+    // SAFETY: every pointer in `cred` is valid for the call; Windows copies the blob.
+    unsafe { CredWriteW(&cred, 0) }.map_err(|e| io::Error::other(e.message()))
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
