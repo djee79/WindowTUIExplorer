@@ -1,0 +1,45 @@
+ sentier  Launcher                                                                                                                            pins + Start Menu
+╭────────────────────────────────────────────────────────────────────────────╮╭─ HIT → local ───────────────────────────────────────────────────── sync preset ╮
+│ > hit▏                                                             8 / 143 ││                                                                                │
+╰────────────────────────────────────────────────────────────────────────────╯│ Source    \\srv01\project\HIT                                           │
+╭─ Results ──────────────────────────────────────────────────────────────────╮│ Dest      D:\aveva\local\HIT                                                   │
+│                                                                            ││ Mode      mirror  · dest becomes an exact copy; local extras deleted           │
+│ [sync]   HIT → local                  'h                    today 08:12 ok ││ Exclude   none                                                                 │
+│ [app]    E3D — HIT (network)                                         AVEVA ││ In-use    checked on the server before each run                                │
+│ [folder] HIT (server)                                                AVEVA ││ Key       'h                                                                   │
+│ [folder] HIT (local)                  'l                             AVEVA ││                                                                                │
+│ [app]    E3D — HIT (local)                                           AVEVA ││                                                                                │
+│ [backup] HIT backup                                           Mon 18:00 ok ││ Last runs                                                                      │
+│ [file]   HIT_equipment_list.xlsx                            D:\aveva\local ││ ────────────────────────────────────────────────────────────────────────────── │
+│ [web]    HIT EI web reports                                       Edge app ││ today  08:12   ok         3.80 GB   2m41s     412 files                        │
+│                                                                            ││ Wed    17:30   ok         1.12 GB   0m58s     88 files                         │
+│ ────────────────────────────────────────────────────────────────────────── ││ Tue    08:05   failed    2 locked   1m12s     r to retry                       │
+│ ranked: name prefix › group › substring › fuzzy, then frecency             ││ Mon    08:01   ok         4.02 GB   2m55s     431 files                        │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│                                                                            ││ Enter opens the dry-run preview. Mirror always previews first.                 │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│                                                                            ││                                                                                │
+│ sources: pins 143 done   ·  Start Menu  ^S to include                      ││ Enter preview & run   S-Enter run (update only)   ^E edit   ^D delete          │
+│                                                                            ││                                                                                │
+╰────────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────────╯
+ [sync] [backup] [app] [folder] [web] [file]  ·  one store: pins.toml
+ ↑↓ move   Enter open / run   Tab multi-select   ^Y copy path   ^P pin   ^G group   Esc close
+

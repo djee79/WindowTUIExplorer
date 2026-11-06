@@ -1,0 +1,45 @@
+ sentier  Jobs  3                                                                                                            1 finishing · 1 running · 1 failed
+╭─ Jobs ─────────────────────────────────────────────────╮╭─ HIT → local ─────────────────────────────────────────────────────────────────────── sync · mirror ╮
+│                                                        ││                                                                                                    │
+│ ▌ HIT → local                               FINISHING  ││ ● Scanning  ──  ● Copying  ──  ● Finishing  ──  ○ Done                                             │
+│   ██████████████████████████████ 100%   0:47 in phase  ││                                                                                                    │
+│   sync · mirror · 412 files · 3.80 GB                  ││ Finishing: every byte is written. robocopy is closing files on D: and has                          │
+│                                                        ││            not exited yet. This is the old “stuck at 99%”, now named and timed.                    │
+│   HIT backup                             ZIPPING  2/5  ││                                                                                                    │
+│   ███████████░░░░░░░░░░░░░░░░░░░  38%        ETA 4:10  ││ Current    hit1001_0007  (1.9 GB) · closing                                                        │
+│   backup · HIT_2026-11-05_1945.zip                     ││ Bytes      3.80 / 3.80 GB           Files    412 / 412                                             │
+│                                                        ││ Speed      —  (last 41.8 MB/s)      Elapsed  2:38  (0:47 finishing)                                │
+│ × 3 files → …\HIT\hitmac                       FAILED  ││                                                                                                    │
+│   2 copied · 1 locked                           19:31  ││ Retries    1                                                                                       │
+│   copy · native                                        ││            hit1001_0002   locked (ERROR 32)  →  ok on attempt 2                                    │
+│                                                        ││ Errors     none                                                                                    │
+│                                                        ││                                                                                                    │
+│                                                        ││ Log        %LOCALAPPDATA%\sentier\jobs\2026-11-05_1951_HIT-local.log                               │
+│                                                        ││                                                                                                    │
+│                                                        ││                                                                                                    │
+│                                                        ││                                                                                                    │
+│                                                        ││                                                                                                    │
+│                                                        ││                                                                                                    │
+│                                                        ││ c cancel   o open log   J hide panel                                                               │
+│                                                        ││                                                                                                    │
+│                                                        │╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
+│                                                        │╭─ Report ───────────────────────────────────────────────────────────────── 3 files → hitmac · 19:31 ╮
+│                                                        ││                                                                                                    │
+│                                                        ││ Result     FAILED robocopy exit 9  =  1 (files copied) + 8 (some copies failed)                    │
+│                                                        ││ Counts     copied 2  ·  skipped 0  ·  failed 1  ·  extra 0                                         │
+│                                                        ││                                                                                                    │
+│                                                        ││ Failed files                                                                                       │
+│                                                        ││ ────────────────────────────────────────────────────────────────────────────────────────────────── │
+│                                                        ││ × hitmac\pipe_report.pmlmac     ERROR 32 (0x00000020) file is used by another process              │
+│                                                        ││   held open on srv01 by asmith                                                              │
+│                                                        ││                                                                                                    │
+│                                                        ││                                                                                                    │
+│                                                        ││                                                                                                    │
+│                                                        ││                                                                                                    │
+│                                                        ││                                                                                                    │
+│                                                        ││ r retry failed only   o open log   Enter dismiss                                                   │
+│                                                        ││                                                                                                    │
+╰────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ Reports stay in %LOCALAPPDATA%\sentier\jobs\ until dismissed
+ jk pick job   c cancel   r retry failed   o log   J close
+

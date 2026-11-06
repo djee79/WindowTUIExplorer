@@ -1,0 +1,45 @@
+ sentier  \\srv01\project\HIT\hit000                                                                               ●  srv01  12 ms     tab 1 of 2
+╭─ HIT ──────────────────────╮╭─ hit000 ──────────────────────────────────────── 412 items ╮╭─ hit1001_0003 ───────────────────────────────────────────────────╮
+│ hit000\                    ││ Name                              Size  Modified           ││                                                                  │
+│ hitdfl\                    ││ hit1001_0001                   48.2 MB  2026-11-05 16:42   ││ Type      file · no text preview (binary)                        │
+│ hitiso\                    ││▌hit1001_0002                  612.0 MB  2026-11-05 16:40   ││ Size      1 932 441 600 bytes  (1.8 GB)                          │
+│ hitmac\                    ││▌hit1001_0003                    1.8 GB  2026-11-05 16:42   ││ Modified  2026-11-05 16:42:07                                    │
+│ hitpic\                   ╭─ Sync preview · HIT → local ───────────────────────────────────────────────────────────────── mirror ╮                           │
+│ hitrep\                   │                                                                                                      │                           │
+│ evars.bat                 │  Source    \\srv01\project\HIT                                                                │                           │
+│                           │  Dest      D:\aveva\local\HIT                                                                        │it000\                     │
+│                           │  Dry run   robocopy /L /MIR  ·  1.6 s                                                                │                           │
+│                           │                                                                                                      │                           │
+│                           │  [!] In use on the server: 3 files open by jdoe, asmith                                              │ath                        │
+│                           │      hit000\hit1001_0002   hit000\hit1001_0003   hit000\hit2001_0001                                 │                           │
+│                           │                                                                                                      │                           │
+│                           │     412  files to copy                                                                     3.80 GB   │                           │
+│                           │      17  newer on server (local copy overwritten)                                           214 MB   │────────────────────────── │
+│                           │       6  local files will be DELETED                                                         88 MB   │                  612.0 MB │
+│                           │   1 288  unchanged, skipped                                                                          │                    1.8 GB │
+│                           │                                                                                                      │                    1.9 GB │
+│                           │  Will be deleted (6)                                                                                 │                           │
+│                           │  ──────────────────────────────────────────────────────────────────────────────────────────────────  │                           │
+│                           │  - hitiso\old\B-1001_rev3.dgn                                                                12 MB   │                           │
+│                           │  - hitiso\old\B-1002_rev2.dgn                                                                 9 MB   │                           │
+│                           │  - hitpic\tmp\plot_0412.tif                                                                  41 MB   │                           │
+│                           │  - hitpic\tmp\plot_0413.tif                                                                  22 MB   │                           │
+│                           │  - hitrep\scratch.csv                                                                         3 MB   │                           │
+│                           │  - hitmac\test_local.pmlmac                                                                   4 KB   │                           │
+│                           │                                                                                                      │                           │
+│                           │                                                                                                      │                           │
+│                           │  [ Enter Run mirror ]   [ u Switch to update ]   [ Tab Show all 435 ]   [ Esc Cancel ]               │                           │
+│                           │                                                                                                      │                           │
+│                           │                                                                                                      │                           │
+│                           │  Mirror always previews first. A preset can't push local → server.                                   │                           │
+│                           │  Update mode only adds and overwrites; it never deletes local files.                                 │                           │
+│                           │                                                                                                      │                           │
+│                           │                                                                                                      │                           │
+│                           │                                                                                                      │                           │
+│                           ╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯                           │
+│                            ││                                                            ││                                                                  │
+│                            ││ …                                              1–24 of 412 ││                                                                  │
+╰────────────────────────────╯╰────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────╯
+ 412 items  ·  3 selected (4.31 GB)  ·  sort: name ↑  ·  hidden: off                                                                         share free  6.2 TB
+ hjkl move   Space select   y/x/p copy·cut·paste   P pin   ' pins   ^Space launcher   J jobs   : commands   ? help
+ » 1 job   HIT → local  copying ████████████████░░░░░░░░  68%   hit1001_0007   41.8 MB/s   ETA 0:51                                               J for details

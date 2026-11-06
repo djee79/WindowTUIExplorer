@@ -1,0 +1,45 @@
+ sentier  Locations                                                                                                                       3 of 4 pins reachable
+╭─ Locations ────────────────────────────────────────────────────────────────────────╮╭─ Archive ──────────────────────────────────────────────────────────────╮
+│                                                                                    ││                                                                        │
+│  PINNED FOLDERS                                                                    ││ Kind      folder pin  ·  group AVEVA                                   │
+│  ● 'a  AVEVA projects     \\srv01\project                                   ││ Path      \\nas02\aveva_archive                                  │
+│  ● 'h  HIT (server)       \\srv01\project\HIT                               ││ Key       'r                                                           │
+│  ● 'l  HIT (local)        D:\aveva\local\HIT                                       ││                                                                        │
+│  × 'r  Archive            \\nas02\aveva_archive                    timed out ││ Status    × unreachable                                                │
+│  ○     Downloads          ~\Downloads                                              ││           timed out after 3.0 s  (probe at 19:51:06)                   │
+│                                                                                    ││ Last ok   yesterday 17:02  ·  24 ms                                    │
+│  DRIVES                                                                            ││                                                                        │
+│  ● C:  Windows                                                         412 GB free ││                                                                        │
+│  ● D:  Data                                                           1.84 TB free ││ The UI never waits on this share. Opening it shows this                │
+│  ● P:  →                  \\srv01\project                            mapped ││ message and stays where you are.                                       │
+│  × S:  →                  \\fs01\scans                          disconnected ││                                                                        │
+│                                                                                    ││                                                                        │
+│  SHARES                                                                            ││ R retry now      e rename         dm delete pin    yP copy path        │
+│  ●                        \\srv01\project                                   ││                                                                        │
+│  ●                        \\srv01\software                                  ││                                                                        │
+│  ○                        \\nas02\aveva_archive                              ││                                                                        │
+│                                                                                    ││                                                                        │
+│                                                                                    ││                                                                        │
+│                                                                                    ││                                                                        │
+│                                                                                    ││                                                                        │
+│                                                                                    ││                                                                        │
+│                                                                                    ││                                                                        │
+│                                                                                    ││                                                                        │
+│                                                                                    ││                                                                        │
+│                                                                                    ││                                                                        │
+│                                                                                    ││                                                                        │
+│                                                                                    ││                                                                        │
+│                                                                                    ││                                                                        │
+│                                                                                    ││                                                                        │
+│                                                                                    ││                                                                        │
+│                                                                                    ││                                                                        │
+│                                                                                    ││                                                                        │
+│                                                                                    ││                                                                        │
+│                                                                                    ││                                                                        │
+│                                                                                    ││                                                                        │
+│  ● reachable   ○ not checked yet   × unreachable              re-probed every 60 s ││                                                                        │
+│                                                                                    ││                                                                        │
+╰────────────────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────╯
+ 16 locations  ·  4 pinned folders  ·  4 drives  ·  3 shares
+ Enter open   P pin current dir   ' + key to jump   R retry   gl Locations   h from a drive root comes here
+
