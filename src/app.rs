@@ -944,6 +944,7 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App, rx: &EventRx) -> anyho
     // Where the last frame put a picture, and which one (by address).
     let mut last_image: Option<ratatui::layout::Rect> = None;
     let mut last_picture: usize = 0;
+    let mut first_frame = true;
     loop {
         let now = Instant::now();
         app.tick(now);
@@ -957,14 +958,22 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App, rx: &EventRx) -> anyho
             let changed = drawn != last_image || picture != last_picture || app.image_resized;
             // 1. An iTerm2 picture stays until its cells are written again, and ratatui
             //    skips cells it thinks are unchanged. So when the picture moved or went
-            //    away, write the old picture's cells again from this frame.
-            let repaint: Vec<(u16, u16, ratatui::buffer::Cell)> = match last_image {
-                Some(old) if changed => crate::preview::repaint_cells(old, drawn)
+            //    away, write the old picture's cells again from this frame. On the first
+            //    frame and after a resize, write every cell: that also clears pictures
+            //    left by whatever ran in this terminal before.
+            let old = if first_frame || app.image_resized {
+                Some(frame.area)
+            } else {
+                last_image.filter(|_| changed)
+            };
+            let repaint: Vec<(u16, u16, ratatui::buffer::Cell)> = match old {
+                Some(old) => crate::preview::repaint_cells(old, drawn)
                     .into_iter()
                     .filter_map(|(x, y)| Some((x, y, frame.buffer.cell((x, y))?.clone())))
                     .collect(),
-                _ => Vec::new(),
+                None => Vec::new(),
             };
+            first_frame = false;
             if !repaint.is_empty() {
                 use ratatui::backend::Backend;
                 let backend = terminal.backend_mut();
@@ -976,7 +985,7 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App, rx: &EventRx) -> anyho
             //    changed: the frames after leave its cells alone.
             if changed
                 && let (Some(rect), Some(p)) = (drawn, place.as_ref())
-                && let Some(data) = crate::preview::iterm2_data(&p.protocol)
+                && let Some(data) = crate::preview::iterm2_data(&p.picture)
             {
                 crate::preview::place_iterm2(terminal.backend_mut(), rect, data)?;
             }

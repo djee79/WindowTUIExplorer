@@ -1,15 +1,47 @@
 //! Decoding a picture and encoding it for the terminal. Blocking: the worker runs this on
 //! the blocking pool, never the UI thread.
+//!
+//! iTerm2 pictures use sentier's own encoder, not ratatui-image's: that one gives the size
+//! in pixels, assuming 10×20 px cells, and the terminal can't tell us the real cell size
+//! through ConPTY. On a 200 % screen a cell is ~21×43 px, so pictures came out at half size
+//! inside a blacked-out box. Giving the size in **cells** lets the terminal scale the
+//! picture to exactly the box, whatever the screen scaling. The cell size then only
+//! matters for the shape, and 10×20 has the 1:2 shape of every common terminal font.
 
-use image::ImageReader;
+use image::imageops::FilterType;
+use image::{DynamicImage, ImageReader};
 use ratatui::layout::Size;
 use ratatui_image::Resize;
-use ratatui_image::picker::Picker;
+use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::Protocol;
+
+/// The assumed cell size in pixels (only its shape matters for iTerm2, see above).
+const CELL_W: f64 = 10.0;
+const CELL_H: f64 = 20.0;
+/// iTerm2 pictures are sent at twice that resolution, so they stay sharp on 200 % screens.
+const SHARPNESS: f64 = 2.0;
+
+/// An encoded picture.
+pub enum Picture {
+    /// An iTerm2 escape sequence covering `size` cells, written after the frame.
+    Iterm2 { data: String, size: Size },
+    /// Anything ratatui-image draws through the buffer (halfblocks).
+    Cells(Protocol),
+}
+
+impl Picture {
+    /// The cells it covers.
+    pub fn size(&self) -> Size {
+        match self {
+            Picture::Iterm2 { size, .. } => *size,
+            Picture::Cells(p) => p.size(),
+        }
+    }
+}
 
 /// A picture ready to draw, fitted to the box it was asked for.
 pub struct ImagePreview {
-    pub protocol: Protocol,
+    pub picture: Picture,
     /// The picture's own size in pixels, and its format (`PNG`, `JPEG`…).
     pub width: u32,
     pub height: u32,
@@ -22,12 +54,14 @@ impl std::fmt::Debug for ImagePreview {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("format", &self.format)
+            .field("cells", &self.picture.size())
             .finish_non_exhaustive()
     }
 }
 
 /// Reads the picture at `path` (an OS path string) and encodes it to fit `cols`×`rows`
-/// cells. Smaller pictures keep their size; bigger ones shrink, keeping their shape.
+/// cells, keeping its shape. Big pictures fill the box; small ones keep their natural
+/// size (one cell per 10×20 px) instead of being blown up.
 pub fn load(path: &str, picker: &Picker, cols: u16, rows: u16) -> Result<ImagePreview, String> {
     let reader = ImageReader::open(path)
         .map_err(|e| e.to_string())?
@@ -39,21 +73,91 @@ pub fn load(path: &str, picker: &Picker, cols: u16, rows: u16) -> Result<ImagePr
         .unwrap_or_else(|| "?".to_string());
     let img = reader.decode().map_err(|e| e.to_string())?;
     let (width, height) = (img.width(), img.height());
-    let protocol = picker
-        .new_protocol(img, Size::new(cols, rows), Resize::Fit(None))
-        .map_err(|e| e.to_string())?;
+    let picture = if picker.protocol_type() == ProtocolType::Iterm2 {
+        let size = fit_cells(width, height, cols, rows);
+        Picture::Iterm2 {
+            data: encode_iterm2(&img, size)?,
+            size,
+        }
+    } else {
+        Picture::Cells(
+            picker
+                .new_protocol(img, Size::new(cols, rows), Resize::Fit(None))
+                .map_err(|e| e.to_string())?,
+        )
+    };
     Ok(ImagePreview {
-        protocol,
+        picture,
         width,
         height,
         format,
     })
 }
 
+/// The cells a `w`×`h` px picture covers in a `cols`×`rows` box: as big as fits, keeping
+/// its shape, but never bigger than its natural size.
+pub fn fit_cells(w: u32, h: u32, cols: u16, rows: u16) -> Size {
+    if w == 0 || h == 0 || cols == 0 || rows == 0 {
+        return Size::new(0, 0);
+    }
+    let (w, h) = (f64::from(w), f64::from(h));
+    let scale = (f64::from(cols) * CELL_W / w)
+        .min(f64::from(rows) * CELL_H / h)
+        .min(1.0);
+    let c = ((w * scale / CELL_W).round() as u16).clamp(1, cols);
+    let r = ((h * scale / CELL_H).round() as u16).clamp(1, rows);
+    Size::new(c, r)
+}
+
+/// The iTerm2 inline-image sequence for `img` covering `size` cells.
+fn encode_iterm2(img: &DynamicImage, size: Size) -> Result<String, String> {
+    // Pixels worth sending: the box at double resolution, at most the original.
+    let max_w = (f64::from(size.width) * CELL_W * SHARPNESS) as u32;
+    let max_h = (f64::from(size.height) * CELL_H * SHARPNESS) as u32;
+    let img = if img.width() > max_w || img.height() > max_h {
+        img.resize(max_w.max(1), max_h.max(1), FilterType::CatmullRom)
+    } else {
+        img.clone()
+    };
+    let mut png = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    let mut seq = format!(
+        "\x1b]1337;File=inline=1;size={};width={};height={};preserveAspectRatio=1;doNotMoveCursor=1:",
+        png.len(),
+        size.width,
+        size.height
+    );
+    base64_into(&png, &mut seq);
+    seq.push('\x07');
+    Ok(seq)
+}
+
+/// Standard base64 with padding, appended to `out`.
+fn base64_into(bytes: &[u8], out: &mut String) {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    out.reserve(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        let digits = [(n >> 18) & 63, (n >> 12) & 63, (n >> 6) & 63, n & 63];
+        for (i, d) in digits.iter().enumerate() {
+            if i <= chunk.len() {
+                out.push(ABC[*d as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui_image::picker::ProtocolType;
 
     fn picker(p: ProtocolType) -> Picker {
         let mut picker = Picker::halfblocks();
@@ -61,6 +165,75 @@ mod tests {
         assert_eq!((cell.width, cell.height), (10, 20));
         picker.set_protocol_type(p);
         picker
+    }
+
+    #[test]
+    fn base64_table() {
+        // RFC 4648 test vectors.
+        let cases: &[(&str, &str)] = &[
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ];
+        for (input, want) in cases {
+            let mut s = String::new();
+            base64_into(input.as_bytes(), &mut s);
+            assert_eq!(&s, want, "{input}");
+        }
+        let mut s = String::new();
+        base64_into(&[0xff, 0xfe, 0x00], &mut s);
+        assert_eq!(s, "//4A");
+    }
+
+    /// (picture w, h, box cols, rows) → (cols, rows) covered.
+    type FitCase = ((u32, u32, u16, u16), (u16, u16));
+
+    #[test]
+    fn fit_table() {
+        let cases: &[FitCase] = &[
+            // The cheatsheet (3311×2851) in a 48×57 box: width-bound, fills the width.
+            ((3311, 2851, 48, 57), (48, 21)),
+            // A portrait page (1700×2200) in the same box: width-bound too, 31 rows tall.
+            ((1700, 2200, 48, 57), (48, 31)),
+            // The same page in a short box: height-bound, 20 rows, 31 cols.
+            ((1700, 2200, 48, 20), (31, 20)),
+            // A 32 px icon keeps its natural size.
+            ((32, 32, 48, 57), (3, 2)),
+            // Never zero, never out of the box.
+            ((1, 1, 48, 57), (1, 1)),
+            ((5000, 10, 48, 57), (48, 1)),
+            ((0, 10, 48, 57), (0, 0)),
+            ((100, 100, 0, 57), (0, 0)),
+        ];
+        for ((w, h, c, r), (wc, wr)) in cases {
+            let got = fit_cells(*w, *h, *c, *r);
+            assert_eq!((got.width, got.height), (*wc, *wr), "{w}×{h} in {c}×{r}");
+        }
+    }
+
+    #[test]
+    fn iterm2_sequence_is_sized_in_cells() {
+        let img = DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            1655,
+            1425,
+            image::Rgba([1, 2, 3, 255]),
+        ));
+        let size = fit_cells(1655, 1425, 48, 57);
+        let Ok(seq) = encode_iterm2(&img, size) else {
+            panic!()
+        };
+        assert!(
+            seq.starts_with("\x1b]1337;File=inline=1;size="),
+            "{}",
+            &seq[..40]
+        );
+        assert!(seq.contains(";width=48;height=21;preserveAspectRatio=1;"));
+        assert!(seq.ends_with('\x07'));
+        assert!(!seq.contains("\x1b["), "no cursor moves or erases");
     }
 
     #[test]
@@ -80,10 +253,12 @@ mod tests {
                 (got.width, got.height, got.format.as_str()),
                 (400, 200, "PNG")
             );
-            let size = got.protocol.size();
+            let size = got.picture.size();
             // 400 px wide at 10 px per cell is 40 cells: shrunk to fit 20.
             assert!(size.width <= 20 && size.height <= 20, "{proto:?} {size:?}");
             assert!(size.width > 0 && size.height > 0);
+            let is_iterm2 = matches!(got.picture, Picture::Iterm2 { .. });
+            assert_eq!(is_iterm2, proto == ProtocolType::Iterm2);
         }
         assert!(
             load(

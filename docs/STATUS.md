@@ -359,3 +359,14 @@ hidden again: both in place, with or without a 15 ms wait.
 `preview::place_iterm2`, only when it changed (new picture, moved, resized). Halfblocks
 still render through ratatui. While the which-key popup is up the picture is hidden too
 (a picture written after the frame would cover the popup).
+
+### M2b fix: iTerm2 pictures came out at half size in a black box (2026-11-06)
+
+On a 200 % screen (5120×2880) a cell is ~21×43 px, not the assumed 10×20, and ratatui-image
+sizes iTerm2 pictures in pixels (and blanks the box first), so pictures filled a quarter of
+a black box. sentier now has its own iTerm2 encoder (`preview::image`): size given in
+**cells** (`width=N;height=N;preserveAspectRatio=1`), so the terminal scales to the box at
+any screen scaling; sent at 2× resolution for sharpness; no blanking. Pictures fill the box
+keeping their shape; small ones (icons) keep their natural size. Base64 is a small local
+function (no new crate). The first frame and every resize now rewrite every cell, which
+also clears pictures left in the terminal by earlier programs.

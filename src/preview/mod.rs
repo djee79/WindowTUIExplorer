@@ -24,7 +24,6 @@ use crate::fs::path::Loc;
 use ratatui::layout::Rect;
 
 use ratatui_image::picker::{Picker, ProtocolType};
-use ratatui_image::protocol::Protocol;
 use std::collections::VecDeque;
 use std::time::SystemTime;
 
@@ -151,10 +150,10 @@ pub fn repaint_cells(old: Rect, new: Option<Rect>) -> Vec<(u16, u16)> {
 
 /// The escape sequence of an iTerm2 picture; None for the other protocols, which draw
 /// through ratatui's buffer.
-pub fn iterm2_data(p: &Protocol) -> Option<&str> {
+pub fn iterm2_data(p: &image::Picture) -> Option<&str> {
     match p {
-        Protocol::ITerm2(i) => Some(&i.data),
-        _ => None,
+        image::Picture::Iterm2 { data, .. } => Some(data),
+        image::Picture::Cells(_) => None,
     }
 }
 

@@ -9,7 +9,7 @@ use crate::app::{App, DirState, Mode, visible_indices};
 use crate::fs::worker::ListError;
 use crate::fs::{Entry, EntryKind, Listing};
 use crate::preview::PreviewKind;
-use crate::preview::image::ImagePreview;
+use crate::preview::image::{ImagePreview, Picture};
 use chrono::{DateTime, Local};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -565,7 +565,7 @@ fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Drawn>
                 p.format,
                 human_size(e.size)
             );
-            let size = p.protocol.size();
+            let size = p.picture.size();
             // Overlays (help, pickers, which-key) cover the column: no picture under
             // them. An iTerm2 picture is written after the frame and would cover them.
             let covered = matches!(app.mode, Mode::Help | Mode::Picker) || app.which_key_visible();
@@ -576,14 +576,15 @@ fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Drawn>
                     ..area
                 };
                 drawn = Some(Drawn { rect, place: None });
-                if crate::preview::iterm2_data(&p.protocol).is_some() {
+                match &p.picture {
                     // The UI loop writes it after the frame (crate::preview docs).
-                    drawn = Some(Drawn {
-                        rect,
-                        place: Some(Arc::clone(p)),
-                    });
-                } else {
-                    f.render_widget(Image::new(&p.protocol), rect);
+                    Picture::Iterm2 { .. } => {
+                        drawn = Some(Drawn {
+                            rect,
+                            place: Some(Arc::clone(p)),
+                        });
+                    }
+                    Picture::Cells(protocol) => f.render_widget(Image::new(protocol), rect),
                 }
             }
         }
