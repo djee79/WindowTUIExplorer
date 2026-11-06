@@ -56,6 +56,24 @@ const RESULT_HINTS: &[(&str, &str)] = &[
     ("g?", "help"),
 ];
 
+const PICKER_INSERT_HINTS: &[(&str, &str)] = &[
+    ("^j/^k", "move"),
+    ("Enter", "open"),
+    ("#", "tag filter"),
+    ("Tab", "complete"),
+    ("^e/^t/^x", "edit · tags · delete"),
+    ("Esc", "normal mode"),
+];
+
+const PICKER_NORMAL_HINTS: &[(&str, &str)] = &[
+    ("j/k", "move"),
+    ("Enter", "open"),
+    ("]t/[t", "cycle tag"),
+    ("i", "type"),
+    ("^e/^t/^x", "edit · tags · delete"),
+    ("q/Esc", "close"),
+];
+
 const ROOT_HINTS: &[(&str, &str)] = &[
     ("l/Enter", "open"),
     ("R", "re-probe"),
@@ -230,6 +248,23 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         bar(f, area, left, Vec::new());
         return;
     }
+    if let (Mode::Picker, Some(p)) = (app.mode, &app.picker) {
+        left.push(match p.mode {
+            crate::picker::PickerMode::Insert => badge(" INSERT ", OK),
+            crate::picker::PickerMode::Normal => badge(" NORMAL ", ACCENT),
+        });
+        left.push(Span::raw("  "));
+        let msg = match &app.status {
+            Some(s) => Span::styled(s.text.clone(), theme::fg(if s.is_error { ERR } else { FG })),
+            None => Span::styled(
+                format!("pins  ·  one store: pins.toml  ·  {} pins", p.total()),
+                theme::dim(),
+            ),
+        };
+        left.push(msg);
+        bar(f, area, left, Vec::new());
+        return;
+    }
     left.push(badge(" NORMAL ", ACCENT));
     left.push(Span::raw("  "));
     if let Some(status) = &app.status {
@@ -326,7 +361,17 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
 pub fn draw_hints(f: &mut Frame, area: Rect, app: &App) {
     let mut left = vec![Span::raw(" ")];
     let mut used = 1;
-    let hints = if app.at_root() {
+    let picker_mode = app
+        .picker
+        .as_ref()
+        .filter(|_| app.mode == Mode::Picker)
+        .map(|p| p.mode);
+    let hints = if let Some(m) = picker_mode {
+        match m {
+            crate::picker::PickerMode::Insert => PICKER_INSERT_HINTS,
+            crate::picker::PickerMode::Normal => PICKER_NORMAL_HINTS,
+        }
+    } else if app.at_root() {
         ROOT_HINTS
     } else if let Some(s) = app.search_state(&app.cwd) {
         if s.content { GREP_HINTS } else { RESULT_HINTS }

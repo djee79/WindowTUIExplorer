@@ -15,10 +15,27 @@ pub struct PinDraft {
     pin: Pin,
     /// Editing this pin (rename / tags / unpin), None for a new one.
     editing: Option<usize>,
-    /// The key from `m{key}`; a new pin without one asks for it last.
+    /// The key: from `m{key}`, the pin being edited, or the key step.
     key: Option<char>,
+    /// End with the key step (`M`, `^e` in the picker); `m{key}` already has one.
+    ask_key: bool,
     /// One step only (rename or tags), then save.
     single: bool,
+    /// Started from the picker: reopen it with this query when done.
+    reopen: Option<String>,
+}
+
+impl PinDraft {
+    fn new(pin: Pin, key: Option<char>, ask_key: bool) -> PinDraft {
+        PinDraft {
+            pin,
+            editing: None,
+            key,
+            ask_key,
+            single: false,
+            reopen: None,
+        }
+    }
 }
 
 impl App {
@@ -120,23 +137,24 @@ impl App {
             return;
         }
         let pin = Pin::for_loc(PinKind::Folder, &loc.name(), &loc);
-        self.start_draft(PinDraft {
-            pin,
-            editing: None,
-            key: Some(c),
-            single: false,
-        });
+        self.start_draft(PinDraft::new(pin, Some(c), false));
     }
 
-    /// `'{c}`: go to a folder pin, open a file pin. Other kinds run from the launcher.
+    /// `'{c}`: open the pin with that key.
     pub(super) fn jump_mark(&mut self, c: char) {
-        let Some(pin) = self.pins.by_key(c).cloned() else {
-            let hint = if self.pins_loaded {
-                format!("no pin on '{c} (m{c} pins this folder)")
-            } else {
-                "pins are still loading".to_string()
-            };
-            self.set_status(hint, false);
+        match self.pins.pins.iter().position(|p| p.key_char() == Some(c)) {
+            Some(idx) => self.open_pin(idx),
+            None if self.pins_loaded => {
+                self.set_status(format!("no pin on '{c} (m{c} pins this folder)"), false)
+            }
+            None => self.set_status("pins are still loading".into(), false),
+        }
+    }
+
+    /// Go to a folder pin, open a file pin. Other kinds run from the launcher (M5) or
+    /// as jobs (M4b).
+    pub(super) fn open_pin(&mut self, idx: usize) {
+        let Some(pin) = self.pins.pins.get(idx).cloned() else {
             return;
         };
         let Some(target) = pin.target() else {
@@ -209,12 +227,7 @@ impl App {
             return;
         }
         let pin = Pin::for_loc(kind, &target.name(), &target);
-        self.start_draft(PinDraft {
-            pin,
-            editing: None,
-            key: None,
-            single: false,
-        });
+        self.start_draft(PinDraft::new(pin, None, true));
     }
 
     /// The pin under the cursor in Locations, for `r` / `T` / `dd`.
@@ -240,44 +253,69 @@ impl App {
         let Some(idx) = self.selected_pin("r") else {
             return;
         };
-        let pin = self.pins.pins[idx].clone();
-        self.pin_draft = Some(PinDraft {
-            pin,
-            editing: Some(idx),
-            key: None,
-            single: true,
-        });
-        let name = self.pins.pins[idx].name.clone();
+        let Some(mut d) = self.edit_draft(idx, None) else {
+            return;
+        };
+        d.single = true;
+        let name = d.pin.name.clone();
+        self.pin_draft = Some(d);
         self.open_prompt_with(PromptKind::PinName, &name);
     }
 
     pub(super) fn edit_pin_tags(&mut self) {
-        let Some(idx) = self.selected_pin("T") else {
-            return;
-        };
-        let pin = self.pins.pins[idx].clone();
-        let tags = pin.tags.join(" ");
-        self.pin_draft = Some(PinDraft {
-            pin,
-            editing: Some(idx),
-            key: None,
-            single: true,
-        });
-        self.open_prompt_with(PromptKind::PinTags, &tags);
+        if let Some(idx) = self.selected_pin("T") {
+            self.edit_pin(idx, true, None);
+        }
     }
 
     /// `dd` on a pin in Locations: asks first (a pin carries a name, tags and a key).
     pub(super) fn unpin_selected(&mut self) {
-        let Some(idx) = self.selected_pin("dd") else {
-            return;
-        };
-        let pin = self.pins.pins[idx].clone();
-        self.pin_draft = Some(PinDraft {
+        if let Some(idx) = self.selected_pin("dd") {
+            self.confirm_unpin(idx, None);
+        }
+    }
+
+    fn edit_draft(&self, idx: usize, reopen: Option<String>) -> Option<PinDraft> {
+        let pin = self.pins.pins.get(idx)?.clone();
+        Some(PinDraft {
+            key: pin.key_char(),
             pin,
             editing: Some(idx),
-            key: None,
-            single: true,
-        });
+            ask_key: true,
+            single: false,
+            reopen,
+        })
+    }
+
+    /// Edit pin `idx`: all of it (name → tags → key), or only its tags. `reopen` is the
+    /// picker query to come back to.
+    pub(super) fn edit_pin(&mut self, idx: usize, tags_only: bool, reopen: Option<String>) {
+        if !self.pins_ready() {
+            return;
+        }
+        let Some(mut d) = self.edit_draft(idx, reopen) else {
+            return;
+        };
+        d.single = tags_only;
+        let (kind, text) = if tags_only {
+            (PromptKind::PinTags, d.pin.tags.join(" "))
+        } else {
+            (PromptKind::PinName, d.pin.name.clone())
+        };
+        self.pin_draft = Some(d);
+        self.open_prompt_with(kind, &text);
+    }
+
+    /// Ask, then unpin `idx`.
+    pub(super) fn confirm_unpin(&mut self, idx: usize, reopen: Option<String>) {
+        if !self.pins_ready() {
+            return;
+        }
+        let Some(mut d) = self.edit_draft(idx, reopen) else {
+            return;
+        };
+        d.single = true;
+        self.pin_draft = Some(d);
         self.open_prompt_with(PromptKind::ConfirmUnpin, "");
     }
 
@@ -324,7 +362,7 @@ impl App {
             PromptKind::PinTags => match pins::parse_tags(text) {
                 Ok(tags) => {
                     d.pin.tags = tags;
-                    (d.key.is_none() && d.editing.is_none()).then_some(PromptKind::PinKey)
+                    d.ask_key.then_some(PromptKind::PinKey)
                 }
                 Err(e) => {
                     self.pin_draft = Some(d);
@@ -348,6 +386,7 @@ impl App {
                 if let Some(idx) = d.editing {
                     self.unpin(idx);
                 }
+                self.reopen_picker(d.reopen);
                 return Ok(());
             }
             _ => None,
@@ -356,6 +395,7 @@ impl App {
             Some(next) if !d.single => {
                 let prefill = match next {
                     PromptKind::PinTags => d.pin.tags.join(" "),
+                    PromptKind::PinKey => d.key.map(String::from).unwrap_or_default(),
                     _ => String::new(),
                 };
                 self.pin_draft = Some(d);
@@ -374,31 +414,43 @@ impl App {
                 (_, None) => "not pinned".to_string(),
             };
             self.set_status(msg, false);
+            self.reopen_picker(d.reopen);
+        }
+    }
+
+    fn reopen_picker(&mut self, query: Option<String>) {
+        if let Some(q) = query {
+            self.open_pin_picker(&q);
         }
     }
 
     fn finish_draft(&mut self, d: PinDraft) {
         let name = d.pin.name.clone();
-        let idx = match d.editing {
+        let (idx, edited) = match d.editing {
             Some(idx) if idx < self.pins.pins.len() => {
                 self.pins.pins[idx] = d.pin;
-                self.save_pins();
-                self.set_status(format!("saved {name}"), false);
-                return;
+                (idx, true)
             }
             Some(_) => return,
             None => {
                 self.pins.pins.push(d.pin);
-                self.pins.pins.len() - 1
+                (self.pins.pins.len() - 1, false)
             }
         };
-        let moved = self.pins.set_key(idx, d.key);
+        let moved = if d.ask_key || !edited {
+            self.pins.set_key(idx, d.key)
+        } else {
+            None
+        };
         self.save_pins();
-        let msg = match d.key {
-            Some(c) => pinned_message(c, &name, moved.as_deref()),
-            None => format!("pinned {name}"),
+        let msg = match (d.key, edited) {
+            (Some(c), _) if d.ask_key || !edited => pinned_message(c, &name, moved.as_deref()),
+            (_, true) => format!("saved {name}"),
+            (None, false) => format!("pinned {name}"),
+            (Some(_), false) => format!("pinned {name}"),
         };
         self.set_status(msg, false);
+        self.reopen_picker(d.reopen);
     }
 
     fn unpin(&mut self, idx: usize) {

@@ -82,6 +82,22 @@ impl FsPath {
         matches!(self.root, FsRoot::Share { .. })
     }
 
+    /// The server of a `\\server\share` path.
+    pub fn server(&self) -> Option<&str> {
+        match &self.root {
+            FsRoot::Share { server, .. } => Some(server),
+            FsRoot::Drive(_) => None,
+        }
+    }
+
+    /// The (uppercase) letter of a drive path.
+    pub fn drive(&self) -> Option<char> {
+        match self.root {
+            FsRoot::Drive(c) => Some(c),
+            FsRoot::Share { .. } => None,
+        }
+    }
+
     /// `C:\` or `\\server\share` itself, with no components below it.
     pub fn is_volume_root(&self) -> bool {
         self.parts.is_empty()

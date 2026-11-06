@@ -293,6 +293,8 @@ pub enum Action {
     /// `T` on a pin in Locations: edit its tags. `r` there renames it.
     EditPinTags,
     RenamePin,
+    /// `<leader>p`: the pin picker.
+    PinPicker,
     /// `g<Space>`: the `:cd ` prompt, ready for a path (Yazi's `g<Space>`).
     GotoPath,
     Help,
@@ -356,6 +358,7 @@ const NAMED: &[(&str, Action)] = &[
     ("pin-item", Action::PinItem),
     ("edit-pin-tags", Action::EditPinTags),
     ("rename-pin", Action::RenamePin),
+    ("pin-picker", Action::PinPicker),
     ("goto-path", Action::GotoPath),
     ("help", Action::Help),
     ("quit", Action::Quit),
@@ -530,6 +533,7 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("g.", ToggleHidden, "toggle hidden/system files"),
         ("g?", Help, "help"),
         ("<leader>l", Locations, "Locations"),
+        ("<leader>p", PinPicker, "pins picker"),
         ("R", Refresh, "retry / refresh / re-probe"),
         ("dd", Delete, "delete (Locations: remove saved share)"),
         (":", CommandLine, "command line"),

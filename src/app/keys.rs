@@ -110,6 +110,7 @@ impl App {
         match self.mode {
             Mode::Help => self.mode = Mode::Normal,
             Mode::Prompt => self.on_prompt_key(key),
+            Mode::Picker => self.on_picker_key(key),
             Mode::Normal => self.on_normal_key(key),
         }
     }
@@ -278,6 +279,7 @@ impl App {
             Action::PinItem => self.pin_item(),
             Action::EditPinTags => self.edit_pin_tags(),
             Action::RenamePin => self.rename_pin(),
+            Action::PinPicker => self.open_pin_picker(""),
             Action::Help => self.mode = Mode::Help,
             Action::Quit | Action::QuitNoWrite => self.quit = Some(Quit::Plain),
             Action::QuitWriteCwd => self.quit = Some(Quit::WithCwd),

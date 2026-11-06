@@ -55,6 +55,8 @@ pub enum AppEvent {
     PinsLoaded(Result<(PinStore, Vec<String>), String>),
     /// Writing pins.toml failed.
     PinsSaveFailed(String),
+    /// A picker's matcher has new results.
+    Wake,
     /// keymap.toml was read: the built keymap plus any problems to report, or a read error.
     KeymapLoaded(Result<(Keymap, Vec<String>), String>),
     /// A batch of search hits (possibly empty: then it's only progress).

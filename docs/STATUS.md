@@ -234,5 +234,33 @@ Manual checklist:
 - [ ] Hand-edit pins.toml with a typo'd pin: startup says so, the pin survives a save.
 - [ ] Pin `\10.255.255.1\x` (edit the file): × after ~2 s, `'key` stays put.
 
-Next M3 slices: the generic nucleo picker + pin picker (`<leader>p`) with the tag
-query syntax (`#tag`, `is:`, `on:`), then `:tags` / `:tag rename|delete`, saved views.
+|delete`, saved views.
+
+## M3 pins, slice 2: generic picker + pin picker (code complete 2026-11-06, manual check pending)
+
+- `src/picker/query.rs`: the pin query. `#tag` (prefix), `#a #b` AND, `#a,b` OR, `!#tag`,
+  `is:folder|file|app|web|sync|backup|unc|local|unreachable` (and `!is:`), `on:<server>`
+  (prefix; mapped-drive pins resolve through the Locations listing), rest = fuzzy text.
+  Completion of the word being typed with counts. Table tests.
+- `src/picker/mod.rs`: generic picker on `nucleo::Nucleo` (own thread pool, wakes the UI
+  through `AppEvent::Wake`). Filter words refill the matcher; text reparses the pattern.
+  Ranking: wtm tiers (name prefix › tag prefix › substring › fuzzy), stable over nucleo's
+  score order (top 5 000). Tags are part of the matched text. Tag bar, `]t`/`[t` cycling,
+  match highlighting for visible rows only.
+- `<leader>p` opens it (insert mode). `^j/^k ^n/^p` move, `Enter` opens (folder → go,
+  file → ShellExecute), `Tab` completes a filter word, `^e` edit (name → tags → key),
+  `^t` tags, `^x` delete (y/n); edits return to the picker with the same query.
+  `Esc` → normal mode: `j/k` + counts, `gg/G`, `^d/^u`, `]t/[t`, `i/a`, `q/Esc` close.
+  Relative-number gutter in normal mode. Preview: pin details, reachability, and a folder
+  pin's listing (same cache and debounce as the columns; skipped when unreachable).
+
+Not yet: `^y` copy path / `^v` reveal (with path utilities, M6 / open-with, M5), Tab
+multi-select (needs jobs, M4), the query syntax in the Locations filter `f`, `:tags`,
+`:tag rename|delete`, `<leader>t` tag picker, saved views (`:view save`).
+
+Manual checklist:
+- [ ] `<Space>p` with a few pins: list, counter `n / N`, tag bar.
+- [ ] Type `#av` + Tab, `is:unc`, `on:homenas`: the list narrows instantly.
+- [ ] `Esc`, `5j`, `gg`, `]t` `]t` `[t`, `i`, `q`.
+- [ ] `^t` / `^e` / `^x` on a pin: back in the picker afterwards with the query kept.
+- [ ] Preview of a folder pin on the NAS lists its contents; a dead one says so, no stall.

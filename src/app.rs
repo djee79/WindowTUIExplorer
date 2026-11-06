@@ -5,6 +5,7 @@
 //! to the [`AppEvent`]s that come back.
 
 mod keys;
+mod picker;
 mod pins;
 mod search;
 
@@ -82,6 +83,8 @@ pub enum Mode {
     /// A prompt is open: `:` command line, `/` `?` search, `f` filter.
     Prompt,
     Help,
+    /// A picker is open (`<leader>p`); it has its own insert / normal modes.
+    Picker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,6 +179,10 @@ pub struct App {
     pins_loaded: bool,
     /// A pin being made or edited through prompts.
     pin_draft: Option<pins::PinDraft>,
+    /// The open picker, its pending count and keys (normal mode).
+    pub picker: Option<crate::picker::Picker>,
+    picker_count: Option<usize>,
+    picker_pending: Option<picker::PickerPending>,
     /// Reachability of Locations entries, keyed by the location each one opens.
     pub reach: HashMap<Loc, Reach>,
     last_probe_round: Option<Instant>,
@@ -229,6 +236,9 @@ impl App {
             pins: crate::pins::PinStore::default(),
             pins_loaded: false,
             pin_draft: None,
+            picker: None,
+            picker_count: None,
+            picker_pending: None,
             reach: HashMap::new(),
             last_probe_round: None,
             status: None,
@@ -274,6 +284,9 @@ impl App {
 
     /// The location shown in the preview column, if the selection is a container.
     pub fn preview_loc(&self) -> Option<Loc> {
+        if self.mode == Mode::Picker {
+            return self.picker_preview_loc();
+        }
         let e = self.selected()?;
         if !e.is_container() {
             return None;
@@ -714,6 +727,7 @@ impl App {
                 tracing::warn!(error = %e, "couldn't save shares");
                 self.set_status(format!("couldn't save the shares list: {e}"), true);
             }
+            AppEvent::Wake => {}
             AppEvent::PinsLoaded(result) => self.on_pins_loaded(result),
             AppEvent::PinsSaveFailed(e) => {
                 tracing::warn!(error = %e, "couldn't save pins");
@@ -820,6 +834,9 @@ impl App {
             self.probe_root(true);
         }
         self.key_timeout(now);
+        if self.picker.as_mut().is_some_and(|p| p.tick()) {
+            self.dirty = true;
+        }
         self.search_tick(now);
         if self.preview_due.is_some_and(|due| now >= due) {
             self.preview_due = None;
@@ -843,7 +860,7 @@ impl App {
     /// How long the loop may sleep before something time-driven needs doing.
     fn next_wake(&self, now: Instant) -> Duration {
         let mut wake = IDLE_WAKE;
-        if self.is_busy() {
+        if self.is_busy() || self.picker.as_ref().is_some_and(|p| p.running) {
             wake = wake.min(SPINNER_TICK);
         }
         if let Some(due) = self.preview_due {
@@ -1749,5 +1766,124 @@ mod pin_tests {
         assert!(screen.contains("Projects"), "{screen}");
         press(&mut app, "<Esc>");
         assert!(!app.which_key_visible());
+    }
+
+    /// Lets the picker's matcher threads finish and takes their results.
+    fn settle(app: &mut App) {
+        let end = Instant::now() + Duration::from_secs(5);
+        for _ in 0..3 {
+            app.tick(Instant::now());
+        }
+        while app.picker.as_ref().is_some_and(|p| p.running) && Instant::now() < end {
+            app.tick(Instant::now());
+        }
+    }
+
+    fn picker_names(app: &App) -> Vec<String> {
+        app.picker
+            .as_ref()
+            .map(|p| p.view.iter().map(|i| i.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Two pins: `'a` C:\work (aveva), `'h` C:\work\HIT (aveva, servers); cwd C:\work.
+    fn two_pins() -> (App, tokio::runtime::Runtime) {
+        let (mut app, rt) = loaded();
+        press(&mut app, "ma<C-u>Work dir<CR>aveva<CR>");
+        press(&mut app, ":cd HIT<CR>mh<CR>aveva servers<CR>");
+        press(&mut app, "'a");
+        (app, rt)
+    }
+
+    #[test]
+    fn picker_filters_ranks_and_opens() {
+        let (mut app, _rt) = two_pins();
+        press(&mut app, "<Space>p");
+        assert_eq!(app.mode, Mode::Picker);
+        settle(&mut app);
+        assert_eq!(picker_names(&app).len(), 2);
+
+        press(&mut app, "hi");
+        settle(&mut app);
+        assert_eq!(picker_names(&app)[0], "HIT", "name prefix first");
+
+        press(&mut app, "<C-u>#se<Tab>");
+        assert_eq!(
+            app.picker.as_ref().map(|p| p.editor.text()).as_deref(),
+            Some("#servers ")
+        );
+        settle(&mut app);
+        assert_eq!(picker_names(&app), ["HIT"]);
+
+        let screen = render(&mut app, 160, 30);
+        assert!(
+            screen.contains("[folder]") && screen.contains("#servers"),
+            "{screen}"
+        );
+        assert!(screen.contains("1 / 2"), "counter: {screen}");
+
+        press(&mut app, "<CR>");
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.cwd.display(), r"C:\work\HIT");
+    }
+
+    #[test]
+    fn picker_normal_mode_moves_and_closes() {
+        let (mut app, _rt) = two_pins();
+        press(&mut app, "<Space>p");
+        settle(&mut app);
+        press(&mut app, "<Esc>j");
+        assert_eq!(app.picker.as_ref().map(|p| p.cursor), Some(1));
+        press(&mut app, "gg");
+        assert_eq!(app.picker.as_ref().map(|p| p.cursor), Some(0));
+        press(&mut app, "]t");
+        settle(&mut app);
+        assert_eq!(
+            app.picker
+                .as_ref()
+                .and_then(|p| p.query.single_tag().map(str::to_string)),
+            Some("aveva".to_string()),
+            "most used tag first"
+        );
+        press(&mut app, "q");
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.picker.is_none());
+    }
+
+    #[test]
+    fn picker_edits_come_back_to_the_picker() {
+        let (mut app, _rt) = two_pins();
+        press(&mut app, "<Space>phit");
+        settle(&mut app);
+        press(&mut app, "<C-t>");
+        assert_eq!(app.mode, Mode::Prompt);
+        press(&mut app, "<C-u>e3d<CR>");
+        assert_eq!(app.pins.pins[1].tags, ["e3d"]);
+        assert_eq!(app.mode, Mode::Picker, "back in the picker");
+        assert_eq!(
+            app.picker.as_ref().map(|p| p.editor.text()).as_deref(),
+            Some("hit"),
+            "same query"
+        );
+
+        // ^e: name, tags, then the key (prefilled with the current one).
+        settle(&mut app);
+        press(&mut app, "<C-e><C-u>HIT server<CR><CR>");
+        assert_eq!(
+            app.prompt.as_ref().map(|p| p.editor.text()).as_deref(),
+            Some("h")
+        );
+        press(&mut app, "<C-u>x<CR>");
+        assert_eq!(app.pins.pins[1].name, "HIT server");
+        assert_eq!(app.pins.pins[1].key_char(), Some('x'));
+
+        settle(&mut app);
+        press(&mut app, "<C-x>n");
+        assert_eq!(app.pins.pins.len(), 2, "n keeps it");
+        assert_eq!(app.mode, Mode::Picker);
+        settle(&mut app);
+        press(&mut app, "<C-x>y");
+        assert_eq!(app.pins.pins.len(), 1);
+        assert_eq!(app.mode, Mode::Picker);
     }
 }

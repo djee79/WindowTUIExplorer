@@ -155,6 +155,14 @@ impl Worker {
         }
     }
 
+    /// A callback for matcher threads (the picker's nucleo pool): wakes the UI loop.
+    pub fn waker(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let tx = self.tx.clone();
+        Arc::new(move || {
+            let _ = tx.send(AppEvent::Wake);
+        })
+    }
+
     fn new_request(&self) -> Request {
         Request {
             id: self.next_id.fetch_add(1, Ordering::Relaxed),
