@@ -124,7 +124,7 @@ Manual checklist for M2:
 - [ ] Add `\\10.255.255.1\x` to shares.txt by hand: its dot turns × after ~2 s, Enter
       stays put, the UI never stalls.
 
-## M2a search: name search (`s`) done, content search (`S`) and benchmark pending
+## M2a search: `s` name search and `S` content search done (2026-11-06)
 
 - `src/search/query.rs`: fuzzy / glob (`* ? [`) / `re:` + `ext: type: size: mtime: depth:
   hidden: follow: !segment`, with table tests.
@@ -164,7 +164,10 @@ Pending:
   listing shows one (WalkParallel probed every directory). Cancel no longer waits for a
   thread stuck in SMB. The `ignore` crate stays for its gitignore matcher. Still worth
   a run on the office file server (`\\srv01\project\HIT`).
-- `S` content search (grep-searcher + grep-regex + grep-matcher; match counts, `]m`/`[m`).
+- `S` content search: done and manually checked. `src/search/content.rs` (ripgrep crates:
+  literal smart-case or `re:`, `multi_line` + `crlf` so `$` works on CRLF files, binary
+  skipped, UTF-16 BOM transcoded, name filters still apply), match counts per result,
+  `src/ui/grep.rs` preview with context lines, `]m`/`[m` step through matches.
 - Optional per-share index (`:index add`) is a stretch goal.
 
 ## Spec update adopted 2026-11-06 + keymap pass (code complete, manual check pending)
@@ -200,5 +203,5 @@ Keymap pass:
 open-with": rules/openers, the `O` menu, `gR`, SHAssocEnumHandlers, inline Neovim).
 
 Not yet (their milestones): `O` / `gR` open-with (M5), `m`/`M`/`'{key}` pins, `Tab v V` selection, `yy x p P`, `y*`
-path copies, `s`/`S` search, `]p [p zp`, pickers and `<leader>` entries other than `l`,
+path copies, `]p [p zp`, pickers and `<leader>` entries other than `l`,
 counts on operators.
