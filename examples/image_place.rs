@@ -1,16 +1,19 @@
 //! M2b probe: where does an iTerm2 picture land under WezTerm + ConPTY?
 //!
 //! In sentier the preview picture appeared at the wrong place (bottom right, cut off).
-//! Suspected cause: ConPTY interprets the cursor moves around the picture and repaints on
-//! its own schedule, but passes the picture itself straight through, so the picture lands
-//! wherever the real terminal's cursor happens to be.
 //!
-//! This draws a busy screen (like sentier's columns) with two target boxes, and places the
-//! test card in both, four ways:
-//!   1. inline: inside the ratatui frame (what sentier does now)
-//!   2. after: after the frame, move the cursor there and write the picture, one write
-//!   3. after + 30 ms: move the cursor, flush, wait 30 ms, then write the picture
-//!   4. after + 100 ms: the same with 100 ms
+//! Round 1 found: a picture inside a full ratatui frame lands right; written after the
+//! frame (cursor move + picture, with or without a wait) it lands wrong. Theory: ratatui
+//! hides the cursor, so ConPTY never sends cursor moves to the real terminal; the real
+//! cursor sits wherever ConPTY last painted text, and the picture lands there. In a full
+//! frame the border just before the picture was painted, so the cursor happened to be
+//! right; in sentier only the picture changes, so nothing is painted before it.
+//!
+//! Round 2 tests that, with two target boxes on a busy screen:
+//!   1. small update: a full frame, then a frame where only the pictures are new (sentier)
+//!   2. after the frame: show the cursor, move it, write the picture, hide it; one write
+//!   3. the same, waiting 15 ms after the cursor move
+//!   4. full frame with the pictures inside (round 1's case, as a control)
 //!
 //! For each: `y` both pictures inside their boxes · `p` one of them · `n` neither · `q` quit.
 //!
@@ -20,15 +23,15 @@
 //! The report goes to the screen and `%TEMP%\sentier_image_place.txt`.
 
 use image::{DynamicImage, Rgba, RgbaImage};
-use ratatui::DefaultTerminal;
-use ratatui::crossterm::cursor::MoveTo;
+use ratatui::crossterm::cursor::{Hide, MoveTo, Show};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::crossterm::queue;
 use ratatui::crossterm::style::Print;
 use ratatui::layout::{Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
+use ratatui::{DefaultTerminal, Frame};
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{Image, Resize};
@@ -38,16 +41,18 @@ use std::time::Duration;
 
 #[derive(Clone, Copy)]
 enum Way {
-    Inline,
-    After(u64),
+    SmallUpdate,
+    ShowCursor(u64),
+    FullFrame,
 }
 
 impl Way {
     fn label(self) -> String {
         match self {
-            Way::Inline => "1 inline (in the ratatui frame)".to_string(),
-            Way::After(0) => "2 after the frame, one write".to_string(),
-            Way::After(ms) => format!("after the frame, cursor first, wait {ms} ms"),
+            Way::SmallUpdate => "1 small update, only the pictures new".to_string(),
+            Way::ShowCursor(0) => "2 after: show cursor, move, picture, hide".to_string(),
+            Way::ShowCursor(ms) => format!("3 after: show cursor, move, wait {ms} ms"),
+            Way::FullFrame => "4 full frame with the pictures (control)".to_string(),
         }
     }
 }
@@ -60,7 +65,7 @@ fn main() -> anyhow::Result<()> {
     let answers = result?;
 
     let mut s = String::new();
-    let _ = writeln!(s, "sentier image placement probe (iTerm2)");
+    let _ = writeln!(s, "sentier image placement probe, round 2 (iTerm2)");
     let _ = writeln!(
         s,
         "  TERM_PROGRAM {}  {}",
@@ -78,6 +83,49 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The busy screen with the two boxes, and the pictures when given.
+fn draw(f: &mut Frame, n: usize, way: Way, boxes: [Rect; 2], pics: Option<[&Protocol; 2]>) {
+    let area = f.area();
+    let lines: Vec<Line> = (0..area.height)
+        .map(|i| {
+            Line::from(format!(
+                " {i:>3}  {}",
+                "lorem ipsum dolor sit amet consectetur ".repeat(6)
+            ))
+        })
+        .collect();
+    f.render_widget(
+        Paragraph::new(lines).style(Style::new().fg(Color::DarkGray)),
+        area,
+    );
+    let title = format!(
+        " {}/4  {}  ·  pictures inside both boxes?  y both · p one · n neither · q quit ",
+        n + 1,
+        way.label()
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            title,
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ))),
+        Rect::new(0, 0, area.width, 1),
+    );
+    for r in boxes {
+        f.render_widget(Clear, r);
+        f.render_widget(
+            Block::bordered()
+                .border_type(BorderType::Double)
+                .border_style(Style::new().fg(Color::Cyan)),
+            r,
+        );
+    }
+    if let Some(pics) = pics {
+        for (r, p) in boxes.iter().zip(pics) {
+            f.render_widget(Image::new(p), Block::bordered().inner(*r));
+        }
+    }
+}
+
 fn run(
     terminal: &mut DefaultTerminal,
     card: &DynamicImage,
@@ -93,93 +141,71 @@ fn run(
         size.height / 2,
     );
     let b = Rect::new(4, size.height.saturating_sub(16), size.width / 4, 13);
-    let mut answers = Vec::new();
-    let ways = [Way::Inline, Way::After(0), Way::After(30), Way::After(100)];
-    for (n, way) in ways.into_iter().enumerate() {
-        let inner_a = Block::bordered().inner(a);
-        let inner_b = Block::bordered().inner(b);
-        let pa = picker.new_protocol(
+    let boxes = [a, b];
+    let inner = [Block::bordered().inner(a), Block::bordered().inner(b)];
+    let mut pics = Vec::new();
+    for r in inner {
+        pics.push(picker.new_protocol(
             card.clone(),
-            Size::new(inner_a.width, inner_a.height),
+            Size::new(r.width, r.height),
             Resize::Fit(None),
-        )?;
-        let pb = picker.new_protocol(
-            card.clone(),
-            Size::new(inner_b.width, inner_b.height),
-            Resize::Fit(None),
-        )?;
+        )?);
+    }
+    let both = [&pics[0], &pics[1]];
 
-        // A busy frame first, so ConPTY has painting to do.
-        terminal.draw(|f| {
-            let area = f.area();
-            let lines: Vec<Line> = (0..area.height)
-                .map(|i| {
-                    Line::from(format!(
-                        " {i:>3}  {}",
-                        "lorem ipsum dolor sit amet consectetur ".repeat(6)
-                    ))
-                })
-                .collect();
-            f.render_widget(
-                Paragraph::new(lines).style(Style::new().fg(Color::DarkGray)),
-                area,
-            );
-            let title = format!(
-                " {}/4  {}  ·  pictures inside both boxes?  y both · p one · n neither · q quit ",
-                n + 1,
-                way.label()
-            );
-            f.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    title,
-                    Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                ))),
-                Rect::new(0, 0, area.width, 1),
-            );
-            for r in [a, b] {
-                f.render_widget(ratatui::widgets::Clear, r);
-                f.render_widget(
-                    Block::bordered()
-                        .border_type(BorderType::Double)
-                        .border_style(Style::new().fg(Color::Cyan)),
-                    r,
-                );
+    let mut answers = Vec::new();
+    let ways = [
+        Way::SmallUpdate,
+        Way::ShowCursor(0),
+        Way::ShowCursor(15),
+        Way::FullFrame,
+    ];
+    for (n, way) in ways.into_iter().enumerate() {
+        terminal.clear()?;
+        match way {
+            Way::SmallUpdate => {
+                terminal.draw(|f| draw(f, n, way, boxes, None))?;
+                std::thread::sleep(Duration::from_millis(300));
+                terminal.draw(|f| draw(f, n, way, boxes, Some(both)))?;
             }
-            if let Way::Inline = way {
-                f.render_widget(Image::new(&pa), inner_a);
-                f.render_widget(Image::new(&pb), inner_b);
+            Way::ShowCursor(ms) => {
+                terminal.draw(|f| draw(f, n, way, boxes, None))?;
+                std::thread::sleep(Duration::from_millis(300));
+                for (p, r) in both.iter().zip(inner) {
+                    place(p, r, ms)?;
+                }
             }
-        })?;
-        if let Way::After(ms) = way {
-            place(&pa, inner_a, ms)?;
-            place(&pb, inner_b, ms)?;
+            Way::FullFrame => {
+                terminal.draw(|f| draw(f, n, way, boxes, Some(both)))?;
+            }
         }
         let answer = ask()?;
         // Remove both pictures (spaces over their cells) before the next round.
-        erase(inner_a)?;
-        erase(inner_b)?;
-        terminal.clear()?;
+        for r in inner {
+            erase(r)?;
+        }
         match answer {
             Some(a) => answers.push((way.label(), a.to_string())),
             None => break,
         }
     }
+    terminal.clear()?;
     Ok(answers)
 }
 
-/// After the frame: move the cursor to `at`, optionally wait for ConPTY to paint that,
-/// then write the picture.
+/// After the frame: show the cursor so ConPTY really moves it, move it to `at`, write the
+/// picture, hide the cursor again.
 fn place(p: &Protocol, at: Rect, wait_ms: u64) -> std::io::Result<()> {
     let Protocol::ITerm2(i) = p else {
         return Ok(());
     };
     let mut out = std::io::stdout();
-    queue!(out, MoveTo(at.x, at.y))?;
+    queue!(out, Show, MoveTo(at.x, at.y))?;
     if wait_ms > 0 {
         out.flush()?;
         std::thread::sleep(Duration::from_millis(wait_ms));
     }
-    queue!(out, Print(&i.data))?;
+    queue!(out, Print(&i.data), Hide)?;
     out.flush()
 }
 
