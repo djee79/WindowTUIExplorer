@@ -29,3 +29,8 @@ windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Storage_F
 lto = "fat"
 codegen-units = 1
 # panic = "abort" waits until the panic hook is verified to restore the terminal.
+
+# Debug builds: optimize the dependencies (image decoding, PNG encoding, matching) but not
+# sentier itself. Unoptimized `image` takes seconds on a 3000 px PNG.
+[profile.dev.package."*"]
+opt-level = 3

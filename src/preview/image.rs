@@ -8,7 +8,6 @@
 //! picture to exactly the box, whatever the screen scaling. The cell size then only
 //! matters for the shape, and 10×20 has the 1:2 shape of every common terminal font.
 
-use image::imageops::FilterType;
 use image::{DynamicImage, ImageReader};
 use ratatui::layout::Size;
 use ratatui_image::Resize;
@@ -59,12 +58,30 @@ impl std::fmt::Debug for ImagePreview {
     }
 }
 
-/// Reads the picture at `path` (an OS path string) and encodes it to fit `cols`×`rows`
-/// cells, keeping its shape. Big pictures fill the box; small ones keep their natural
-/// size (one cell per 10×20 px) instead of being blown up.
+/// Pictures bigger than this on disk aren't read for a preview.
+pub const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Reads the file at `path` (an OS path string). The only part that can hang (a dead
+/// share), so the worker puts its timeout around this alone.
+pub fn read(path: &str) -> Result<Vec<u8>, String> {
+    let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+    if len > MAX_FILE_BYTES {
+        return Err(format!("too big to preview ({} MB)", len / (1024 * 1024)));
+    }
+    std::fs::read(path).map_err(|e| e.to_string())
+}
+
+/// [`read`] then [`decode`], for callers without a timeout to place (tests).
+#[cfg(test)]
 pub fn load(path: &str, picker: &Picker, cols: u16, rows: u16) -> Result<ImagePreview, String> {
-    let reader = ImageReader::open(path)
-        .map_err(|e| e.to_string())?
+    decode(&read(path)?, picker, cols, rows)
+}
+
+/// Decodes `bytes` and encodes the picture to fit `cols`×`rows` cells, keeping its shape.
+/// Big pictures fill the box; small ones keep their natural size (one cell per 10×20 px)
+/// instead of being blown up. CPU only: slow on a huge picture, but it can't hang.
+pub fn decode(bytes: &[u8], picker: &Picker, cols: u16, rows: u16) -> Result<ImagePreview, String> {
+    let reader = ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
     let format = reader
@@ -115,7 +132,9 @@ fn encode_iterm2(img: &DynamicImage, size: Size) -> Result<String, String> {
     let max_w = (f64::from(size.width) * CELL_W * SHARPNESS) as u32;
     let max_h = (f64::from(size.height) * CELL_H * SHARPNESS) as u32;
     let img = if img.width() > max_w || img.height() > max_h {
-        img.resize(max_w.max(1), max_h.max(1), FilterType::CatmullRom)
+        // `thumbnail` is built for big reductions: much faster than a filtered resize,
+        // and the terminal scales the result again anyway.
+        img.thumbnail(max_w.max(1), max_h.max(1))
     } else {
         img.clone()
     };

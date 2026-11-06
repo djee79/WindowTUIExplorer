@@ -407,8 +407,9 @@ impl Worker {
 
     /// Reads and encodes the picture behind `key` for the preview column. Sends one
     /// `ImagePreview`. Network files over 50 MB aren't read (mapped drives count as
-    /// network); reading gets 5 s locally, 15 s on the network. A late answer for a file
-    /// the cursor has left is dropped by the app (it compares the key).
+    /// network). Reading the file gets 5 s locally, 15 s on the network; decoding and
+    /// encoding come after, untimed (CPU only: slow on a huge picture, but it can't
+    /// hang). A late answer for a file the cursor has left is dropped by the app.
     pub fn image_preview(&self, key: ImageKey, picker: Picker) {
         let Some(path) = key.loc.as_fs().map(|p| p.os_string()) else {
             return;
@@ -429,14 +430,21 @@ impl Worker {
             } else {
                 IMAGE_PREVIEW_LOCAL
             };
-            let (cols, rows) = (key.cols, key.rows);
-            let call = tokio::task::spawn_blocking(move || {
-                preview::image::load(&path, &picker, cols, rows).map(Arc::new)
-            });
-            let result = match tokio::time::timeout(timeout, call).await {
+            let read = tokio::task::spawn_blocking(move || preview::image::read(&path));
+            let read = match tokio::time::timeout(timeout, read).await {
                 Ok(Ok(r)) => r,
                 Ok(Err(e)) => Err(e.to_string()),
-                Err(_) => Err(format!("timed out after {} s", timeout.as_secs())),
+                Err(_) => Err(format!("timed out reading after {} s", timeout.as_secs())),
+            };
+            let result = match read {
+                Ok(bytes) => {
+                    let (cols, rows) = (key.cols, key.rows);
+                    let decode = tokio::task::spawn_blocking(move || {
+                        preview::image::decode(&bytes, &picker, cols, rows).map(Arc::new)
+                    });
+                    decode.await.unwrap_or_else(|e| Err(e.to_string()))
+                }
+                Err(e) => Err(e),
             };
             let _ = tx.send(AppEvent::ImagePreview { key, result });
         });

@@ -370,3 +370,12 @@ any screen scaling; sent at 2× resolution for sharpness; no blanking. Pictures 
 keeping their shape; small ones (icons) keep their natural size. Base64 is a small local
 function (no new crate). The first frame and every resize now rewrite every cell, which
 also clears pictures left in the terminal by earlier programs.
+
+### M2b fix: "timed out after 5 s" on big PNGs (2026-11-06)
+
+The 3311×2851 cheatsheet timed out in a debug build: unoptimized `image` plus a filtered
+resize took over 5 s, and the timeout covered decoding too. Now: dependencies are optimized
+even in debug builds (`[profile.dev.package."*"] opt-level = 3`); the timeout covers reading
+the file only (`preview::image::read`, the part that can hang on a dead share), decoding is
+untimed; big reductions use `thumbnail`. Measured on the real files: ~20 ms decode, ~70 ms
+decode + shrink + PNG for 3311×2851 and 5120×2880. Files over 256 MB aren't previewed.
