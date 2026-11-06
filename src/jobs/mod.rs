@@ -3,6 +3,7 @@
 //! (robocopy's, parsed, or the same events made by the native backend), and the app
 //! applies them here.
 
+pub mod headless;
 pub mod preset;
 pub mod robocopy;
 pub mod run;
@@ -655,6 +656,9 @@ pub struct Report {
 impl Report {
     /// `FAILED robocopy exit 9 = 1 (files copied) + 8 (some copies failed)`
     pub fn result_line(&self) -> String {
+        if let (Phase::Done, Some(b)) = (self.phase, &self.backup) {
+            return format!("DONE zip made and verified ({} entries)", b.entries);
+        }
         let mut s = self.phase.word().to_string();
         if let Some(code) = self.exit
             && self.backend == Backend::Robocopy

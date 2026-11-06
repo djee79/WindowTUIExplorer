@@ -40,8 +40,10 @@ const USAGE: &str = "\
 sentier: a terminal file explorer for Windows
 
 usage: sentier [options] [path]
+       sentier run <preset name> [--allow-mirror]   (headless; sentier run --help)
 
-  path               start here (C:\\dir, \\\\server\\share\\dir, relative, ...)
+  path               start here (C:\\dir, \\\\server\\share\\dir, relative, ...;
+                     a folder named run: sentier .\\run)
 
 options:
   --cwd-file <file>  on ZZ (or Q, :wq), write the current directory to <file>
@@ -55,6 +57,10 @@ struct Args {
 }
 
 fn main() -> ExitCode {
+    let all: Vec<String> = std::env::args().skip(1).collect();
+    if all.first().map(String::as_str) == Some("run") {
+        return ExitCode::from(run_headless(&all[1..]));
+    }
     match real_main() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -63,6 +69,44 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `sentier run <preset>`: no TUI, no raw mode; stdout is the scheduled task's output.
+fn run_headless(args: &[String]) -> u8 {
+    use jobs::headless::{self, EXIT_FATAL};
+    let fatal = EXIT_FATAL as u8;
+    let args = match headless::parse_args(args) {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            print!("{}", headless::USAGE);
+            return 0;
+        }
+        Err(e) => {
+            eprintln!("sentier run: {e}\n\n{}", headless::USAGE);
+            return fatal;
+        }
+    };
+    let _log_guard = init_logging();
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), ?args, "headless run");
+    let Some(path) = pins::store_path() else {
+        eprintln!("sentier run: no %APPDATA% folder, so no pins.toml");
+        return fatal;
+    };
+    let store = match pins::load(&path) {
+        Ok((store, notes)) => {
+            for n in notes {
+                eprintln!("note: {n}");
+            }
+            store
+        }
+        Err(e) => {
+            eprintln!("sentier run: {e}");
+            return fatal;
+        }
+    };
+    let code = headless::run(&store, &args, &mut std::io::stdout());
+    tracing::info!(code, "headless run done");
+    code.clamp(0, 255) as u8
 }
 
 fn real_main() -> Result<()> {

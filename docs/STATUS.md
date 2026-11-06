@@ -713,3 +713,33 @@ Manual checklist (office):
 - [ ] `c` during zipping: no `.partial` left, staging folder gone.
 - [ ] keep = 2 after three runs: only the two newest `HIT_*.zip` remain, other files untouched.
 - [ ] Source = a sync preset's local copy: the question says "zipped directly", no staging.
+
+## M4b presets, slice 3: `sentier run` (code complete 2026-11-06, manual check pending)
+
+M4b is code complete with this slice (the 7-Zip backend aside).
+
+- `sentier run "<preset name>" [--allow-mirror] [--threads n]` (`jobs/headless.rs`): runs a
+  sync or backup preset with no TUI. The name must match exactly (case aside), never by
+  part; no name or an unknown one lists the presets. `sentier run --help`.
+- A mirror sync runs as **update** unless `--allow-mirror` is given (it says so).
+- Same log and report as the TUI (`%LOCALAPPDATA%\sentier\jobs\`, so the jobs panel shows
+  it next time) and the same last-run entry in `presets.json` (the pin shows it).
+- Prints a line per milestone (scanned, each backup step, zip verified, retention, the
+  result, failed files), not per file.
+- Exit codes, robocopy-style: 0–7 ok (a sync returns robocopy's own bits; a backup 1),
+  8 failed or cancelled (or robocopy's failure code), 16 couldn't run (no such preset,
+  broken pin, no pins.toml).
+- A folder literally named `run` is still reachable as `sentier .\run`.
+
+Nightly backup from Task Scheduler (PowerShell, once):
+
+```powershell
+$a = New-ScheduledTaskAction -Execute "sentier.exe" -Argument 'run "HIT backup"'
+$t = New-ScheduledTaskTrigger -Daily -At 2am
+Register-ScheduledTask -TaskName "sentier HIT backup" -Action $a -Trigger $t
+```
+
+Manual checklist:
+- [ ] The task above runs at 2 a.m.; Task Scheduler's "Last Run Result" is 0x1.
+- [ ] A broken share: the task's result is 8 or more, and the report shows in `J` next day.
+- [ ] `sentier run "HIT → local"` on a mirror preset doesn't delete local extras.
