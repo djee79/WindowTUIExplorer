@@ -933,3 +933,21 @@ User feedback: typing `yes` for `D` was annoying; wanted a popup to confirm, lik
 - Destructive ones (`D`, `dd` on a share, paste-replace, deleting a view or a tag) are
   red and start on **No**: a stray Enter keeps everything; `y` (or `l` + Enter) confirms.
 - `D` no longer asks to type `yes` (the `TypeYes` prompt is gone).
+
+## M6, slice A: the finder pickers (code complete 2026-11-06, manual check pending)
+
+- `Space f f` files below the cwd: the search walker (`type:f`; `depth:4` on a share,
+  `^l` lifts it) streams them in while you type; `matched / N scanned` with a spinner.
+- `Space f r` recent folders: every folder opened is recorded (`dir:` keys in
+  usage.tsv, written at most every 5 s and at exit), most used first, then the cwd's
+  subfolders.
+- `Space /` grep: the text is a content search (literal, `re:`, `ext:`…), walked again
+  250 ms after the last key; rows show `N matches`.
+- `Space :` every action (by what it does, with its keys) and every `:` command; Enter
+  runs it, a command that needs an argument opens `:` with it typed. `Space s k` the key
+  bindings only.
+- On file / folder rows: Enter opens (its folder with the cursor on it, then the first
+  opener; a folder: go there), `^o` open-with menu, `^v` reveal in Explorer, `^y` copy
+  path, `^a` pin, `Tab` choose several → Enter yanks them (`p` pastes as a copy).
+- `:picker files | dirs | grep | commands | keymaps | pins | launcher | tags | machines`
+  (so keymap.toml's `run = "picker files"` works); the finders are in the `:` hints / `g?`.

@@ -352,6 +352,13 @@ pub enum Action {
     ImportWtm,
     /// `:pin url [URL]`: a web app pin.
     PinUrl(String),
+    /// The finders: `<leader>ff` files, `<leader>fr` recent folders, `<leader>/` grep,
+    /// `<leader>:` commands, `<leader>sk` keymaps (`:picker files` etc.).
+    FilesPicker,
+    DirsPicker,
+    GrepPicker,
+    CommandsPicker,
+    KeymapsPicker,
     /// `<leader><leader>` / `<C-Space>`: the launcher.
     Launcher,
     /// `<leader>rs`: the pins picker filtered to sync presets.
@@ -488,7 +495,7 @@ const NAMED: &[(&str, Action)] = &[
 
 /// Commands from the spec that later milestones bring; named so the message says "not
 /// yet" instead of "unknown".
-const LATER: &[(&str, &str)] = &[("picker", "M6")];
+const LATER: &[(&str, &str)] = &[];
 
 /// The `:` commands worth knowing, for the hint under the command line and `g?`:
 /// (command, its arguments, what it does). Keep in step with [`Action::parse`].
@@ -506,6 +513,18 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     ("import-wtm", "", "import wtm's launcher entries as pins"),
     ("launcher", "", "the launcher (also Space Space)"),
+    ("picker files", "", "find files below here (also Space f f)"),
+    ("picker dirs", "", "recent folders (also Space f r)"),
+    (
+        "picker grep",
+        "",
+        "search file contents below here (also Space /)",
+    ),
+    (
+        "picker commands",
+        "",
+        "every action, searchable (also Space :)",
+    ),
     ("sync", "[name]", "run a sync preset (dry run first)"),
     ("sync!", "[name]", "run an update sync without the preview"),
     ("sync new", "", "new sync preset from this folder"),
@@ -571,6 +590,18 @@ impl Action {
             })),
             "net" => Ok(Action::Net(arg.to_string())),
             "connect" => Ok(Action::Connect(arg.to_string())),
+            "picker" => match arg {
+                "files" => Ok(Action::FilesPicker),
+                "dirs" | "recent" => Ok(Action::DirsPicker),
+                "grep" => Ok(Action::GrepPicker),
+                "commands" => Ok(Action::CommandsPicker),
+                "keymaps" => Ok(Action::KeymapsPicker),
+                "pins" => Ok(Action::PinPicker),
+                "launcher" => Ok(Action::Launcher),
+                "tags" => Ok(Action::TagPicker),
+                "machines" => Ok(Action::MachinePicker),
+                _ => Err("picker files | dirs | grep | commands | keymaps | pins | launcher | tags | machines".to_string()),
+            },
             "sync" => Ok(Action::Sync(arg.to_string(), false)),
             "sync!" => Ok(Action::Sync(arg.to_string(), true)),
             "backup" => Ok(Action::Backup(arg.to_string())),
@@ -744,6 +775,15 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ),
         ("<C-Space>", Launcher, ""),
         ("<leader>p", PinPicker, "pins picker"),
+        ("<leader>ff", FilesPicker, "find files below here"),
+        ("<leader>fr", DirsPicker, "recent folders"),
+        ("<leader>/", GrepPicker, "grep file contents below here"),
+        (
+            "<leader>:",
+            CommandsPicker,
+            "commands (every action, searchable)",
+        ),
+        ("<leader>sk", KeymapsPicker, "search the key bindings"),
         (
             "<leader>nu",
             PinUrl(String::new()),
@@ -806,6 +846,8 @@ fn group_label(prefix: &[Key], leader: Key) -> &'static str {
         },
         [l, k] if *l == leader && k.code == KeyCode::Char('r') => "run a preset",
         [l, k] if *l == leader && k.code == KeyCode::Char('n') => "new… (web app, presets)",
+        [l, k] if *l == leader && k.code == KeyCode::Char('f') => "find (files, recent folders)",
+        [l, k] if *l == leader && k.code == KeyCode::Char('s') => "search (keymaps)",
         _ => "more",
     }
 }
@@ -910,6 +952,15 @@ impl Keymap {
     /// Help rows: (keys, desc) for every described binding, aliases folded into the
     /// row of the action they share.
     pub fn help_rows(&self) -> Vec<(String, String)> {
+        self.action_rows()
+            .into_iter()
+            .map(|(_, keys, desc)| (keys, desc))
+            .collect()
+    }
+
+    /// One row per described action: (the action, all its keys, what it does). The
+    /// commands picker runs the action.
+    pub fn action_rows(&self) -> Vec<(Action, String, String)> {
         let mut rows: Vec<(Action, Vec<String>, String)> = Vec::new();
         for b in &self.normal {
             let keys = fmt_keys(&b.keys, self.leader);
@@ -925,7 +976,7 @@ impl Keymap {
         }
         rows.into_iter()
             .filter(|(_, _, d)| !d.is_empty())
-            .map(|(_, ks, d)| (ks.join(" "), d))
+            .map(|(a, ks, d)| (a, ks.join(" "), d))
             .collect()
     }
 }
@@ -1181,7 +1232,7 @@ mod tests {
             ("", "empty"),
             ("nope", "unknown command"),
             ("q now", "no argument"),
-            ("picker files", "arrives in M6"),
+            ("picker nope", "picker files | dirs"),
             ("set", "set what"),
             ("set list", "unknown option"),
             ("tag rename x", "tag rename <old> <new>"),
@@ -1202,7 +1253,8 @@ mod tests {
             h,
             ["pin url [URL] — pin a web app (opens as its own window)"]
         );
-        assert_eq!(command_hints("pi").len(), 2, "pin and pin url");
+        assert_eq!(command_hints("pin").len(), 2, "pin and pin url");
+        assert_eq!(command_hints("pi").len(), 6, "and the 4 pickers");
         // A name typed after the command still shows its family.
         assert!(
             command_hints("sync HIT")
@@ -1338,8 +1390,12 @@ mod tests {
             }
         ));
         assert_eq!(problems.len(), 2, "{problems:?}");
-        assert!(problems[0].contains("arrives in M6"), "{problems:?}");
-        assert!(problems[1].contains("unknown modifier"), "{problems:?}");
+        assert!(problems[0].contains("unknown modifier"), "{problems:?}");
+        // With `,` as leader, `,s` (cycle sort) is a prefix of `,sk` (keymaps).
+        assert!(
+            problems[1].contains("<leader>s also starts <leader>sk"),
+            "{problems:?}"
+        );
     }
 
     #[test]

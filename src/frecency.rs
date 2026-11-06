@@ -18,6 +18,9 @@ pub struct Usage {
     map: HashMap<String, (u32, u64)>,
 }
 
+/// Visited folders are kept as `dir:<path>` (the path as shown, so the picker can show it).
+const DIR_PREFIX: &str = "dir:";
+
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -48,6 +51,28 @@ impl Usage {
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.map.len()
+    }
+
+    /// Folders visited (`dir:` keys, as `record_visit` writes them), most frecent first,
+    /// one per folder whatever the case it was typed in.
+    pub fn dirs(&self, now: u64) -> Vec<(String, u64)> {
+        let mut out: Vec<(String, u64)> = self
+            .map
+            .keys()
+            .filter_map(|k| {
+                k.strip_prefix(DIR_PREFIX)
+                    .map(|p| (p.to_string(), self.score(k, now)))
+            })
+            .collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|(p, _)| seen.insert(p.to_lowercase()));
+        out
+    }
+
+    /// One visit of a folder (the recent-folders picker, zoxide-style).
+    pub fn record_visit(&mut self, path: &str, now: u64) {
+        self.record(&format!("{DIR_PREFIX}{path}"), now);
     }
 
     /// Copies `other`'s entry for `from` here as `to` (an import re-keying history).

@@ -246,6 +246,9 @@ impl App {
             Source::Launcher => Reopen::Launcher(p.editor.text()),
             Source::Tags => Reopen::Tags,
             Source::Machines => Reopen::Machines(p.editor.text()),
+            Source::Files | Source::Dirs | Source::Grep | Source::Commands | Source::Keymaps => {
+                return None;
+            }
         })
     }
 
@@ -265,8 +268,27 @@ impl App {
             (KeyCode::Char('e'), true) => return self.picker_edit(false),
             (KeyCode::Char('t'), true) => return self.picker_edit(true),
             (KeyCode::Char('x'), true) => return self.picker_delete(),
-            (KeyCode::Char('a'), true) => return self.picker_pin(),
+            (KeyCode::Char('a'), true) => {
+                if !self.picked_action('a') {
+                    self.picker_pin();
+                }
+                return;
+            }
             (KeyCode::Char('s'), true) => return self.toggle_start_menu(),
+            // File / folder rows: open-with, reveal, copy the path.
+            (KeyCode::Char(c @ ('o' | 'v' | 'y')), true) => {
+                self.picked_action(c);
+                return;
+            }
+            // Files picker on a share: walk the whole tree.
+            (KeyCode::Char('l'), true) if source == Source::Files => {
+                self.close_picker();
+                return self.open_files_picker(true);
+            }
+            // File and folder pickers: Tab chooses several (Enter yanks them).
+            (KeyCode::Tab, _) if matches!(source, Source::Files | Source::Dirs | Source::Grep) => {
+                return self.picker_with(|p| p.toggle_chosen());
+            }
             // Tag picker: Tab chooses (multi-select).
             (KeyCode::Tab, _) if source == Source::Tags => {
                 return self.picker_with(|p| p.toggle_chosen());
@@ -297,6 +319,7 @@ impl App {
         if let Edit::Changed = p.editor.handle(&ev, "") {
             p.text_changed();
             self.schedule_preview();
+            self.grep_text_changed();
         }
     }
 
@@ -402,6 +425,12 @@ impl App {
         let Some((kind, id, _)) = self.picker_selected() else {
             return;
         };
+        let chosen: Vec<usize> = self
+            .picker
+            .as_ref()
+            .filter(|p| matches!(p.source, Source::Files | Source::Dirs | Source::Grep))
+            .map(|p| p.chosen.clone())
+            .unwrap_or_default();
         let typed = self
             .picker
             .as_ref()
@@ -416,6 +445,8 @@ impl App {
         match kind {
             ItemKind::StartMenu => self.launch_start_menu(id),
             ItemKind::Action => self.run_launcher_action(id, &typed),
+            ItemKind::File | ItemKind::Dir => self.open_picked(id, chosen),
+            ItemKind::Binding | ItemKind::Command => self.run_picked_command(kind, id),
             ItemKind::View => {
                 if let Some(q) = self.pins.views.get(id).map(|v| v.query.clone()) {
                     self.open_pin_picker(&format!("{q} "));
@@ -486,7 +517,13 @@ impl App {
                 self.close_picker();
                 self.start_tag_rename(&name);
             }
-            ItemKind::Machine | ItemKind::StartMenu | ItemKind::Action => {
+            ItemKind::Machine
+            | ItemKind::StartMenu
+            | ItemKind::Action
+            | ItemKind::File
+            | ItemKind::Dir
+            | ItemKind::Binding
+            | ItemKind::Command => {
                 self.set_status(format!("{name} isn't pinned: ^a pins it"), false);
             }
         }
@@ -498,7 +535,13 @@ impl App {
         };
         if matches!(
             kind,
-            ItemKind::Machine | ItemKind::StartMenu | ItemKind::Action
+            ItemKind::Machine
+                | ItemKind::StartMenu
+                | ItemKind::Action
+                | ItemKind::File
+                | ItemKind::Dir
+                | ItemKind::Binding
+                | ItemKind::Command
         ) {
             // Recent / inventory rows aren't sentier's to delete.
             return self.set_status(format!("{name} isn't pinned: nothing to delete"), false);
@@ -509,7 +552,7 @@ impl App {
             ItemKind::Pin(_) => self.confirm_unpin(id, reopen),
             ItemKind::View => self.confirm_view_delete(id, reopen),
             ItemKind::Tag => self.tag_delete(&name, reopen),
-            ItemKind::Machine | ItemKind::StartMenu | ItemKind::Action => {}
+            _ => {}
         }
     }
 

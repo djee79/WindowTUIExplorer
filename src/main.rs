@@ -140,6 +140,12 @@ fn real_main() -> Result<()> {
     // Don't wait for readers stuck on dead shares; the OS reclaims them at exit.
     rt.shutdown_background();
 
+    // Folder visits since the last periodic save (the worker may be gone by now).
+    if let (Some(usage), Some(path)) = (app.take_unsaved_usage(), frecency::store_path())
+        && let Err(e) = frecency::save(&path, &usage)
+    {
+        tracing::warn!(error = %e, "saving usage.tsv at exit");
+    }
     let quit = result?;
     if let (Quit::WithCwd, Some(file)) = (quit, &args.cwd_file) {
         // Virtual locations (Locations root, a server node) have no shell equivalent:

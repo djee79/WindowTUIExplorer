@@ -32,6 +32,13 @@ pub enum ItemKind {
     /// A machine that isn't pinned (recent, inventory CSV, `source_cmd`), in the machine
     /// picker; the name is its host.
     Machine,
+    /// A file or folder found by the files / recent folders / grep pickers; `id` indexes
+    /// the picker's paths (`App::picker_paths`).
+    File,
+    Dir,
+    /// A key binding (`id` into the keymap) or a `:` command (`id` into `COMMANDS`).
+    Binding,
+    Command,
     /// One of the launcher's "+ …" rows (pin a URL, Start Menu, import wtm, new presets).
     Action,
     /// A Start Menu shortcut in the launcher (`^s`): the name, the `.lnk` path.
@@ -47,6 +54,10 @@ impl ItemKind {
             ItemKind::Machine => "machine",
             ItemKind::StartMenu => "start",
             ItemKind::Action => "+",
+            ItemKind::File => "file",
+            ItemKind::Dir => "dir",
+            ItemKind::Binding => "key",
+            ItemKind::Command => ":",
         }
     }
 
@@ -172,6 +183,15 @@ pub enum Source {
     /// The launcher (`<leader><leader>`): every pin, ranked with frecency; with no
     /// query, the most used on top, then groups by first tag.
     Launcher,
+    /// `<leader>ff`: files below the cwd, streamed in by the walker.
+    Files,
+    /// `<leader>fr`: folders by frecency (every visit counts), and the cwd's subfolders.
+    Dirs,
+    /// `<leader>/`: file contents; the text is the search (re-walked as you type).
+    Grep,
+    /// `<leader>:` every action and `:` command; `<leader>sk` every binding.
+    Commands,
+    Keymaps,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,6 +215,11 @@ pub struct Picker {
     pub view: Vec<Arc<PickItem>>,
     pub matched: usize,
     pub running: bool,
+    /// The source is still producing (a walk): spinner and `matched / scanned`.
+    pub walking: bool,
+    pub scanned: u64,
+    /// A line about the source: `network walk, depth 4 · ^l lifts it`.
+    pub note: Option<String>,
     pub cursor: usize,
     pub offset: usize,
     /// Result rows at the last draw (for half-page moves).
@@ -258,6 +283,9 @@ impl Picker {
             view: Vec::new(),
             matched: 0,
             running: false,
+            walking: false,
+            scanned: 0,
+            note: None,
             cursor: 0,
             offset: 0,
             page: 10,
@@ -299,7 +327,13 @@ impl Picker {
             }
             self.applied = Some(filters);
         }
-        let new = &self.query.text;
+        // Grep: the text is the search itself (the walk re-runs); nothing to filter by.
+        let grep_text = String::new();
+        let new = if self.source == Source::Grep {
+            &grep_text
+        } else {
+            &self.query.text
+        };
         let append = !refill && new.starts_with(self.last_text.as_str());
         self.nucleo
             .pattern
@@ -308,6 +342,18 @@ impl Picker {
         self.cursor = 0;
         self.offset = 0;
         self.dirty_view = true;
+    }
+
+    /// Drops every row (grep starts a new walk); the text stays.
+    pub fn reset_items(&mut self) {
+        self.items.clear();
+        self.nucleo.restart(true);
+        self.applied = None;
+        self.scanned = 0;
+        self.cursor = 0;
+        self.offset = 0;
+        self.dirty_view = true;
+        self.text_changed();
     }
 
     /// Takes the matcher's latest results. True when the view changed.

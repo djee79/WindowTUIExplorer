@@ -6,6 +6,7 @@
 
 pub mod auth;
 mod fileops;
+pub(crate) mod finders;
 pub use fileops::Suspend;
 mod jobs;
 pub use jobs::JobRow;
@@ -30,7 +31,7 @@ use crate::event::{AppEvent, EventRx};
 use crate::fs::path::{FsPath, Loc};
 use crate::fs::worker::{ListError, Probe, Request, Worker};
 use crate::fs::{Entry, EntryKind, Listing};
-use crate::keymap::{Key, Keymap};
+use crate::keymap::{Action, Key, Keymap};
 use crate::platform::DiskSpace;
 use crate::ui;
 use ratatui::DefaultTerminal;
@@ -306,8 +307,18 @@ pub struct App {
     pub open_registered: HashMap<String, crate::open::Registered>,
     /// Frecency of everything opened (launcher ranking), from usage.tsv.
     pub usage: crate::frecency::Usage,
+    /// Visits recorded since usage.tsv was last written, and when that was.
+    usage_dirty: bool,
+    usage_saved: Instant,
     /// The Start Menu's apps once scanned, and whether the launcher lists them (`^s`).
     pub start_menu: Option<crate::launcher::startmenu::Apps>,
+    /// The finder pickers (M6): the walk feeding the picker, its rows' paths, grep's
+    /// root and next walk, and the commands picker's actions.
+    picker_walk: Option<finders::PickerWalk>,
+    pub picker_paths: Vec<finders::PickedPath>,
+    grep_root: Option<crate::fs::path::FsPath>,
+    grep_due: Option<Instant>,
+    picker_actions: Vec<Action>,
     pub launcher_start_menu: bool,
     sync_token: u64,
     /// File operations: the open rename / delete prompt's subject, how many are running,
@@ -430,7 +441,14 @@ impl App {
             open_menu: None,
             open_registered: HashMap::new(),
             usage: Default::default(),
+            usage_dirty: false,
+            usage_saved: Instant::now(),
             start_menu: None,
+            picker_walk: None,
+            picker_paths: Vec::new(),
+            grep_root: None,
+            grep_due: None,
+            picker_actions: Vec::new(),
             launcher_start_menu: false,
             sync_token: 0,
             op_draft: None,
@@ -537,6 +555,12 @@ impl App {
     fn set_cwd(&mut self, loc: Loc, select: Option<String>) {
         self.remember_cursor();
         if loc != self.cwd {
+            // Every real folder visited counts for `<leader>fr` (saved in `tick`).
+            if let Loc::Fs(p) = &loc {
+                self.usage
+                    .record_visit(&p.display(), crate::frecency::now_secs());
+                self.usage_dirty = true;
+            }
             self.prev_dir = Some(std::mem::replace(&mut self.cwd, loc));
         }
         self.filter.clear();
@@ -1088,14 +1112,22 @@ impl App {
                 hits,
                 scanned,
                 current,
-            } => self.on_search_progress(id, hits, scanned, current),
+            } => {
+                if !self.finders_progress(id, &hits, scanned) {
+                    self.on_search_progress(id, hits, scanned, current);
+                }
+            }
             AppEvent::SearchDone {
                 id,
                 scanned,
                 errors,
                 elapsed,
                 cancelled,
-            } => self.on_search_done(id, scanned, errors, elapsed, cancelled),
+            } => {
+                if !self.finders_done(id, scanned) {
+                    self.on_search_done(id, scanned, errors, elapsed, cancelled);
+                }
+            }
             AppEvent::GrepPreview { loc, result } => self.on_grep_preview(loc, result),
         }
     }
@@ -1172,6 +1204,13 @@ impl App {
 
     /// Time-driven work: spinner frames, debounced preview, status expiry.
     pub fn tick(&mut self, now: Instant) {
+        // Folder visits: written at most every 5 s, not on every move.
+        if self.usage_dirty && now.duration_since(self.usage_saved) >= Duration::from_secs(5) {
+            self.usage_dirty = false;
+            self.usage_saved = now;
+            self.worker.save_usage(self.usage.clone());
+        }
+        self.finders_tick(now);
         if self.is_busy() {
             let frame = self.spinner_frame(now);
             if frame != self.last_spin_frame {
@@ -1659,11 +1698,11 @@ mod tests {
 
         press(&mut app, ":frobnicate<CR>");
         assert!(app.status.as_ref().is_some_and(|s| s.is_error));
-        press(&mut app, ":picker files<CR>");
+        press(&mut app, ":picker nope<CR>");
         assert!(
             app.status
                 .as_ref()
-                .is_some_and(|s| s.text.contains("arrives in M6"))
+                .is_some_and(|s| s.text.contains("picker files | dirs"))
         );
         press(&mut app, ":set nornu<CR>");
         assert!(!app.relative_number && app.number);
@@ -5078,6 +5117,97 @@ mod job_tests {
         press(&mut l.app, "O");
         assert_ne!(l.app.mode, Mode::OpenWith);
         assert!(status(&l.app).contains("O opens files and folders"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn picker_rows(app: &App) -> Vec<String> {
+        app.picker
+            .as_ref()
+            .map(|p| p.view.iter().map(|i| i.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// The finders: files streamed in by the walker, recent folders, grep re-walked as
+    /// you type, and the commands picker running an action.
+    #[test]
+    fn finders_files_recent_grep_and_commands() {
+        let dir = temp_tree();
+        let mut l = Live::new(&dir);
+        l.cd(&dir.join("src"));
+
+        // Space f f: every file below, streamed; typing filters.
+        press(&mut l.app, "<Space>ff");
+        assert_eq!(l.app.mode, Mode::Picker);
+        l.until(|a| a.picker.as_ref().is_some_and(|p| !p.walking) && picker_rows(a).len() == 3);
+        let mut rows = picker_rows(&l.app);
+        rows.sort();
+        assert_eq!(rows, ["a.txt", "b.txt", r"proj\sub\c.txt"]);
+        let screen = render(&mut l.app, 160, 30);
+        assert!(
+            screen.contains("Files") && screen.contains("scanned"),
+            "{screen}"
+        );
+        assert!(screen.contains("^v reveal"), "{screen}");
+        press(&mut l.app, "sub");
+        l.until(|a| picker_rows(a) == [r"proj\sub\c.txt"]);
+        // Tab chooses, Enter yanks the chosen ones.
+        press(&mut l.app, "<C-u>.txt");
+        l.until(|a| picker_rows(a).len() == 3);
+        press(&mut l.app, "<Tab><Tab><CR>");
+        assert_eq!(l.app.mode, Mode::Normal);
+        assert_eq!(l.app.register.as_ref().map(|r| r.items.len()), Some(2));
+        assert!(status(&l.app).contains("yanked 2"));
+
+        // Space f r: the folders visited (src), then the cwd's subfolders (proj).
+        press(&mut l.app, "<Space>fr");
+        l.until(|a| picker_rows(a).len() >= 2);
+        let rows = picker_rows(&l.app);
+        let src = dir.join("src").display().to_string();
+        assert!(
+            rows.iter().any(|r| r.eq_ignore_ascii_case(&src)),
+            "{rows:?}"
+        );
+        assert!(rows.iter().any(|r| r.ends_with("proj")), "{rows:?}");
+        let proj = rows.iter().position(|r| r.ends_with("proj")).unwrap_or(0);
+        if let Some(p) = l.app.picker.as_mut() {
+            p.set_cursor(proj);
+        }
+        press(&mut l.app, "<CR>");
+        l.until(|a| a.cwd.display().ends_with("proj"));
+        press(&mut l.app, "-");
+        l.until(|a| a.cwd.display().eq_ignore_ascii_case(&src) && a.view_listing.is_some());
+
+        // Space /: contents, searched once typing pauses; a new text walks again.
+        press(&mut l.app, "<Space>/");
+        press(&mut l.app, "bb");
+        l.until(|a| picker_rows(a) == ["b.txt"]);
+        assert!(
+            l.app
+                .picker
+                .as_ref()
+                .is_some_and(|p| p.view[0].detail == "1 match")
+        );
+        press(&mut l.app, "<BS><BS>c");
+        l.until(|a| picker_rows(a) == [r"proj\sub\c.txt"]);
+        press(&mut l.app, "<Esc>q");
+        assert_eq!(l.app.mode, Mode::Normal);
+
+        // Space :: every action, found by what it does; Enter runs it.
+        let hidden = l.app.show_hidden;
+        press(&mut l.app, "<Space>:");
+        press(&mut l.app, "toggle hidden");
+        l.until(|a| picker_rows(a).first().is_some_and(|r| r.contains("hidden")));
+        press(&mut l.app, "<CR>");
+        assert_eq!(l.app.show_hidden, !hidden);
+        // A : command that needs an argument opens the command line for it.
+        press(&mut l.app, "<Space>:");
+        press(&mut l.app, "rename a tag");
+        l.until(|a| !picker_rows(a).is_empty());
+        press(&mut l.app, "<CR>");
+        assert_eq!(
+            l.app.prompt.as_ref().map(|p| (p.kind, p.editor.text())),
+            Some((PromptKind::Command, "tag rename ".to_string()))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

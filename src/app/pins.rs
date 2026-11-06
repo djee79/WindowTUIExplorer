@@ -373,6 +373,16 @@ impl App {
         self.start_draft(PinDraft::new(pin, key, key.is_none()));
     }
 
+    /// `^a` on a file or folder row in a picker: a file / folder pin for it.
+    pub(super) fn pin_loc(&mut self, loc: &Loc, is_dir: bool) {
+        if !self.pins_ready() {
+            return;
+        }
+        let kind = PinKind::for_item(&loc.name(), is_dir);
+        let pin = Pin::for_loc(kind, &loc.name(), loc);
+        self.start_draft(PinDraft::new(pin, None, true));
+    }
+
     fn start_draft(&mut self, draft: PinDraft) {
         let name = draft.pin.name.clone();
         self.pin_draft = Some(draft);

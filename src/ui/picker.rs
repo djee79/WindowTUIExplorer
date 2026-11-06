@@ -44,15 +44,20 @@ fn draw_prompt(f: &mut Frame, area: Rect, app: &App) {
         text.chars().take(cur).collect(),
         text.chars().skip(cur).collect(),
     );
+    // A walk feeding the picker counts what it scanned (`matched / scanned`).
+    let of = if p.walking || p.scanned > 0 {
+        format!("{} scanned", p.scanned.max(p.total() as u64))
+    } else {
+        p.total().to_string()
+    };
     let count = format!(
-        "{}{} / {} ",
-        if p.running {
+        "{}{} / {of} ",
+        if p.running || p.walking {
             format!("{} ", spinner(app))
         } else {
             String::new()
         },
         p.matched,
-        p.total()
     );
     let mut spans = vec![
         Span::styled(" > ", theme::bold(ACCENT)),
@@ -169,16 +174,22 @@ fn draw_results(f: &mut Frame, area: Rect, app: &mut App) {
         ));
     }
     if p.view.is_empty() && !p.running {
-        lines.push(Line::from(Span::styled(
-            if p.total() == 0 && p.source == Source::Machines {
+        let empty = match p.source {
+            _ if p.walking => "  searching…",
+            Source::Grep if p.editor.text().trim().is_empty() => {
+                "  type what to look for in the files' contents"
+            }
+            Source::Files | Source::Grep => "  nothing found",
+            Source::Dirs if p.total() == 0 => "  no folders visited yet",
+            Source::Machines if p.total() == 0 => {
                 r"  no machines yet: open one (\\HOST\C$), or set machines.inventory_csv"
-            } else if p.total() == 0 {
+            }
+            Source::Pins | Source::Launcher if p.total() == 0 => {
                 "  no pins yet: m{key} in a folder, or M on an item"
-            } else {
-                "  no match"
-            },
-            theme::dim(),
-        )));
+            }
+            _ => "  no match",
+        };
+        lines.push(Line::from(Span::styled(empty, theme::dim())));
     }
     while lines.len() < 2 + rows_h {
         lines.push(Line::default());
@@ -256,6 +267,21 @@ fn help_lines(p: &crate::picker::Picker, w: usize) -> Vec<Line<'static>> {
         )));
         return out;
     }
+    if matches!(
+        p.source,
+        Source::Files | Source::Dirs | Source::Grep | Source::Commands | Source::Keymaps
+    ) {
+        if let Some(note) = &p.note {
+            out.push(Line::from(Span::styled(format!(" {note}"), theme::dim())));
+        }
+        let keys = if matches!(p.source, Source::Commands | Source::Keymaps) {
+            " Enter runs it · type to search · Esc then q closes"
+        } else {
+            " Enter open · ^o open with · ^v reveal · ^y copy path · ^a pin · Tab choose"
+        };
+        out.push(Line::from(Span::styled(keys, theme::dim())));
+        return out;
+    }
     if let Some(problem) = p.query.problems.first() {
         out.push(Line::from(Span::styled(
             format!(" {problem}"),
@@ -288,7 +314,10 @@ fn kind_color(kind: ItemKind) -> ratatui::style::Color {
         ItemKind::Pin(PinKind::Machine) | ItemKind::Machine => ERR,
         ItemKind::View => ACCENT,
         ItemKind::StartMenu => OK,
-        ItemKind::Action => ACCENT,
+        ItemKind::Action | ItemKind::Command => ACCENT,
+        ItemKind::File => FG,
+        ItemKind::Dir => theme::DIR,
+        ItemKind::Binding => OK,
     }
 }
 
@@ -389,6 +418,50 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         ItemKind::View => return draw_view_preview(f, inner, app, &item),
         ItemKind::Tag => return draw_tag_preview(f, inner, app, &item),
         ItemKind::Machine => return draw_machine_preview(f, inner, app, &item),
+        ItemKind::File | ItemKind::Dir => {
+            let vw = (inner.width as usize).saturating_sub(12);
+            let path = app
+                .picker_paths
+                .get(item.id)
+                .map_or_else(|| item.name.clone(), |p| p.path.clone());
+            let mut lines = vec![Line::default(), info_line("Path", truncate_left(&path, vw))];
+            if !item.detail.is_empty() {
+                lines.push(info_line("Found", item.detail.clone()));
+            }
+            lines.push(Line::default());
+            for hint in [
+                if item.kind == ItemKind::Dir {
+                    " Enter goes there"
+                } else {
+                    " Enter opens it (its folder, then its first opener)"
+                },
+                " ^o open with…  ^v reveal in Explorer  ^y copy path",
+                " ^a pin it  Tab choose several (Enter yanks them)",
+            ] {
+                lines.push(Line::from(Span::styled(hint, theme::dim())));
+            }
+            f.render_widget(Paragraph::new(lines), inner);
+            return;
+        }
+        ItemKind::Binding | ItemKind::Command => {
+            let lines = vec![
+                Line::default(),
+                Line::from(Span::styled(format!(" {}", item.name), theme::bold(ACCENT))),
+                Line::default(),
+                info_line(
+                    if item.kind == ItemKind::Binding {
+                        "Keys"
+                    } else {
+                        "Type"
+                    },
+                    item.detail.clone(),
+                ),
+                Line::default(),
+                Line::from(Span::styled(" Enter runs it", theme::dim())),
+            ];
+            f.render_widget(Paragraph::new(lines), inner);
+            return;
+        }
         ItemKind::Action => {
             let lines = vec![
                 Line::default(),

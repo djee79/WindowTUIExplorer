@@ -138,6 +138,11 @@ impl App {
     /// `O`: the menu for the cursor item (and the selection).
     pub(super) fn open_menu(&mut self) {
         let targets = self.open_targets();
+        self.open_menu_for(targets);
+    }
+
+    /// The `O` menu for `targets` (the files pickers' `^o` passes their row).
+    pub(super) fn open_menu_for(&mut self, targets: Vec<OpenTarget>) {
         let Some(first) = targets.first() else {
             return self.set_status("O opens files and folders".into(), false);
         };
