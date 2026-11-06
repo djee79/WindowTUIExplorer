@@ -540,10 +540,7 @@ mod tests {
             (r"\\10.255.255.1\x", r"\\10.255.255.1\x"),
             // hidden share (`$`): typed by hand, never mapped
             (r"\\srv01\STD$", r"\\srv01\STD$"),
-            (
-                r"\\srv01\STD$\cat\",
-                r"\\srv01\STD$\cat",
-            ),
+            (r"\\srv01\STD$\cat\", r"\\srv01\STD$\cat"),
             // verbatim UNC
             (r"\\?\UNC\server\share", r"\\server\share"),
             (r"\\?\unc\server\share\dir", r"\\server\share\dir"),
