@@ -296,3 +296,16 @@ Manual checklist:
 - [ ] `<Space>t`: Tab two tags, Enter: pin picker shows pins with both.
 - [ ] `:tag rename x y` says how many pins, `y` applies; pins.toml shows it.
 - [ ] `gl`, `f#nas<CR>`, `f is:unc`: Locations narrows; `Esc` clears.
+
+## Spec update adopted 2026-11-06 (second Claude Design drop)
+
+New: section 14 Machines (admin shares on user PCs: machine pins, 445 probe, machine view
+with path templates, logged-on user, admin-share safety + audit log), section 15
+Credentials (masked prompt, WNetAddConnection2W, Credential Manager, error 1219 fixes,
+`:net`), DFS resolution (rule 3), crate `zeroize`, `is:machine|online|offline`, `gm`,
+`<leader>m`, screens `10-machine` and `11-credentials`, milestones M2c (credentials) and
+M3b (machines). The module layout was fixed on adoption: `machines/` and `auth/` are
+top-level, and `zip.rs` / `inuse.rs` / `report.rs` live under `jobs/`.
+Until M3b, a `kind = "machine"` pin loads as a reported, preserved broken pin.
+
+Order from here: M2b previews → M2c credentials → M3b machines → M4 jobs.

@@ -45,6 +45,7 @@ does all day:
 | Recursive walk | `ignore` (`WalkParallel`, the ripgrep/fd walker) |
 | Content search | `grep-searcher` + `grep-regex` + `grep-matcher` (ripgrep's crates) |
 | Glob / regex | `globset`, `regex` |
+| Secrets in memory | `zeroize` |
 | Clipboard | `arboard` |
 | Terminal images | `ratatui-image` (kitty / sixel / iTerm2 protocols, halfblocks fallback) |
 | Image decode | `image` (png, jpg, gif, webp, bmp, tiff, ico) + `kamadak-exif` for photo metadata |
@@ -69,6 +70,10 @@ does all day:
      `\\?\UNC\server\share\...`, and forward-slash variants.
    - The display form never shows `\\?\`. Internally, add the `\\?\` / `\\?\UNC\` prefix when
      a path exceeds 260 characters.
+   - **DFS namespaces** (`\\corp.example\dfs\...`) are UNC paths like any other for browsing.
+     Wherever the *real* server matters (the `on:` filter, the in-use check, error 1219
+     handling), resolve the active target with `NetDfsGetClientInfo`. The status bar shows
+     `DFS → \\realserver\share`.
    - **The parent of `\\server\share` is a virtual "server" node** (lists that server's
      shares through `NetShareEnum`, if reachable). The parent of the server node is the
      **Locations** root. Never compute parents by string-splitting on `\`.
@@ -125,13 +130,24 @@ src/
     robocopy.rs      robocopy backend: spawn, parse output, exit-code mapping
     native.rs        native backend for small copies (single files < 256 MB)
     preset.rs        saved sync/backup jobs: preview (dry run), run, last-run state
+    zip.rs           staging + zip writer + verify + retention
+    inuse.rs         "who has this project open" (NetFileEnum on the file server)
+    report.rs        final job report + per-job log file
   open/
     rules.rs         open.toml: openers, rules, glob matching, placeholders
     run.rs           inline (suspend TUI) / detached spawning, built-in openers
     assoc.rs         SHAssocEnumHandlers, IAssocHandler::Invoke, SHOpenWithDialog
-    zip.rs           staging + zip writer + verify + retention
-    inuse.rs         "who has this project open" (NetFileEnum on the file server)
-    report.rs        final job report + per-job log file
+  machines/
+    reach.rs         TCP 445 probe, last-seen tracking
+    users.rs         logged-on users (NetWkstaUserEnum) + C$\Users fallback
+    templates.rs     [[machine.path]] templates, {user} {host} expansion
+    sources.rs       recent, pinned, inventory CSV, external command (getad), AD (stretch)
+    audit.rs         log of changes made on admin shares
+  auth/
+    prompt.rs        masked in-terminal credential prompt
+    wnet.rs          WNetAddConnection2W / WNetCancelConnection2W / WNetOpenEnum, error mapping
+    credman.rs       CredReadW / CredWriteW (Windows Credential Manager)
+    profiles.rs      [auth.*] profiles
   launcher/
     entry.rs         LauncherEntry (schema compatible with wtm)
     rank.rs          ranking + frecency (ported from wtm)
@@ -240,6 +256,7 @@ paths, tags are the main way to narrow things down.
     - `is:folder` `is:app` `is:web` `is:file` `is:sync` `is:backup`
     - `is:unc` `is:local` `is:unreachable`
     - `on:srv01` → pins on that server, including mapped-drive pins resolved to it
+    - `is:machine` `is:online` `is:offline`
   - Everything else in the query is fuzzy text as before:
     `hit #aveva is:folder` = folders tagged aveva whose name matches "hit".
 - **Completion:** typing `#`, `is:` or `on:` opens an inline completion list with counts
@@ -728,6 +745,151 @@ use   = ["default", "notepadpp", "reveal"]
   so the launcher and the menu share one list of apps.
 - Bad rules or openers are reported in the status bar at startup, never a crash.
 
+### 14. Machines (user PCs through admin shares)
+
+Admins open `\\COMPUTERNAME\C$` to troubleshoot files on a user's machine. Machines are
+**pins of `kind = "machine"`**, so tags, search, frecency and `'` keys all work, but they get
+their **own section and behaviour** because they don't act like folders. There are many of
+them, they're often offline, and what you want is usually a path *inside* them.
+
+```toml
+[[pin]]
+kind  = "machine"
+name  = "JDOE-LT042"
+host  = "JDOE-LT042"
+user  = "jdoe"          # optional hint for {user}; otherwise detected
+auth  = "admin"         # auth profile (section 15); machines default to "admin"
+tags  = ["users", "laptop", "piping"]
+key   = ""
+```
+
+- **Where they show up:**
+  - a **MACHINES** section in Locations
+  - `gm` opens the Machines root
+  - `<leader>m` opens the machine picker
+  - typing any `\\HOST\X$` admin-share path (`:cd \\JDOE-LT042\C$`) goes through the machine
+    logic automatically
+- **Recent machines are automatic:** every machine you open is remembered for
+  `machines.recent_days` (default 30), then drops off unless you pin it (`M`). This keeps the
+  pin list clean.
+- **Reachability before SMB:**
+  - a TCP connect to port 445 with a 500 ms timeout runs **before** any SMB call, so an
+    asleep laptop shows `offline · last seen 3 d ago` immediately instead of a 30 s hang
+  - `R` re-probes
+  - `machines.watch = true` re-probes visible machines every 60 s
+- **Opening a machine** shows a **machine view** instead of the raw `C$` root:
+  - status: online/offline, logged-on user(s), last seen
+  - the **path templates**
+  - `C$` itself as the last entry
+- **Logged-on user:** `NetWkstaUserEnum` (level 1, requires admin) off-thread with a
+  timeout. Fallback: list `C$\Users` sorted by last modified and pre-select the most recent
+  non-system profile. The user can always pick another one (`u` in the machine view).
+- **Path templates**, the main feature. One key jumps to the same troubleshooting folder on
+  any machine:
+  ```toml
+  [[machine.path]]
+  name = "Desktop"
+  path = 'C$\Users\{user}\Desktop'
+  key  = "d"
+  [[machine.path]]
+  name = "Downloads"
+  path = 'C$\Users\{user}\Downloads'
+  key  = "w"
+  [[machine.path]]
+  name = "User temp"
+  path = 'C$\Users\{user}\AppData\Local\Temp'
+  key  = "t"
+  [[machine.path]]
+  name = "Roaming"
+  path = 'C$\Users\{user}\AppData\Roaming'
+  key  = "r"
+  [[machine.path]]
+  name = "ProgramData"
+  path = 'C$\ProgramData'
+  key  = "p"
+  [[machine.path]]
+  name = "Windows temp"
+  path = 'C$\Windows\Temp'
+  ```
+  `{user}` and `{host}` expand. A template whose folder doesn't exist shows greyed out with
+  "missing" (checked lazily, with a timeout). Add AVEVA/Autodesk-specific ones freely.
+- **Finding a machine you haven't visited** (`<leader>m`, then type), from several sources
+  merged in the picker:
+  - recent and pinned machines
+  - an optional inventory CSV: `machines.inventory_csv` with `host,user,...` columns, e.g.
+    an export from PDQ or AD, so you can **search by person** (`jdoe` → `JDOE-LT042`)
+  - an optional external command that prints JSON (`machines.source_cmd`), e.g. the
+    author's `getad` tool
+  - (stretch) a direct AD query through ADSI (`IDirectorySearch`,
+    `(&(objectCategory=computer)(name=*q*))`)
+- **Safety on admin shares** (any `\\host\X$` path):
+  - the header turns **red** and reads `ADMIN SHARE · JDOE-LT042 · jdoe`
+  - every change (paste, rename, delete, new file) asks for confirmation **naming the machine
+    and user**: `Delete 2 files on JDOE-LT042 (jdoe's machine)? Permanent: no Recycle Bin
+    over the network.`
+  - `machines.audit = true` (default) appends every change to
+    `%LOCALAPPDATA%\sentier\audit.log`: time, host, user, operation, paths
+- **Machine actions** (`O` on a machine, also usable as openers):
+  - Open `C$`
+  - RDP: `mstsc /v:{host}`
+  - Computer Management: `compmgmt.msc /computer=\\{host}`
+  - Event Viewer: `eventvwr {host}`
+  - Remote PowerShell in a new WezTerm tab: `pwsh -NoExit -c Enter-PSSession {host}`
+  - `remotectl {host}`
+  - Copy hostname
+  All of these are configurable like any opener (section 13).
+
+### 15. Credentials
+
+Most of the time **there is no prompt**. Windows sends the current login, like Explorer does.
+The prompt appears only when Windows refuses.
+
+- **Profiles** name an account, never a password:
+  ```toml
+  [auth.admin]
+  user = 'ACME\adm-user'
+  ```
+  Pins and machines can set `auth = "admin"`. Machines default to `admin`; shares default to
+  the current login.
+- **Flow:**
+  1. Access fails with `ERROR_ACCESS_DENIED` (5) or `ERROR_LOGON_FAILURE` (1326), or the
+     target uses a profile with no live connection.
+  2. **A masked prompt inside the terminal**:
+     - `User` is pre-filled from the profile (editable)
+     - `Password` is shown as `●`, and bracketed paste is allowed (password managers)
+     - `[ ] Remember in Windows Credential Manager`, **unchecked by default**
+     - `Tab` / `Shift-Tab` move between fields, `Space` toggles the checkbox,
+       `Enter` connects, `Esc` cancels
+  3. Connect with `WNetAddConnection2W` to the requested share (e.g. `\\JDOE-LT042\C$`),
+     `CONNECT_TEMPORARY`, no drive letter. The connection lasts for the Windows logon
+     session, so **robocopy jobs, other sentier instances and Explorer reuse it**.
+  4. A wrong password re-prompts with the reason shown (`logon failure: wrong user name or
+     password`), up to 3 tries.
+- **"Remember"** writes a `CRED_TYPE_DOMAIN_PASSWORD` entry with `CredWriteW` for that host.
+  Option: "for all machines in ACME", using a `*.domain` wildcard target. Windows then uses it
+  automatically, with no prompt next time, in sentier and elsewhere. sentier never stores a
+  password itself.
+- **Error 1219** (`ERROR_SESSION_CREDENTIAL_CONFLICT`: already connected to that server as
+  another user). Explorer just fails here; sentier offers the two real fixes:
+  - `d`: disconnect the existing connection(s) to that server (`WNetCancelConnection2W`),
+    then connect as the profile user
+  - `a`: connect through an **alias** of the same server (FQDN or IP), which Windows treats as
+    a different server
+- **Other errors** are mapped to plain messages:
+  - 53 → path not found / offline
+  - 1311 → no logon server available
+  - 86 → wrong password
+  - 1909 → account locked
+- **Hygiene:**
+  - the password lives in a `zeroize`d buffer, is wiped right after the call, and is never
+    logged, written to TOML, put on a command line or shown in the audit log
+  - the prompt never echoes
+- **Managing connections:**
+  - `:net list` shows live SMB connections and their user (`WNetOpenEnum`,
+    `RESOURCE_CONNECTED`)
+  - `:net drop <server>` disconnects
+  - `:net drop-all` disconnects everything sentier opened
+
 ## Keymap (vim-first)
 
 The author lives in Neovim (LazyVim) and Yazi. Bindings follow vim first, then LazyVim
@@ -754,7 +916,7 @@ filters) · `dialog` (confirmations, sync preview).
 | `gr` · `,s` | (in results) go to the result's real folder · cycle sort |
 | `H` `L` / `Ctrl-o` | back / forward in directory history (`Ctrl-o` = back) |
 | `-` | parent directory (vim-vinegar / oil.nvim) |
-| `~` | home · `gl` Locations · `gd` Downloads · `g\` the root of the current drive or share |
+| `~` | home · `gl` Locations · `gm` Machines · `gd` Downloads · `g\` the root of the current drive or share |
 | `'{key}` `''` | jump to pin · previous directory |
 | `m{key}` `M` | pin current dir with key · pin item under cursor |
 | `Tab` `v` `V` `Esc` | toggle select + down · visual · visual-line · clear selection |
@@ -784,6 +946,7 @@ filters) · `dialog` (confirmations, sync preview).
 | `<leader>j` | jobs panel |
 | `<leader>rs` · `<leader>rb` | run a sync preset · run a backup preset (pickers) |
 | `<leader>l` | Locations |
+| `<leader>m` | machines picker (recent, pinned, inventory, AD) |
 | `<leader>t` | tag picker (multi-select, applies a tag filter) |
 | `<leader>:` · `<leader>sk` | commands · keymaps |
 | `<leader>e` | open the current dir in `$EDITOR` (Neovim) |
@@ -852,8 +1015,12 @@ iterm2 | halfblocks), `preview.cell_px`, `preview.max_network_mb`, `preview.cach
    SMB enumeration benchmark, progress/cancel, history integration. (Moved early: must-have.)
 2b. **M2b, previews:** image probe first (protocols under WezTerm/ConPTY), then image +
    PDF + shell-thumbnail previews, cache, preload, `]p`/`[p`/`zp`.
+2c. **M2c, credentials:** auth profiles, masked prompt, WNetAddConnection2W, Credential
+   Manager, the 1219 fixes, `:net` commands.
 3. **M3, pins + picker:** `pins.toml`, the generic nucleo picker, pin picker, `'` jumps,
    in-app edits, reachability dots.
+3b. **M3b, machines:** machine pins, recent machines, the 445 probe, machine view with path
+   templates, logged-on user, admin-share safety + audit log, machine actions, inventory CSV.
 4. **M4, jobs:** robocopy backend + parser + fixtures, job panel, Finishing phase,
    reports, cancel/retry, AVEVA guard. Native backend.
 4b. **M4b, project presets:** sync preset with `/L` preview + mirror safeguards, backup

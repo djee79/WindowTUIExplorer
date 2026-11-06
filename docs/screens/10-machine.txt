@@ -1,0 +1,45 @@
+ sentier  ADMIN SHARE  ·  JDOE-LT042  ·  jdoe                                                                                        connected as ACME\adm-user
+╭─ Machines ─────────────────╮╭─ JDOE-LT042 ────────────────────────────────────── machine ╮╭─ AppData\Local\Temp ──────────────────────────────── 1 248 items ╮
+│ ● JDOE-LT042               ││                                                            ││                                                                  │
+│ ● ASMITH-WS011             ││ ● online ·  4 ms on port 445                               ││ E3D_crash_20261106_0741.dmp                   212 MB       07:41 │
+│ ○ PLEE-LT015           3 d ││ Logged on   jdoe    u pick another user                    ││ aveva_e3d_session.log                         3.1 MB       07:40 │
+│ ● KNGUYEN-LT033            ││ Tags        #users #laptop #piping                         ││ AVEVA\                                                     07:12 │
+│ × RTREMB-WS002        445? ││                                                            ││ msedge_installer.log                           88 KB         Wed │
+│                            ││ ────────────────────────────────────────────────────────── ││ tmp8F2A.tmp                                     4 KB         Tue │
+│ recent · 30 days           ││ PATH TEMPLATES                                             ││ Outlook Logging\                                             Mon │
+│ M pins one                 ││  d  Desktop       C$\Users\jdoe\Desktop                    ││ chrome_drag2140_1.png                         120 KB         Mon │
+│                            ││  w  Downloads     C$\Users\jdoe\Downloads                  ││ …                                                                │
+│                            ││  t  User temp     C$\Users\jdoe\AppData\Local\Temp         ││                                                                  │
+│                            ││  r  Roaming       C$\Users\jdoe\AppData\Roaming            ││                                                                  │
+│                            ││  p  ProgramData   C$\ProgramData                           ││ sorted by modified · newest first                                │
+│                            ││     Windows temp  C$\Windows\Temp                          ││                                                                  │
+│                            ││     AVEVA local   C$\Users\jdoe\AppData\Local\AVEVA        ││                                                                  │
+│                            ││                                                            ││ Changes here are confirmed by name and logged:                   │
+│                            ││ ────────────────────────────────────────────────────────── ││ %LOCALAPPDATA%\sentier\audit.log                                 │
+│                            ││     C$            \\JDOE-LT042\C$                          ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││ missing templates are greyed out (checked lazily)          ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+│                            ││                                                            ││                                                                  │
+╰────────────────────────────╯╰────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────╯
+ NORMAL  machine JDOE-LT042  ·  admin share  ·  audit on                                                                            auth: admin (ACME\adm-user)
+ d w t r p jump to template   u pick user   O RDP · Comp. Mgmt · PowerShell · remotectl   R re-probe   M pin machine   gm Machines
+
