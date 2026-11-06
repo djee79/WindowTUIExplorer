@@ -194,13 +194,11 @@ impl App {
         match pin.kind {
             PinKind::Machine => return self.open_machine_pin(&pin),
             PinKind::Sync => return self.open_sync_pin(idx, false),
+            PinKind::Backup => return self.open_backup_pin(idx),
             _ => {}
         }
         let Some(target) = pin.target() else {
-            let when = match pin.kind {
-                PinKind::Backup => "the next M4b slice",
-                _ => "M5",
-            };
+            let when = "M5";
             self.set_status(
                 format!(
                     "{} is a {} pin; those run in {when}",

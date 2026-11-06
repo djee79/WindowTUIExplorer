@@ -333,6 +333,8 @@ pub enum Action {
     /// `:sync <preset>` (dry-run preview first) / `:sync! <preset>` (update mode skips
     /// it; mirror never does). No name: the sync preset picker.
     Sync(String, bool),
+    /// `:backup <preset>` (asks once). No name: the backup preset picker.
+    Backup(String),
     /// `<leader>rs`: the pins picker filtered to sync presets.
     SyncPicker,
     /// `g<Space>`: the `:cd ` prompt, ready for a path (Yazi's `g<Space>`).
@@ -476,6 +478,7 @@ impl Action {
             "net" => Ok(Action::Net(arg.to_string())),
             "sync" => Ok(Action::Sync(arg.to_string(), false)),
             "sync!" => Ok(Action::Sync(arg.to_string(), true)),
+            "backup" => Ok(Action::Backup(arg.to_string())),
             "pin" if arg.is_empty() => Ok(Action::PinCwd),
             "tags" if arg.is_empty() => Ok(Action::TagPicker),
             "tag" => {
@@ -633,6 +636,7 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("<leader>m", MachinePicker, "machines picker"),
         ("<leader>j", Jobs, "jobs panel"),
         ("<leader>rs", SyncPicker, "run a sync preset"),
+        ("<leader>rb", Backup(String::new()), "run a backup preset"),
         ("J", Jobs, "jobs panel"),
         ("<Tab>", ToggleMark, "select + down"),
         ("v", Visual, "visual (range select)"),
@@ -1013,6 +1017,7 @@ mod tests {
             ),
             ("sync! HIT", Action::Sync("HIT".into(), true)),
             ("sync-picker", Action::SyncPicker),
+            ("backup HIT", Action::Backup("HIT".into())),
             ("12", Action::GotoLine(12)),
             ("set rnu", Action::SetRelativeNumber(true)),
             ("set nornu", Action::SetRelativeNumber(false)),
@@ -1042,7 +1047,7 @@ mod tests {
             ("nope", "unknown command"),
             ("q now", "no argument"),
             ("picker files", "arrives in M6"),
-            ("backup HIT", "arrives in M4b"),
+            ("import-wtm", "arrives in M5"),
             ("set", "set what"),
             ("set list", "unknown option"),
             ("tag rename x", "tag rename <old> <new>"),

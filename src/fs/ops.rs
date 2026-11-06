@@ -151,7 +151,7 @@ fn first_new(p: &str) -> String {
 
 /// A folder (with everything in it) or a file. Read-only files are made writable first,
 /// as Explorer does.
-fn remove(p: &Path) -> io::Result<()> {
+pub(crate) fn remove(p: &Path) -> io::Result<()> {
     let meta = std::fs::symlink_metadata(p)?;
     if meta.is_dir() && !meta.file_type().is_symlink() {
         match std::fs::remove_dir_all(p) {

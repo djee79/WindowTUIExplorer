@@ -675,3 +675,41 @@ Manual checklist (office):
       (no 30 s retries), UI responsive, Esc works while it runs.
 - [ ] `Shift-Enter` in WezTerm: does it arrive as Shift-Enter? (else `:sync!`).
 - [ ] `last:` line after a run, and again after restarting sentier.
+
+## M4b presets, slice 2: backup presets (code complete 2026-11-06, manual check pending)
+
+- A `kind = "backup"` pin (`jobs/zip.rs`): `source`, `dest_dir` (local or UNC),
+  `file_name` (default `{name}_{date:%Y-%m-%d_%H%M}.zip`; `{name}` is the source's last
+  component, `{date:…}` any strftime format; `.zip` added if missing), `keep` (newest N,
+  default 0 = keep all), `compression` (`store` | `fast` | `default` | `best`). Refused at
+  load: dest_dir inside source, a bad template, unknown compression, negative keep. Zips
+  next to the project (source inside dest_dir) are allowed.
+- Enter / `'key` / `:backup <name>` / `<leader>rb`: one y/n naming the source, the zip,
+  whether it stages, and the retention. Then one job, five steps:
+  1. **staging**: robocopy `/L` for the size → free-space check (staging + zip; doubled
+     when both are on one volume; refused with a clear message) → robocopy into
+     `%LOCALAPPDATA%\sentier\staging\<job>`. Any failed file aborts: no zip is made from
+     an incomplete copy. **Skipped** when the source is a sync preset's `dest`.
+  2. **zipping** into `<dest_dir>\<name>.zip.partial` (zip64 for files ≥ 4 GB, empty
+     folders kept, mtimes kept, `\?\` paths so deep projects work);
+  3. **verifying**: reopen, entry count must match, every entry read back (CRC-checked),
+     then renamed to the final name (`…_2.zip` if two runs land in the same minute);
+  4. **retention**: deletes the oldest zips matching this preset's pattern (`HIT_*.zip`)
+     beyond `keep`; never other files, never `.partial`s;
+  5. **cleanup**: the staging folder goes.
+  A failure or `c` removes the `.partial` and the staging folder.
+- Jobs panel: `ZIPPING 2/5` in the list with % and ETA per step, `backup · HIT_….zip`; the
+  detail shows the step chain (`Staging (skipped)` when direct) and the file being zipped /
+  verified. The report shows the zip, "N entries read back, every CRC checked", and what
+  retention removed. Last run on the pin: `today 02:00 ✓ 1.20 GB in 3m10s` (zip size).
+- New crate: `zip` 9.4 (stack table), deflate only.
+
+Not yet: the optional 7-Zip backend (`7z.exe`, `compression` → `-mx`); `sentier run`
+(slice 3).
+
+Manual checklist (office):
+- [ ] HIT backup to a local folder and to a UNC dest_dir: zip opens in Explorer / 7-Zip.
+- [ ] A full dest volume: refused before anything is copied, with the sizes.
+- [ ] `c` during zipping: no `.partial` left, staging folder gone.
+- [ ] keep = 2 after three runs: only the two newest `HIT_*.zip` remain, other files untouched.
+- [ ] Source = a sync preset's local copy: the question says "zipped directly", no staging.

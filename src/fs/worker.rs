@@ -967,6 +967,18 @@ impl Worker {
         cancel
     }
 
+    /// Runs a backup preset's pipeline on the blocking pool; events come back as `Job`.
+    pub fn start_backup(&self, id: u64, spec: crate::jobs::zip::BackupSpec) -> CancelToken {
+        let cancel = CancelToken::default();
+        let (tx, token) = (self.tx.clone(), cancel.clone());
+        self.rt.spawn_blocking(move || {
+            crate::jobs::zip::run(&spec, &token, &|ev| {
+                let _ = tx.send(AppEvent::Job { id, ev });
+            });
+        });
+        cancel
+    }
+
     /// A sync preset's dry run on the blocking pool: one `SyncPreviewed`. No timeout:
     /// robocopy gives up on an unreachable share by itself (`/R:0`), and the cancel
     /// token (Esc) kills it.

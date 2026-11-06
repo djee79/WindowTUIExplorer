@@ -159,6 +159,11 @@ impl Pin {
                 .err()
                 .map(|e| format!("sync pin: {e}"));
         }
+        if self.kind == PinKind::Backup {
+            return crate::jobs::zip::BackupPreset::from_pin(self)
+                .err()
+                .map(|e| format!("backup pin: {e}"));
+        }
         let has = |k: &str| self.extra.get(k).and_then(|v| v.as_str()).is_some();
         let needs = match self.kind {
             PinKind::Folder | PinKind::File if self.path.is_none() => "a path",

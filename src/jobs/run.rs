@@ -47,7 +47,7 @@ pub fn run(spec: &Spec, cancel: &CancelToken, send: &dyn Fn(JobEvent)) {
     send(JobEvent::Finished { cancelled });
 }
 
-fn log_line(log: &str, line: &str) {
+pub(super) fn log_line(log: &str, line: &str) {
     if let Some(dir) = std::path::Path::new(log).parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -62,7 +62,7 @@ fn log_line(log: &str, line: &str) {
 }
 
 /// The `/L` pass for the totals, then each step. Returns whether it was cancelled.
-fn run_robocopy(spec: &Spec, cancel: &CancelToken, send: &dyn Fn(JobEvent)) -> bool {
+pub(super) fn run_robocopy(spec: &Spec, cancel: &CancelToken, send: &dyn Fn(JobEvent)) -> bool {
     let opts = |list_only: bool| Options {
         moving: spec.moving,
         overwrite: spec.overwrite,

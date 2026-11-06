@@ -9,6 +9,7 @@ mod fileops;
 pub use fileops::Suspend;
 mod jobs;
 pub use jobs::JobRow;
+mod backup;
 mod keys;
 mod machines;
 mod picker;
@@ -4163,6 +4164,78 @@ mod job_tests {
         assert!(status(&l.app).contains("nothing was touched"));
         press(&mut l.app, ":sync nope<CR>");
         assert!(status(&l.app).contains("no sync preset matches"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A backup preset from `:backup` to a verified zip, its report and last run; a
+    /// source that is a sync preset's local copy is zipped without staging.
+    #[test]
+    fn backup_preset_asks_then_zips() {
+        let dir = temp_tree();
+        let zips = dir.join("zips");
+        let mut l = Live::new(&dir);
+        l.until(|a| a.pins_loaded);
+        let text = format!(
+            "[[pin]]\nkind = 'backup'\nname = 'src backup'\nsource = '{src}'\n\
+             dest_dir = '{zips}'\nkeep = 3\n\n\
+             [[pin]]\nkind = 'sync'\nname = 'other'\nsource = 'C:\\nowhere'\ndest = '{dst}'\n",
+            src = dir.join("src").display(),
+            zips = zips.display(),
+            dst = dir.join("dst").display(),
+        );
+        let Ok((store, notes)) = crate::pins::parse(&text) else {
+            panic!("{text}")
+        };
+        assert!(notes.is_empty(), "{notes:?}");
+        l.app.pins = store;
+
+        press(&mut l.app, ":backup src<CR>");
+        let note = l.app.confirm_note();
+        assert!(
+            note.contains("Back up") && note.contains("staged locally first"),
+            "{note}"
+        );
+        assert!(note.contains("keeps the newest 3"), "{note}");
+        press(&mut l.app, "y");
+        l.until(|a| a.jobs.first().is_some_and(|j| j.phase.is_over()));
+        let job = &l.app.jobs[0];
+        assert_eq!(job.phase, Phase::Done, "{:?}", job.error);
+        let made: Vec<String> = std::fs::read_dir(&zips)
+            .map(|r| {
+                r.flatten()
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(made.len(), 1, "{made:?}");
+        assert!(made[0].starts_with("src_") && made[0].ends_with(".zip"));
+        let r = job.report(Instant::now());
+        assert_eq!(r.backup.as_ref().map(|b| b.entries), Some(5));
+        assert!(
+            l.app
+                .last_run_line(&l.app.pins.pins[0])
+                .is_some_and(|s| s.contains('✓')),
+        );
+        press(&mut l.app, "J");
+        let screen = render(&mut l.app, 160, 40);
+        assert!(
+            screen.contains("zip ") && screen.contains("5 entries"),
+            "{screen}"
+        );
+        assert!(screen.contains("every CRC checked"), "{screen}");
+        press(&mut l.app, "J");
+
+        // Pointed at a sync preset's local copy: no staging.
+        let Ok(Loc::Fs(dst)) = Loc::parse(&dir.join("dst").display().to_string()) else {
+            panic!()
+        };
+        l.app.pins.pins[0]
+            .extra
+            .insert("source".into(), toml::Value::String(dst.display()));
+        press(&mut l.app, ":backup src backup<CR>");
+        assert!(l.app.confirm_note().contains("zipped directly"));
+        press(&mut l.app, "n");
+        assert_eq!(l.app.jobs.len(), 1, "n runs nothing");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

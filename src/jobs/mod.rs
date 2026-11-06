@@ -6,6 +6,7 @@
 pub mod preset;
 pub mod robocopy;
 pub mod run;
+pub mod zip;
 
 use crate::fs::path::{FsPath, Loc};
 use robocopy::{Event, Overwrite, Step, Tracker};
@@ -283,6 +284,22 @@ pub enum JobEvent {
     Error(String),
     /// Everything ended (or was cancelled).
     Finished { cancelled: bool },
+    /// A backup moved on to this step.
+    Stage(zip::BackupStep),
+    /// Bytes through the current backup step, and the file it's on.
+    StageProgress {
+        done: u64,
+        total: u64,
+        current: Option<String>,
+    },
+    /// The backup zip is written, verified and has its final name.
+    Produced {
+        path: String,
+        bytes: u64,
+        entries: u64,
+    },
+    /// Old zips deleted by retention.
+    Pruned(Vec<String>),
 }
 
 #[derive(Debug, Clone)]
@@ -311,6 +328,8 @@ pub struct Job {
     pub last_speed: Option<f64>,
     /// Started from a sync / backup preset: its last-run state is updated at the end.
     pub preset: Option<preset::PresetRef>,
+    /// A backup's steps (staging uses the robocopy tracker like any copy).
+    pub backup: Option<zip::BackupState>,
 }
 
 impl Job {
@@ -345,6 +364,33 @@ impl Job {
             samples: VecDeque::new(),
             last_speed: None,
             preset: None,
+            backup: None,
+        }
+    }
+
+    /// The backup step past staging, if any: progress then comes from that step.
+    fn later_step(&self) -> Option<&zip::BackupState> {
+        self.backup
+            .as_ref()
+            .filter(|b| b.step.is_some_and(|s| s != zip::BackupStep::Staging))
+    }
+
+    /// Bytes done in what's running now (robocopy's, or the backup step's).
+    fn progress_bytes(&self) -> u64 {
+        match self.later_step() {
+            Some(b) => b.done,
+            None => self.tracker.bytes_now(),
+        }
+    }
+
+    fn sample(&mut self, now: Instant) {
+        self.samples.push_back((now, self.progress_bytes()));
+        while self
+            .samples
+            .front()
+            .is_some_and(|(t, _)| now.duration_since(*t) > Duration::from_secs(3))
+        {
+            self.samples.pop_front();
         }
     }
 
@@ -358,14 +404,43 @@ impl Job {
                 for e in events {
                     self.tracker.apply(e);
                 }
-                self.samples.push_back((now, self.tracker.bytes_now()));
-                while self
-                    .samples
-                    .front()
-                    .is_some_and(|(t, _)| now.duration_since(*t) > Duration::from_secs(3))
-                {
-                    self.samples.pop_front();
+                self.sample(now);
+            }
+            JobEvent::Stage(step) => {
+                let b = self.backup.get_or_insert_with(Default::default);
+                b.step = Some(step);
+                (b.done, b.total, b.current) = (0, 0, None);
+                self.samples.clear();
+                self.last_speed = None;
+            }
+            JobEvent::StageProgress {
+                done,
+                total,
+                current,
+            } => {
+                let b = self.backup.get_or_insert_with(Default::default);
+                (b.done, b.total, b.current) = (done, total, current);
+                self.sample(now);
+            }
+            JobEvent::Produced {
+                path,
+                bytes,
+                entries,
+            } => {
+                let b = self.backup.get_or_insert_with(Default::default);
+                b.outcome = Some(zip::BackupOutcome {
+                    zip: path,
+                    bytes,
+                    entries,
+                    pruned: Vec::new(),
+                });
+            }
+            JobEvent::Pruned(names) => {
+                let b = self.backup.get_or_insert_with(Default::default);
+                if let Some(o) = b.outcome.as_mut() {
+                    o.pruned = names.clone();
                 }
+                b.pruned = names;
             }
             JobEvent::StepDone(code) => {
                 self.tracker.finish();
@@ -408,7 +483,9 @@ impl Job {
             return;
         }
         let t = &self.tracker;
-        let p = if self.total_files.is_none() {
+        let p = if self.later_step().is_some() {
+            Phase::Copying
+        } else if self.total_files.is_none() {
             Phase::Scanning
         } else if t.retrying() {
             Phase::Retrying
@@ -440,7 +517,7 @@ impl Job {
     /// Bytes per second over the last 3 s; None until there are two samples.
     pub fn speed(&self, now: Instant) -> Option<f64> {
         let (t0, b0) = *self.samples.front()?;
-        let b1 = self.tracker.bytes_now();
+        let b1 = self.progress_bytes();
         let dt = now.duration_since(t0).as_secs_f64();
         if dt < 0.5 {
             return None;
@@ -450,6 +527,13 @@ impl Job {
 
     /// 0.0–1.0 by bytes (files when there are no bytes).
     pub fn fraction(&self) -> f64 {
+        if let Some(b) = self.later_step() {
+            return if b.total > 0 {
+                (b.done as f64 / b.total as f64).min(1.0)
+            } else {
+                0.0
+            };
+        }
         match (self.total_bytes, self.total_files) {
             (Some(b), _) if b > 0 => (self.tracker.bytes_now() as f64 / b as f64).min(1.0),
             (_, Some(f)) if f > 0 => (self.tracker.files_done as f64 / f as f64).min(1.0),
@@ -459,9 +543,12 @@ impl Job {
     }
 
     pub fn eta(&self, now: Instant) -> Option<Duration> {
-        let total = self.total_bytes?;
+        let total = match self.later_step() {
+            Some(b) => b.total,
+            None => self.total_bytes?,
+        };
         let speed = self.speed(now).filter(|s| *s > 1.0)?;
-        let left = total.saturating_sub(self.tracker.bytes_now());
+        let left = total.saturating_sub(self.progress_bytes());
         Some(Duration::from_secs_f64(left as f64 / speed))
     }
 
@@ -521,6 +608,7 @@ impl Job {
             steps: self.steps.clone(),
             overwrite: self.overwrite,
             preset: self.preset.clone(),
+            backup: self.backup.as_ref().and_then(|b| b.outcome.clone()),
         }
     }
 }
@@ -559,6 +647,9 @@ pub struct Report {
     pub overwrite: Overwrite,
     #[serde(default)]
     pub preset: Option<preset::PresetRef>,
+    /// A backup's zip, when it got that far.
+    #[serde(default)]
+    pub backup: Option<zip::BackupOutcome>,
 }
 
 impl Report {

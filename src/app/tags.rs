@@ -34,6 +34,12 @@ pub enum Confirm {
         plan: Box<crate::jobs::Plan>,
         why: String,
     },
+    /// Running a backup preset (`direct`: zip the source without staging).
+    Backup {
+        preset: Box<crate::jobs::zip::BackupPreset>,
+        direct: bool,
+        why: String,
+    },
     /// A delete, or a change on an admin share / a bulk rename.
     FileOp {
         op: crate::fs::ops::FileOp,
@@ -47,7 +53,7 @@ impl Confirm {
             Confirm::DeleteView { reopen, .. }
             | Confirm::RenameTag { reopen, .. }
             | Confirm::DeleteTag { reopen, .. } => reopen,
-            Confirm::Paste { .. } | Confirm::FileOp { .. } => None,
+            Confirm::Paste { .. } | Confirm::FileOp { .. } | Confirm::Backup { .. } => None,
         }
     }
 }
@@ -212,7 +218,7 @@ impl App {
                 format!("remove #{tag} from {}? {yes}", pins_word(n))
             }
             Some(Confirm::FileOp { why, .. }) => format!("{why} y = yes, anything else keeps it"),
-            Some(Confirm::Paste { why, .. }) => {
+            Some(Confirm::Paste { why, .. } | Confirm::Backup { why, .. }) => {
                 format!("{why} Go ahead? y = yes, anything else cancels")
             }
             None => String::new(),
@@ -299,6 +305,9 @@ impl App {
     }
 
     fn apply_confirm(&mut self, c: Confirm) {
+        if let Confirm::Backup { preset, direct, .. } = c {
+            return self.run_backup(*preset, direct);
+        }
         if let Confirm::Paste { req, plan, .. } = c {
             return self.start_job(*req, *plan);
         }
@@ -319,7 +328,9 @@ impl App {
                 let n = self.pins.delete_tag(tag);
                 format!("removed #{tag} from {}", pins_word(n))
             }
-            Confirm::Paste { .. } | Confirm::FileOp { .. } => String::new(),
+            Confirm::Paste { .. } | Confirm::FileOp { .. } | Confirm::Backup { .. } => {
+                String::new()
+            }
         };
         self.save_pins();
         self.set_status(msg, false);

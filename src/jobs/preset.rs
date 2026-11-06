@@ -330,8 +330,9 @@ impl LastRun {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs() as i64),
             phase: r.phase,
-            files: r.copied,
-            bytes: r.bytes,
+            // A backup is its zip: entries and size.
+            files: r.backup.as_ref().map_or(r.copied, |b| b.entries),
+            bytes: r.backup.as_ref().map_or(r.bytes, |b| b.bytes),
             seconds: r.seconds,
             failed: r.failed.len() as u64,
             locked: r

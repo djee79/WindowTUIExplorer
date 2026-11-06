@@ -302,9 +302,13 @@ impl App {
         self.worker.record_preset_run(key.to_string(), run);
     }
 
-    /// `last: today 08:12 ✓ 3.80 GB in 2m41s` for a sync pin that has run.
+    /// `last: today 08:12 ✓ 3.80 GB in 2m41s` for a sync or backup pin that has run.
     pub fn last_run_line(&self, pin: &crate::pins::Pin) -> Option<String> {
-        let key = SyncPreset::from_pin(pin).ok()?.key();
+        let key = match pin.kind {
+            PinKind::Sync => SyncPreset::from_pin(pin).ok()?.key(),
+            PinKind::Backup => crate::jobs::zip::BackupPreset::from_pin(pin).ok()?.key(),
+            _ => return None,
+        };
         let run = self.preset_runs.get(&key)?;
         Some(run.line(chrono::Local::now()))
     }
@@ -312,12 +316,19 @@ impl App {
     /// `:sync [name]` / `:sync! [name]`: by name (exact, else the one containing it), or
     /// the sync preset picker.
     pub(super) fn sync_command(&mut self, name: &str, skip_preview: bool) {
+        self.preset_command(PinKind::Sync, name, skip_preview);
+    }
+
+    /// `:sync` / `:backup`: finds the preset by name and opens it; no name, an unknown
+    /// one or several matches open the picker filtered to that kind.
+    pub(super) fn preset_command(&mut self, kind: PinKind, name: &str, skip_preview: bool) {
         let name = name.trim();
+        let word = kind.label();
         if name.is_empty() {
-            return self.open_pin_picker("is:sync ");
+            return self.open_pin_picker(&format!("is:{word} "));
         }
         let syncs: Vec<usize> = (0..self.pins.pins.len())
-            .filter(|&i| self.pins.pins[i].kind == PinKind::Sync)
+            .filter(|&i| self.pins.pins[i].kind == kind)
             .collect();
         let lower = name.to_lowercase();
         let exact = syncs
@@ -332,13 +343,14 @@ impl App {
                 .collect()
         });
         match found.as_slice() {
-            [i] => self.open_sync_pin(*i, skip_preview),
+            [i] if kind == PinKind::Sync => self.open_sync_pin(*i, skip_preview),
+            [i] => self.open_backup_pin(*i),
             [] if syncs.is_empty() => self.set_status(
-                "no sync presets yet (kind = \"sync\" pins in pins.toml)".into(),
+                format!("no {word} presets yet (kind = \"{word}\" pins in pins.toml)"),
                 true,
             ),
-            [] => self.set_status(format!("no sync preset matches {name:?}"), true),
-            _ => self.open_pin_picker(&format!("is:sync {name}")),
+            [] => self.set_status(format!("no {word} preset matches {name:?}"), true),
+            _ => self.open_pin_picker(&format!("is:{word} {name}")),
         }
     }
 }

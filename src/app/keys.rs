@@ -357,6 +357,7 @@ impl App {
             Action::Net(arg) => self.net_command(&arg),
             Action::Sync(name, skip) => self.sync_command(&name, skip),
             Action::SyncPicker => self.sync_command("", false),
+            Action::Backup(name) => self.backup_command(&name),
             Action::PrevPage => self.step_page(n, false),
             Action::GotoPage => match count {
                 Some(c) => self.goto_page(c),

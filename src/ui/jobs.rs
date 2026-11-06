@@ -6,6 +6,7 @@ use super::columns::panel;
 use super::theme::{self, ACCENT, BORDER, DIM, ERR, FG, NET, OK, SEL_BG, WARN};
 use super::{truncate, truncate_left, width};
 use crate::app::{App, JobRow};
+use crate::jobs::zip::BackupStep;
 use crate::jobs::{Job, Phase, Report, clock, human_bytes};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -107,10 +108,15 @@ fn draw_list(f: &mut Frame, area: Rect, app: &App) {
                 (r.title.clone(), r.phase, report_counts(r), report_kind(r))
             }
         };
-        let word = phase.word();
-        let tw = w.saturating_sub(3 + width(word) + 2);
+        // A running backup shows its step: `ZIPPING 2/5`.
+        let word = match *row {
+            JobRow::Live(i) => app.jobs.get(i).and_then(step_word),
+            JobRow::Old(_) => None,
+        }
+        .unwrap_or_else(|| phase.word().to_string());
+        let tw = w.saturating_sub(3 + width(&word) + 2);
         let t = truncate(&title, tw);
-        let pad = w.saturating_sub(2 + width(&t) + width(word) + 1);
+        let pad = w.saturating_sub(2 + width(&t) + width(&word) + 1);
         let title_style = if sel { theme::bold(FG) } else { theme::fg(FG) };
         lines.push(Line::from(vec![
             mark,
@@ -159,7 +165,24 @@ fn progress_line(j: &Job, w: usize, now: Instant) -> Line<'static> {
     ])
 }
 
+/// `ZIPPING 2/5` for a backup that is still running.
+fn step_word(j: &Job) -> Option<String> {
+    let step = j.backup.as_ref()?.step?;
+    (!j.phase.is_over()).then(|| {
+        format!(
+            "{} {}/{}",
+            step.word().to_uppercase(),
+            step.number(),
+            BackupStep::ALL.len()
+        )
+    })
+}
+
 fn job_kind(j: &Job) -> String {
+    if j.backup.is_some() {
+        // dest is the zip's path.
+        return format!("backup · {}", j.dest.rsplit('\\').next().unwrap_or(&j.dest));
+    }
     let mut s = kind_word(j.preset.as_ref(), j.op, j.backend);
     if let (Some(f), Some(b)) = (j.total_files, j.total_bytes) {
         s.push_str(&format!(" · {f} files · {}", human_bytes(b)));
@@ -189,7 +212,17 @@ fn kind_word(
 
 /// `  2 copied · 1 failed                      19:31`
 fn report_counts(r: &Report) -> Line<'static> {
-    let mut parts = vec![format!("{} copied", r.copied)];
+    let mut parts = match &r.backup {
+        Some(b) => vec![format!(
+            "zip {} · {} entries",
+            human_bytes(b.bytes),
+            b.entries
+        )],
+        None => vec![format!("{} copied", r.copied)],
+    };
+    if let Some(b) = r.backup.as_ref().filter(|b| !b.pruned.is_empty()) {
+        parts.push(format!("{} old removed", b.pruned.len()));
+    }
     if r.skipped > 0 {
         parts.push(format!("{} skipped", r.skipped));
     }
@@ -223,31 +256,47 @@ fn draw_detail(f: &mut Frame, area: Rect, j: &Job) {
     let vw = (inner.width as usize).saturating_sub(13);
     let mut lines = vec![Line::default()];
 
-    // ● Scanning ── ● Copying ── ● Finishing ── ○ Done
-    let order = [
-        Phase::Scanning,
-        Phase::Copying,
-        Phase::Finishing,
-        Phase::Done,
-    ];
-    let at = match j.phase {
-        Phase::Scanning => 0,
-        Phase::Copying | Phase::Retrying => 1,
-        Phase::Finishing => 2,
-        _ => 3,
+    // ● Scanning ── ● Copying ── ● Finishing ── ○ Done, or a backup's five steps.
+    let (names, at): (Vec<String>, usize) = match &j.backup {
+        Some(b) => (
+            BackupStep::ALL
+                .iter()
+                .map(|s| {
+                    let w = s.word();
+                    let mut n = format!("{}{}", w[..1].to_uppercase(), &w[1..]);
+                    if *s == BackupStep::Staging && b.direct {
+                        n.push_str(" (skipped)");
+                    }
+                    n
+                })
+                .collect(),
+            b.step.map_or(0, |s| s.number() - 1),
+        ),
+        None => {
+            let copying = if j.phase == Phase::Retrying {
+                "Retrying"
+            } else {
+                "Copying"
+            };
+            let at = match j.phase {
+                Phase::Scanning => 0,
+                Phase::Copying | Phase::Retrying => 1,
+                Phase::Finishing => 2,
+                _ => 3,
+            };
+            (
+                ["Scanning", copying, "Finishing", "Done"]
+                    .map(String::from)
+                    .to_vec(),
+                at,
+            )
+        }
     };
     let mut chain = vec![Span::raw(" ")];
-    for (i, p) in order.iter().enumerate() {
+    for (i, name) in names.iter().enumerate() {
         if i > 0 {
             chain.push(Span::styled("  ──  ", theme::fg(BORDER)));
         }
-        let name = match p {
-            Phase::Scanning => "Scanning",
-            Phase::Copying if j.phase == Phase::Retrying => "Retrying",
-            Phase::Copying => "Copying",
-            Phase::Finishing => "Finishing",
-            _ => "Done",
-        };
         let (dot, style) = if i < at {
             ("● ", theme::fg(OK))
         } else if i == at {
@@ -305,23 +354,44 @@ fn draw_detail(f: &mut Frame, area: Rect, j: &Job) {
         ),
         _ => "—".to_string(),
     };
+    // Past staging, a backup's step has its own file and bytes.
+    let later = j
+        .backup
+        .as_ref()
+        .filter(|b| b.step.is_some_and(|s| s != BackupStep::Staging));
+    let current = match later {
+        Some(b) => b
+            .current
+            .as_deref()
+            .filter(|c| !c.is_empty())
+            .map_or("—".to_string(), |c| truncate_left(c, vw)),
+        None => current,
+    };
     lines.push(Line::from(vec![
         label("Current"),
         Span::styled(current, theme::fg(FG)),
     ]));
     let total_b = j.total_bytes.map_or("?".into(), human_bytes);
     let total_f = j.total_files.map_or("?".into(), |n| n.to_string());
+    let (bytes, files) = match later {
+        Some(b) => (
+            format!("{} / {}", human_bytes(b.done), human_bytes(b.total)),
+            if b.direct {
+                format!("{total_f} files")
+            } else {
+                format!("{total_f} staged")
+            },
+        ),
+        None => (
+            format!("{} / {total_b}", human_bytes(t.bytes_now())),
+            format!("{} / {total_f}", t.files_done),
+        ),
+    };
     lines.push(Line::from(vec![
         label("Bytes"),
-        Span::styled(
-            format!(
-                "{:<20}",
-                format!("{} / {total_b}", human_bytes(t.bytes_now()))
-            ),
-            theme::fg(FG),
-        ),
+        Span::styled(format!("{bytes:<20}"), theme::fg(FG)),
         Span::styled("  Files    ", theme::dim()),
-        Span::styled(format!("{} / {total_f}", t.files_done), theme::fg(FG)),
+        Span::styled(files, theme::fg(FG)),
     ]));
     let speed = match (j.speed(now), j.last_speed) {
         (Some(s), _) if s > 0.0 => format!("{}/s", human_bytes(s as u64)),
@@ -456,6 +526,32 @@ fn draw_report(f: &mut Frame, area: Rect, r: &Report) {
             theme::fg(FG),
         ),
     ]));
+    if let Some(b) = &r.backup {
+        lines.push(Line::from(vec![
+            label("Zip"),
+            Span::styled(truncate_left(&b.zip, vw), theme::fg(NET)),
+        ]));
+        lines.push(Line::from(vec![
+            label("Verified"),
+            Span::styled(
+                format!(
+                    "{} entries read back, every CRC checked · {}",
+                    b.entries,
+                    human_bytes(b.bytes)
+                ),
+                theme::fg(OK),
+            ),
+        ]));
+        let pruned = if b.pruned.is_empty() {
+            "nothing (retention)".to_string()
+        } else {
+            b.pruned.join(", ")
+        };
+        lines.push(Line::from(vec![
+            label("Removed"),
+            Span::styled(truncate(&pruned, vw), theme::fg(FG)),
+        ]));
+    }
     lines.push(Line::from(vec![
         label("Size"),
         Span::styled(

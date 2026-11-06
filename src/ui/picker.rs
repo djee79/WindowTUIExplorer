@@ -394,10 +394,8 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
             if let Some(m) = extra("mode") {
                 lines.push(info_line("Mode", m));
             }
-            if pin.kind == PinKind::Sync {
-                let last = app
-                    .last_run_line(pin)
-                    .unwrap_or_else(|| "never (Enter previews first)".into());
+            if matches!(pin.kind, PinKind::Sync | PinKind::Backup) {
+                let last = app.last_run_line(pin).unwrap_or_else(|| "never".into());
                 lines.push(info_line("Last run", truncate(&last, vw)));
             }
         }

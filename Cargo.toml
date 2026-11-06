@@ -28,6 +28,7 @@ tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Com", "Win32_NetworkManagement_NetManagement", "Win32_NetworkManagement_WNet", "Win32_System_WinRT", "Foundation", "Data_Pdf", "Storage_Streams", "Win32_Graphics_Gdi", "Win32_Security_Credentials", "Win32_Globalization"] }
 zeroize = "1.9.1"
+zip = { version = "9.4.1", default-features = false, features = ["deflate"] }
 
 [profile.release]
 lto = "fat"

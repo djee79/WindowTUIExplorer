@@ -372,6 +372,11 @@ impl App {
     /// Hands the job to the worker and lists it first in the panel.
     pub(super) fn launch_job(&mut self, job: Job, spec: Spec) {
         let cancel = self.worker.start_job(job.id, spec);
+        self.push_job(job, cancel);
+    }
+
+    /// Lists a job the worker already runs.
+    pub(super) fn push_job(&mut self, job: Job, cancel: crate::fs::worker::CancelToken) {
         self.job_cancel.insert(job.id, cancel);
         self.jobs.push(job);
         self.jobs_cursor = 0;
