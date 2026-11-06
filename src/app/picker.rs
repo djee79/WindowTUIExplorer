@@ -31,6 +31,7 @@ pub enum PickerPending {
 pub enum Reopen {
     Pins(String),
     Tags,
+    Machines(String),
 }
 
 /// Where a location lives, for `is:unc` / `is:local` / `on:`.
@@ -105,7 +106,7 @@ impl App {
         self.show_picker(picker);
     }
 
-    fn show_picker(&mut self, picker: Picker) {
+    pub(super) fn show_picker(&mut self, picker: Picker) {
         self.picker = Some(picker);
         self.picker_count = None;
         self.picker_pending = None;
@@ -113,7 +114,12 @@ impl App {
         self.schedule_preview();
     }
 
-    fn pin_pick_item(&self, id: usize, p: &Pin, mapped: &HashMap<char, String>) -> PickItem {
+    pub(super) fn pin_pick_item(
+        &self,
+        id: usize,
+        p: &Pin,
+        mapped: &HashMap<char, String>,
+    ) -> PickItem {
         let target = p.target().or_else(|| {
             let src = p.extra.get("source").and_then(|v| v.as_str())?;
             Loc::parse(src).ok()
@@ -131,6 +137,16 @@ impl App {
                     None
                 }
             });
+        // A machine's dot is its port-445 probe.
+        let reachable = match p.extra.get("host").and_then(|v| v.as_str()) {
+            Some(host) if p.kind == PinKind::Machine => self.machine_status(host).0,
+            _ => reachable,
+        };
+        // Its server is itself (`on:<host>`).
+        let server = match p.extra.get("host").and_then(|v| v.as_str()) {
+            Some(host) if p.kind == PinKind::Machine => Some(host.to_lowercase()),
+            _ => place.server,
+        };
         PickItem {
             id,
             name: p.name.clone(),
@@ -141,7 +157,7 @@ impl App {
             unc: place.unc,
             local: place.local,
             reachable,
-            server: place.server,
+            server,
         }
     }
 
@@ -180,6 +196,7 @@ impl App {
         Some(match p.source {
             Source::Pins => Reopen::Pins(p.editor.text()),
             Source::Tags => Reopen::Tags,
+            Source::Machines => Reopen::Machines(p.editor.text()),
         })
     }
 
@@ -197,6 +214,7 @@ impl App {
             (KeyCode::Char('e'), true) => return self.picker_edit(false),
             (KeyCode::Char('t'), true) => return self.picker_edit(true),
             (KeyCode::Char('x'), true) => return self.picker_delete(),
+            (KeyCode::Char('a'), true) => return self.picker_pin(),
             // Tag picker: Tab chooses (multi-select).
             (KeyCode::Tab, _) if source == Source::Tags => {
                 return self.picker_with(|p| p.toggle_chosen());
@@ -318,6 +336,11 @@ impl App {
         let Some((kind, id, _)) = self.picker_selected() else {
             return;
         };
+        let host = self
+            .picker
+            .as_ref()
+            .and_then(|p| p.selected())
+            .map(|i| i.name.clone());
         self.close_picker();
         match kind {
             ItemKind::View => {
@@ -325,7 +348,27 @@ impl App {
                     self.open_pin_picker(&format!("{q} "));
                 }
             }
+            ItemKind::Machine => match host.as_deref().map(Loc::machine) {
+                Some(Ok(loc)) => self.navigate(loc, None),
+                Some(Err(e)) => self.set_status(e.to_string(), true),
+                None => {}
+            },
             _ => self.open_pin(id),
+        }
+    }
+
+    /// `^a`: pin the machine under the cursor (machine picker).
+    fn picker_pin(&mut self) {
+        let Some((kind, _, name)) = self.picker_selected() else {
+            return;
+        };
+        match kind {
+            ItemKind::Machine => {
+                self.close_picker();
+                self.pin_machine(&name, None);
+            }
+            ItemKind::Pin(_) => self.set_status(format!("{name} is pinned already"), false),
+            _ => self.set_status("^a pins a machine".into(), false),
         }
     }
 
@@ -351,6 +394,9 @@ impl App {
                 self.close_picker();
                 self.start_tag_rename(&name);
             }
+            ItemKind::Machine => {
+                self.set_status(format!("{name} isn't pinned: ^a pins it"), false);
+            }
         }
     }
 
@@ -358,12 +404,17 @@ impl App {
         let Some((kind, id, name)) = self.picker_selected() else {
             return;
         };
+        if kind == ItemKind::Machine {
+            // Recent / inventory rows aren't sentier's to delete.
+            return self.set_status(format!("{name} isn't pinned: nothing to delete"), false);
+        }
         let reopen = self.reopen_here();
         self.close_picker();
         match kind {
             ItemKind::Pin(_) => self.confirm_unpin(id, reopen),
             ItemKind::View => self.confirm_view_delete(id, reopen),
             ItemKind::Tag => self.tag_delete(&name, reopen),
+            ItemKind::Machine => {}
         }
     }
 
@@ -417,6 +468,11 @@ impl App {
                 let facts = crate::picker::query::Facts {
                     kind: pin.map(|p| p.kind),
                     view: false,
+                    machine: matches!(e.kind, EntryKind::Machine(_)),
+                    online: match e.kind {
+                        EntryKind::Machine(online) => online,
+                        _ => None,
+                    },
                     tags: pin.map_or(&no_tags, |p| &p.tags),
                     unc: place.unc,
                     local: place.local,

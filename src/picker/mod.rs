@@ -29,6 +29,9 @@ pub enum ItemKind {
     View,
     /// A tag, in the tag picker.
     Tag,
+    /// A machine that isn't pinned (recent, inventory CSV, `source_cmd`), in the machine
+    /// picker; the name is its host.
+    Machine,
 }
 
 impl ItemKind {
@@ -37,7 +40,12 @@ impl ItemKind {
             ItemKind::Pin(k) => k.label(),
             ItemKind::View => "view",
             ItemKind::Tag => "tag",
+            ItemKind::Machine => "machine",
         }
+    }
+
+    pub fn is_machine(self) -> bool {
+        matches!(self, ItemKind::Machine | ItemKind::Pin(PinKind::Machine))
     }
 }
 
@@ -67,6 +75,8 @@ impl PickItem {
                 _ => None,
             },
             view: self.kind == ItemKind::View,
+            machine: self.kind.is_machine(),
+            online: self.kind.is_machine().then_some(self.reachable).flatten(),
             tags: &self.tags,
             unc: self.unc,
             local: self.local,
@@ -103,6 +113,8 @@ pub enum Source {
     Pins,
     /// Tags with their counts (`<leader>t`, `:tags`): Tab chooses, Enter filters.
     Tags,
+    /// Machines (`<leader>m`): pinned, recent, inventory CSV, `source_cmd`.
+    Machines,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,6 +271,20 @@ impl Picker {
         self.view = view;
         self.cursor = self.cursor.min(self.view.len().saturating_sub(1));
         true
+    }
+
+    /// Rows found after the picker opened (a slow source): kept, and matched when they
+    /// pass the current filters.
+    pub fn add(&mut self, items: Vec<PickItem>) {
+        let injector = self.nucleo.injector();
+        for it in items {
+            let it = Arc::new(it);
+            if self.applied.as_ref().is_none_or(|f| f.matches(&it.facts())) {
+                injector.push(it.clone(), |it, cols| cols[0] = it.haystack().into());
+            }
+            self.items.push(it);
+        }
+        self.dirty_view = true;
     }
 
     pub fn selected(&self) -> Option<&Arc<PickItem>> {

@@ -520,8 +520,8 @@ Manual checklist (home NAS has a saved password):
 - Red `ADMIN SHARE · HOST · user` banner in the header on admin shares and machine views;
   status line `● online · 4 ms · templates for jdoe (u other user)`.
 
-Next slice: the `<leader>m` machine picker (recent, pinned, inventory CSV, `getad`-style
-JSON command), `is:machine is:online is:offline`. With file operations (M4/M6): the
+Next slice: the `<leader>m` machine picker (done, see slice 2 below). Still to come:
+with file operations (M4/M6), the
 "Delete 2 files on HOST (user's machine)?" confirmations and the audit log. With open-with
 (M5): machine actions (RDP, Computer Management, Event Viewer, PowerShell, remotectl).
 
@@ -530,3 +530,29 @@ Manual checklist (office, admin account):
 - [ ] `d` / `w` / `t` jump to that user's folders; `u` picks another user.
 - [ ] A laptop that's off: offline in under a second, no hang.
 - [ ] `M` pins it; `gm` and `gl` list it.
+
+## M3b machines, slice 2: the machine picker (code complete 2026-11-06, manual check pending)
+
+- `<leader>m` (action `machine-picker`): pinned machines, then recent ones, then the
+  inventory CSV and `source_cmd`, one row per host (`PC-042` and `pc-042.corp.example` meet).
+  Rows carry the user and the other columns, so typing a person's name or a department
+  finds the machine. Enter opens the machine view, `^a` pins an unpinned row, `^e`/`^t`/`^x`
+  work on pinned ones.
+- `[machines] inventory_csv = '…'`: a header row, then one machine a line (`,` or `;`,
+  quoted fields). The host column is the first named host/hostname/computer/name/…, the user
+  column user/username/owner/samaccountname/managedby/…; other values are details.
+- `[machines] source_cmd = '…'`: run through `cmd /D /C` (as typed, no console window),
+  killed after 20 s, stderr to the log. JSON: an array of objects (same key names, any
+  case; `CN=Jane Doe,OU=…` becomes `Jane Doe`) or of host strings, or an object holding
+  such an array.
+- Both are read off the UI thread when the picker opens and cached 5 minutes; hosts arriving
+  while the picker is open are added live. Errors show in the picker and the status bar.
+- Dots and `is:online` / `is:offline` come from the port-445 probe: pinned and recent
+  machines are probed on open, inventory ones when the cursor rests on them. `is:machine`
+  and `on:<host>` work in the pin picker and Locations too.
+- serde_json added (approved).
+
+Manual checklist:
+- [ ] Point `inventory_csv` at a real export; search a colleague's name; Enter opens it.
+- [ ] `source_cmd` with `getad` (or `powershell -NoProfile -c "Get-ADComputer … | ConvertTo-Json"`).
+- [ ] `is:offline` after a probe round; `^a` pins from the picker.

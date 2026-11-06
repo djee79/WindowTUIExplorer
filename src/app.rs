@@ -236,6 +236,14 @@ pub struct App {
     pub recent_machines: Vec<crate::machines::Recent>,
     recent_loaded: bool,
     machine_user_host: Option<String>,
+    /// The machine picker's slow sources (inventory CSV, `source_cmd`) merged, when they
+    /// arrived, whether they're loading, and what went wrong.
+    machine_found: Vec<crate::machines::MachineRecord>,
+    machine_found_at: Option<Instant>,
+    pub machine_found_loading: bool,
+    pub machine_found_errors: Vec<String>,
+    /// The open machine picker's unpinned rows (the ids of `ItemKind::Machine` items).
+    pub machine_rows: Vec<crate::machines::MachineRecord>,
     /// `:net drop <server>` waiting for the connection list; `:net list` shown.
     net_drop_server: Option<String>,
     pub net_listing: Option<auth::NetListing>,
@@ -321,6 +329,11 @@ impl App {
             recent_machines: Vec::new(),
             recent_loaded: false,
             machine_user_host: None,
+            machine_found: Vec::new(),
+            machine_found_at: None,
+            machine_found_loading: false,
+            machine_found_errors: Vec::new(),
+            machine_rows: Vec::new(),
             net_drop_server: None,
             net_listing: None,
             reach: HashMap::new(),
@@ -889,6 +902,7 @@ impl App {
             AppEvent::MachineUsers { host, result } => self.on_machine_users(host, result),
             AppEvent::PathsChecked { host, found } => self.on_paths_checked(host, found),
             AppEvent::RecentMachines(result) => self.on_recent_machines(result),
+            AppEvent::MachineSources(results) => self.on_machine_sources(results),
             AppEvent::NetDropped(results) => self.on_net_dropped(results),
             AppEvent::PinsLoaded(result) => self.on_pins_loaded(result),
             AppEvent::PinsSaveFailed(e) => {
@@ -1011,6 +1025,9 @@ impl App {
                 self.request(p, false);
             }
             self.request_grep_preview();
+            if self.mode == Mode::Picker {
+                self.probe_picked_machine();
+            }
             self.cancel_unneeded();
             self.dirty = true;
         }
@@ -3091,5 +3108,149 @@ mod machine_tests {
         );
         press(&mut app, "jl");
         assert_eq!(app.cwd, Loc::Machine("PC-042".into()));
+    }
+
+    // ------------------------------------------------------------ machine picker
+
+    fn settle(app: &mut App) {
+        let end = Instant::now() + Duration::from_secs(5);
+        for _ in 0..3 {
+            app.tick(Instant::now());
+        }
+        while app.picker.as_ref().is_some_and(|p| p.running) && Instant::now() < end {
+            app.tick(Instant::now());
+        }
+    }
+
+    fn picker_names(app: &App) -> Vec<String> {
+        app.picker
+            .as_ref()
+            .map(|p| p.view.iter().map(|i| i.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    fn record(host: &str, user: &str, details: &[&str]) -> crate::machines::MachineRecord {
+        crate::machines::MachineRecord {
+            host: host.into(),
+            user: Some(user.into()),
+            details: details.iter().map(|s| s.to_string()).collect(),
+            source: "inventory",
+        }
+    }
+
+    fn query(app: &mut App, text: &str) {
+        press(app, "<C-u>");
+        press(app, text);
+        settle(app);
+    }
+
+    #[test]
+    fn machine_picker_lists_pinned_recent_and_finds_people() {
+        let (mut app, _rt) = with_recent(&["PC-042", "PC-007"]);
+        // Pin PC-007 from its machine view.
+        press(&mut app, "gmjM<CR>laptop<CR><CR>");
+        assert_eq!(app.pins.pins.len(), 1);
+        press(&mut app, "<leader>m");
+        settle(&mut app);
+        assert_eq!(app.picker.as_ref().map(|p| p.title), Some("Machines"));
+        let mut names = picker_names(&app);
+        names.sort();
+        assert_eq!(names, ["PC-007", "PC-042"], "pinned once, recent once");
+
+        // The inventory arrives while the picker is open: new hosts are added, and the
+        // users and details become searchable.
+        app.handle(AppEvent::MachineSources(vec![(
+            "inventory",
+            Ok(vec![
+                record("pc-042", "jdoe", &["Piping"]),
+                record("PC-100", "asmith", &["laptop", "Structural"]),
+            ]),
+        )]));
+        settle(&mut app);
+        assert_eq!(picker_names(&app).len(), 3);
+        query(&mut app, "asmith");
+        assert_eq!(picker_names(&app), ["PC-100"]);
+        let screen = render(&mut app, 140, 30);
+        assert!(
+            screen.contains("asmith") && screen.contains("inventory"),
+            "{screen}"
+        );
+        query(&mut app, "struct");
+        assert_eq!(picker_names(&app), ["PC-100"]);
+
+        // Reopened: rows already known carry what the inventory says.
+        press(&mut app, "<Esc><Esc>");
+        press(&mut app, "<leader>m");
+        query(&mut app, "jdoe");
+        assert_eq!(picker_names(&app), ["PC-042"]);
+    }
+
+    #[test]
+    fn machine_picker_filters_by_probe() {
+        let (mut app, _rt) = with_recent(&["PC-042", "PC-007"]);
+        app.handle(AppEvent::MachineProbe {
+            host: "PC-042".into(),
+            result: Ok(Duration::from_millis(3)),
+        });
+        app.handle(AppEvent::MachineProbe {
+            host: "PC-007".into(),
+            result: Err("no answer on port 445".into()),
+        });
+        press(&mut app, "<leader>m");
+        query(&mut app, "is:online ");
+        assert_eq!(picker_names(&app), ["PC-042"]);
+        query(&mut app, "is:offline ");
+        assert_eq!(picker_names(&app), ["PC-007"]);
+        query(&mut app, "is:machine ");
+        assert_eq!(picker_names(&app).len(), 2);
+        // The pin picker knows machines too.
+        press(&mut app, "<Esc><Esc>");
+        press(&mut app, "gmM<CR><CR><CR>");
+        press(&mut app, "<leader>p");
+        query(&mut app, "is:machine ");
+        assert_eq!(picker_names(&app).len(), 1);
+    }
+
+    #[test]
+    fn machine_picker_opens_and_pins() {
+        let (mut app, _rt) = with_recent(&["PC-042"]);
+        app.handle(AppEvent::MachineSources(vec![(
+            "inventory",
+            Ok(vec![record("PC-100", "asmith", &[])]),
+        )]));
+        press(&mut app, "<leader>m");
+        query(&mut app, "pc-100");
+        press(&mut app, "<CR>");
+        assert_eq!(app.cwd, Loc::Machine("PC-100".into()));
+        assert!(app.picker.is_none());
+
+        press(&mut app, "<leader>m");
+        query(&mut app, "pc-100");
+        press(&mut app, "<C-x>");
+        assert!(status(&app).contains("isn't pinned"), "{}", status(&app));
+        press(&mut app, "<C-a>");
+        assert!(app.picker.is_none());
+        press(&mut app, "<CR>users<CR>p<CR>");
+        let pin = &app.pins.pins[0];
+        assert_eq!(
+            pin.extra.get("host").and_then(|v| v.as_str()),
+            Some("PC-100")
+        );
+        assert_eq!(pin.key_char(), Some('p'));
+    }
+
+    #[test]
+    fn machine_source_errors_show() {
+        let (mut app, _rt) = with_recent(&[]);
+        press(&mut app, "<leader>m");
+        settle(&mut app);
+        let screen = render(&mut app, 140, 30);
+        assert!(screen.contains("no machines yet"), "{screen}");
+        app.handle(AppEvent::MachineSources(vec![(
+            "command",
+            Err("source_cmd: timed out after 20 s".into()),
+        )]));
+        let screen = render(&mut app, 140, 30);
+        assert!(screen.contains("timed out after 20 s"), "{screen}");
     }
 }

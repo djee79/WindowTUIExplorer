@@ -54,6 +54,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(25);
 const MACHINE_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// NetWkstaUserEnum on a host that answered the probe.
 const MACHINE_USERS_TIMEOUT: Duration = Duration::from_secs(8);
+/// `machines.source_cmd` (e.g. a directory query).
+const SOURCE_CMD_TIMEOUT: Duration = Duration::from_secs(20);
 /// Context lines around each match, and the most matches a preview collects.
 const GREP_CONTEXT: usize = 2;
 const GREP_MAX_MATCHES: usize = 500;
@@ -158,6 +160,78 @@ fn port_445(host: &str) -> Result<Duration, String> {
         }
     }
     Err(last)
+}
+
+/// Runs `cmd` through `cmd.exe /D /C`, hidden (no console window), and returns what it
+/// printed. Killed after `limit`. Its stderr goes to the log, never the screen (rule 6).
+/// Blocking.
+fn run_source_cmd(cmd: &str, limit: Duration) -> Result<String, String> {
+    use std::io::Read;
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut child = Command::new("cmd")
+        .args(["/D", "/C"])
+        // As typed: cmd.exe has its own quoting rules, so Rust must not escape quotes.
+        .raw_arg(cmd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    // Read both pipes on their own threads so a chatty command can't block on a full pipe.
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    let out = std::thread::spawn(move || {
+        let mut s = Vec::new();
+        if let Some(p) = stdout.as_mut() {
+            let _ = p.read_to_end(&mut s);
+        }
+        s
+    });
+    let err = std::thread::spawn(move || {
+        let mut s = Vec::new();
+        if let Some(p) = stderr.as_mut() {
+            let _ = p.read_to_end(&mut s);
+        }
+        s
+    });
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) if start.elapsed() > limit => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("timed out after {} s", limit.as_secs()));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) => return Err(e.to_string()),
+        }
+    };
+    let out = out.join().unwrap_or_default();
+    let err = String::from_utf8_lossy(&err.join().unwrap_or_default()).to_string();
+    if !err.trim().is_empty() {
+        tracing::info!(stderr = %err.trim(), "source_cmd wrote to stderr");
+    }
+    if !status.success() {
+        let first = err
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim();
+        return Err(format!(
+            "exited with {}{}",
+            status.code().unwrap_or(-1),
+            if first.is_empty() {
+                String::new()
+            } else {
+                format!(": {first}")
+            }
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out).to_string())
 }
 
 /// How to connect: plainly, or with one of the two fixes for error 1219 (already connected
@@ -535,6 +609,42 @@ impl Worker {
                 _ => Vec::new(),
             };
             let _ = tx.send(AppEvent::PathsChecked { host, found });
+        });
+    }
+
+    /// The machine picker's slow sources: the inventory CSV (read under the network
+    /// timeout: it may be on a share) and `source_cmd` (run hidden, killed after 20 s).
+    /// Sends one `MachineSources` with each source's machines or why not.
+    pub fn machine_sources(&self, csv: Option<String>, cmd: Option<String>) {
+        let (tx, timeout) = (self.tx.clone(), self.timeouts.network);
+        self.rt.spawn(async move {
+            let mut results: Vec<(
+                &'static str,
+                Result<Vec<crate::machines::MachineRecord>, String>,
+            )> = Vec::new();
+            if let Some(path) = csv {
+                let read = tokio::task::spawn_blocking(move || std::fs::read_to_string(&path));
+                let r = match tokio::time::timeout(timeout * 2, read).await {
+                    Ok(Ok(Ok(text))) => Ok(crate::machines::parse_csv(&text)),
+                    Ok(Ok(Err(e))) => Err(format!("inventory CSV: {e}")),
+                    Ok(Err(e)) => Err(e.to_string()),
+                    Err(_) => Err("inventory CSV: timed out".to_string()),
+                };
+                results.push(("inventory", r));
+            }
+            if let Some(cmd) = cmd {
+                let run =
+                    tokio::task::spawn_blocking(move || run_source_cmd(&cmd, SOURCE_CMD_TIMEOUT));
+                let r = match run.await {
+                    Ok(Ok(out)) => {
+                        crate::machines::parse_json(&out).map_err(|e| format!("source_cmd: {e}"))
+                    }
+                    Ok(Err(e)) => Err(format!("source_cmd: {e}")),
+                    Err(e) => Err(e.to_string()),
+                };
+                results.push(("command", r));
+            }
+            let _ = tx.send(AppEvent::MachineSources(results));
         });
     }
 
@@ -1045,5 +1155,29 @@ mod tests {
         let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
         let err = std::fs::read_dir(&file).err().map(ListError::from);
         assert_eq!(err, Some(ListError::NotADirectory), "{err:?}");
+    }
+
+    #[test]
+    fn source_cmd_output_errors_and_timeout() {
+        let limit = Duration::from_secs(10);
+        let out = run_source_cmd(r#"echo ["PC-001","PC-002"]"#, limit);
+        let Ok(out) = out else { panic!("{out:?}") };
+        let hosts: Vec<String> = crate::machines::parse_json(&out)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| r.host)
+            .collect();
+        assert_eq!(hosts, ["PC-001", "PC-002"]);
+
+        let err = run_source_cmd("echo nope 1>&2 & exit /b 3", limit);
+        assert_eq!(err, Err("exited with 3: nope".to_string()));
+
+        let start = Instant::now();
+        let slow = run_source_cmd("ping -n 6 127.0.0.1 >nul", Duration::from_millis(300));
+        assert!(slow.is_err_and(|e| e.contains("timed out")));
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "killed, not waited for"
+        );
     }
 }

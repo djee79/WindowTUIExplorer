@@ -59,6 +59,14 @@ pub enum AppEvent {
     PinsSaveFailed(String),
     /// A picker's matcher has new results.
     Wake,
+    /// The machine picker's slow sources (inventory CSV, `source_cmd`), each with its
+    /// machines or why not.
+    MachineSources(
+        Vec<(
+            &'static str,
+            Result<Vec<crate::machines::MachineRecord>, String>,
+        )>,
+    ),
     /// The port-445 probe of a machine: the round trip, or why not.
     MachineProbe {
         host: String,

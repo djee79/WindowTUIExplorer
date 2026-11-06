@@ -18,6 +18,9 @@ pub enum Is {
     Local,
     Unreachable,
     View,
+    Machine,
+    Online,
+    Offline,
 }
 
 /// The `is:` words, in the order completion offers them.
@@ -32,6 +35,9 @@ pub const IS_WORDS: &[&str] = &[
     "local",
     "unreachable",
     "view",
+    "machine",
+    "online",
+    "offline",
 ];
 
 impl Is {
@@ -47,6 +53,9 @@ impl Is {
             "local" => Is::Local,
             "unreachable" => Is::Unreachable,
             "view" => Is::View,
+            "machine" => Is::Machine,
+            "online" => Is::Online,
+            "offline" => Is::Offline,
             _ => return None,
         })
     }
@@ -59,6 +68,9 @@ pub struct Facts<'a> {
     pub kind: Option<PinKind>,
     /// A saved view (`is:view`).
     pub view: bool,
+    /// A machine (`is:machine`), and whether its last port-445 probe answered.
+    pub machine: bool,
+    pub online: Option<bool>,
     pub tags: &'a [String],
     /// The path is a `\\server\share` path.
     pub unc: bool,
@@ -78,6 +90,9 @@ impl Facts<'_> {
             Is::Local => self.local,
             Is::Unreachable => self.unreachable,
             Is::View => self.view,
+            Is::Machine => self.machine,
+            Is::Online => self.online == Some(true),
+            Is::Offline => self.online == Some(false),
         }
     }
 
@@ -237,6 +252,8 @@ mod tests {
         Facts {
             kind: Some(kind),
             view: false,
+            machine: kind == PinKind::Machine,
+            online: None,
             tags,
             unc: server.is_some(),
             local: server.is_none(),
@@ -338,5 +355,21 @@ mod tests {
         assert_eq!(names("#aveva"), None, "complete already");
         assert_eq!(names("hit"), None, "not a filter word");
         assert_eq!(names("#a "), None, "word finished");
+    }
+
+    #[test]
+    fn machine_filters() {
+        let none: Vec<String> = Vec::new();
+        let mut up = facts(PinKind::Machine, &none, Some("pc-042"));
+        up.online = Some(true);
+        let mut down = facts(PinKind::Machine, &none, Some("pc-007"));
+        down.online = Some(false);
+        let unknown = facts(PinKind::Machine, &none, Some("pc-100"));
+        let folder = facts(PinKind::Folder, &none, None);
+        let m = |q: &str, f: &Facts| PinQuery::parse(q).matches(f);
+        assert!(m("is:machine", &up) && !m("is:machine", &folder));
+        assert!(m("is:online", &up) && !m("is:online", &down) && !m("is:online", &unknown));
+        assert!(m("is:offline", &down) && !m("is:offline", &up) && !m("is:offline", &unknown));
+        assert!(m("on:pc-042", &up) && !m("on:pc-042", &down));
     }
 }

@@ -133,6 +133,211 @@ pub fn ago(d: Duration) -> String {
     }
 }
 
+/// A machine from a source: pinned, recent, the inventory CSV or `source_cmd`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineRecord {
+    pub host: String,
+    pub user: Option<String>,
+    /// Other columns / fields (`laptop`, `Piping`, `Windows 11`…): searchable, shown.
+    pub details: Vec<String>,
+    /// `pinned`, `recent`, `inventory`, `command`.
+    pub source: &'static str,
+}
+
+const HOST_KEYS: &[&str] = &[
+    "host",
+    "hostname",
+    "computer",
+    "computername",
+    "name",
+    "machine",
+    "cn",
+    "dnshostname",
+];
+const USER_KEYS: &[&str] = &[
+    "user",
+    "username",
+    "owner",
+    "samaccountname",
+    "managedby",
+    "assigneduser",
+    "lastlogonuser",
+];
+
+/// `CN=Jane Doe,OU=…` → `Jane Doe`; anything else as it is.
+fn tidy_user(u: &str) -> String {
+    let u = u.trim();
+    match u.strip_prefix("CN=").or_else(|| u.strip_prefix("cn=")) {
+        Some(rest) => rest.split(',').next().unwrap_or(rest).to_string(),
+        None => u.to_string(),
+    }
+}
+
+/// A DNS name's host part, so `jdoe-lt042.corp.example` and `JDOE-LT042` meet.
+fn host_part(h: &str) -> &str {
+    let h = h.trim();
+    // An IPv4 address stays whole.
+    if h.split('.').all(|p| p.parse::<u8>().is_ok()) {
+        return h;
+    }
+    h.split('.').next().unwrap_or(h)
+}
+
+/// One CSV line into fields: commas, double-quoted fields with `""` escapes.
+fn csv_fields(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quoted = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, quoted) {
+            ('"', true) if chars.peek() == Some(&'"') => {
+                cur.push('"');
+                chars.next();
+            }
+            ('"', _) => quoted = !quoted,
+            (',' | ';', false) => out.push(std::mem::take(&mut cur).trim().to_string()),
+            _ => cur.push(c),
+        }
+    }
+    out.push(cur.trim().to_string());
+    out
+}
+
+/// An inventory CSV (from PDQ, AD, a spreadsheet): a header row, then one machine a line.
+/// The host column is the first named host/computer/name/…; the user column
+/// user/owner/samaccountname/…; every other non-empty value is a detail.
+pub fn parse_csv(text: &str) -> Vec<MachineRecord> {
+    let mut lines = text
+        .lines()
+        .map(|l| l.trim_start_matches('\u{feff}'))
+        .filter(|l| !l.trim().is_empty());
+    let Some(header) = lines.next() else {
+        return Vec::new();
+    };
+    let cols: Vec<String> = csv_fields(header)
+        .iter()
+        .map(|c| c.to_lowercase())
+        .collect();
+    let find = |keys: &[&str]| keys.iter().find_map(|k| cols.iter().position(|c| c == k));
+    let Some(hi) = find(HOST_KEYS) else {
+        return Vec::new();
+    };
+    let ui = find(USER_KEYS);
+    lines
+        .filter_map(|l| {
+            let f = csv_fields(l);
+            let host = host_part(f.get(hi)?).to_string();
+            if host.is_empty() {
+                return None;
+            }
+            let user = ui
+                .and_then(|i| f.get(i))
+                .map(|u| tidy_user(u))
+                .filter(|u| !u.is_empty());
+            let details = f
+                .iter()
+                .enumerate()
+                .filter(|(i, v)| *i != hi && Some(*i) != ui && !v.is_empty())
+                .map(|(_, v)| v.clone())
+                .collect();
+            Some(MachineRecord {
+                host,
+                user,
+                details,
+                source: "inventory",
+            })
+        })
+        .collect()
+}
+
+/// `source_cmd`'s output: a JSON array of objects (host/user keys as for the CSV, any
+/// case; other string fields are details) or of plain host names. Also accepted: an object
+/// whose first array field holds them (`{"computers": […]}`).
+pub fn parse_json(text: &str) -> Result<Vec<MachineRecord>, String> {
+    use serde_json::Value;
+    let v: Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
+        .map_err(|e| format!("not JSON: {e}"))?;
+    let items = match v {
+        Value::Array(a) => a,
+        Value::Object(o) => o
+            .into_iter()
+            .find_map(|(_, v)| match v {
+                Value::Array(a) => Some(a),
+                _ => None,
+            })
+            .ok_or_else(|| "no array of machines in the JSON".to_string())?,
+        _ => return Err("expected a JSON array of machines".to_string()),
+    };
+    let text_of = |v: &Value| match v {
+        Value::String(s) => Some(s.trim().to_string()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    };
+    Ok(items
+        .into_iter()
+        .filter_map(|item| match item {
+            Value::String(h) => Some(MachineRecord {
+                host: host_part(&h).to_string(),
+                user: None,
+                details: Vec::new(),
+                source: "command",
+            }),
+            Value::Object(o) => {
+                let get = |keys: &[&str]| {
+                    keys.iter().find_map(|k| {
+                        o.iter()
+                            .find(|(name, _)| name.eq_ignore_ascii_case(k))
+                            .and_then(|(name, v)| Some((name.clone(), text_of(v)?)))
+                    })
+                };
+                let (host_key, host) = get(HOST_KEYS)?;
+                let user = get(USER_KEYS);
+                let user_key = user.as_ref().map(|(k, _)| k.clone());
+                let details = o
+                    .iter()
+                    .filter(|(k, _)| **k != host_key && Some(*k) != user_key.as_ref())
+                    .filter_map(|(_, v)| text_of(v))
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                Some(MachineRecord {
+                    host: host_part(&host).to_string(),
+                    user: user.map(|(_, u)| tidy_user(&u)).filter(|u| !u.is_empty()),
+                    details,
+                    source: "command",
+                })
+            }
+            _ => None,
+        })
+        .filter(|r| !r.host.is_empty())
+        .collect())
+}
+
+/// All sources into one list, one row per host (case-insensitive), in order of first
+/// appearance: the first user found wins, details are combined, the first source names it.
+pub fn merge(lists: Vec<Vec<MachineRecord>>) -> Vec<MachineRecord> {
+    let mut out: Vec<MachineRecord> = Vec::new();
+    for r in lists.into_iter().flatten() {
+        match out
+            .iter_mut()
+            .find(|o| o.host.eq_ignore_ascii_case(&r.host))
+        {
+            Some(o) => {
+                if o.user.is_none() {
+                    o.user = r.user;
+                }
+                for d in r.details {
+                    if !o.details.contains(&d) {
+                        o.details.push(d);
+                    }
+                }
+            }
+            None => out.push(r),
+        }
+    }
+    out
+}
+
 /// A machine opened lately.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recent {
@@ -309,5 +514,83 @@ mod tests {
         for (s, want) in cases {
             assert_eq!(ago(Duration::from_secs(s)), want);
         }
+    }
+
+    #[test]
+    fn inventory_csv_table() {
+        let csv = "\u{feff}Name,Description,Owner,OS\n\
+                   JDOE-LT042,Piping laptop,\"CN=Jane Doe,OU=Users,DC=corp\",Windows 11\n\
+                   pc-007.corp.example,\"Desk 4, floor 2\",asmith,\n\
+                   ,orphan row,nobody,\n";
+        let r = parse_csv(csv);
+        assert_eq!(r.len(), 2, "{r:?}");
+        assert_eq!(r[0].host, "JDOE-LT042");
+        assert_eq!(r[0].user.as_deref(), Some("Jane Doe"), "CN= tidied");
+        assert_eq!(r[0].details, ["Piping laptop", "Windows 11"]);
+        assert_eq!(r[1].host, "pc-007", "DNS name to host part");
+        assert_eq!(r[1].details, ["Desk 4, floor 2"], "quoted comma kept");
+        assert_eq!(r[1].source, "inventory");
+        // Semicolons (Excel in many locales) and no user column.
+        let r = parse_csv("computer;site\nPC-1;Site-A\n");
+        assert_eq!((r[0].host.as_str(), r[0].user.as_deref()), ("PC-1", None));
+        assert!(parse_csv("foo,bar\n1,2\n").is_empty(), "no host column");
+        assert!(parse_csv("").is_empty());
+    }
+
+    #[test]
+    fn command_json_table() {
+        let objects = r#"[
+            {"Name": "JDOE-LT042", "SamAccountName": "jdoe", "OperatingSystem": "Windows 11", "Enabled": true},
+            {"dNSHostName": "pc-007.corp.example", "Description": "Desk 4"},
+            {"nothing": "here"}
+        ]"#;
+        let Ok(r) = parse_json(objects) else { panic!() };
+        assert_eq!(r.len(), 2);
+        assert_eq!(
+            (r[0].host.as_str(), r[0].user.as_deref()),
+            ("JDOE-LT042", Some("jdoe"))
+        );
+        assert_eq!(r[0].details, ["Windows 11"], "bools skipped");
+        assert_eq!(r[1].host, "pc-007");
+        assert_eq!(r[1].source, "command");
+        let Ok(names) = parse_json(r#"["PC-1", "PC-2.corp.example", "10.0.0.5"]"#) else {
+            panic!()
+        };
+        let hosts: Vec<&str> = names.iter().map(|m| m.host.as_str()).collect();
+        assert_eq!(hosts, ["PC-1", "PC-2", "10.0.0.5"], "an IP stays whole");
+        let Ok(wrapped) = parse_json(r#"{"count": 1, "computers": [{"host": "PC-9"}]}"#) else {
+            panic!()
+        };
+        assert_eq!(wrapped[0].host, "PC-9");
+        assert!(parse_json("not json").is_err());
+        assert!(parse_json("42").is_err());
+    }
+
+    #[test]
+    fn merge_keeps_one_row_per_host() {
+        let rec = |h: &str, u: Option<&str>, d: &[&str], s| MachineRecord {
+            host: h.into(),
+            user: u.map(str::to_string),
+            details: d.iter().map(|x| x.to_string()).collect(),
+            source: s,
+        };
+        let merged = merge(vec![
+            vec![rec("PC-042", None, &[], "pinned")],
+            vec![
+                rec("pc-042", Some("jdoe"), &["laptop"], "inventory"),
+                rec("PC-7", None, &[], "inventory"),
+            ],
+            vec![rec(
+                "PC-042",
+                Some("other"),
+                &["laptop", "Piping"],
+                "command",
+            )],
+        ]);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].host, "PC-042", "first spelling and source");
+        assert_eq!(merged[0].source, "pinned");
+        assert_eq!(merged[0].user.as_deref(), Some("jdoe"), "first user found");
+        assert_eq!(merged[0].details, ["laptop", "Piping"]);
     }
 }

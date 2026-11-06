@@ -297,6 +297,8 @@ pub enum Action {
     PinPicker,
     /// `<leader>t` / `:tags`: the tag picker.
     TagPicker,
+    /// `<leader>m`: the machine picker (pinned, recent, inventory, `source_cmd`).
+    MachinePicker,
     /// `:pin`: pin the current folder (name, tags, key).
     PinCwd,
     /// `:tag rename <old> <new>` / `:tag delete <tag>`, across all pins.
@@ -382,6 +384,7 @@ const NAMED: &[(&str, Action)] = &[
     ("rename-pin", Action::RenamePin),
     ("pin-picker", Action::PinPicker),
     ("tag-picker", Action::TagPicker),
+    ("machine-picker", Action::MachinePicker),
     ("goto-path", Action::GotoPath),
     ("help", Action::Help),
     ("quit", Action::Quit),
@@ -585,6 +588,7 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("<leader>l", Locations, "Locations"),
         ("<leader>p", PinPicker, "pins picker"),
         ("<leader>t", TagPicker, "tags: pick, filter, rename"),
+        ("<leader>m", MachinePicker, "machines picker"),
         ("R", Refresh, "retry / refresh / re-probe"),
         ("dd", Delete, "delete (Locations: remove saved share)"),
         (":", CommandLine, "command line"),

@@ -79,12 +79,20 @@ fn draw_results(f: &mut Frame, area: Rect, app: &mut App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
     let (number, relative) = (app.number, app.relative_number);
+    // Machines' dots are live (the port-445 probes land after the rows were made).
+    let online = app.machine_online();
+    let note = machine_note(app);
     let Some(p) = app.picker.as_mut() else { return };
     let w = inner.width as usize;
 
     let mut lines: Vec<Line> = vec![top_bar(p, w), separator(w)];
     // Filter help at the bottom when there's room for it.
-    let help = help_lines(p, w);
+    let mut help = help_lines(p, w);
+    if p.source == Source::Machines
+        && let Some(n) = note
+    {
+        help.insert(1, n);
+    }
     let rows_h = (inner.height as usize).saturating_sub(lines.len() + help.len());
     p.page = rows_h;
     p.offset = scrolled_offset(p.cursor, p.offset, p.view.len(), rows_h);
@@ -104,11 +112,32 @@ fn draw_results(f: &mut Frame, area: Rect, app: &mut App) {
         };
         let gutter = normal.then(|| gutter_cell(row, p.cursor, gw, number, relative));
         let chosen = p.is_chosen(item.id);
-        lines.push(result_line(item, &hits, w, row == p.cursor, chosen, gutter));
+        let live = item
+            .kind
+            .is_machine()
+            .then(|| item.server.as_ref().and_then(|s| online.get(s)).copied())
+            .flatten();
+        let item = match live {
+            Some(up) if item.reachable != Some(up) => std::sync::Arc::new(PickItem {
+                reachable: Some(up),
+                ..(**item).clone()
+            }),
+            _ => item.clone(),
+        };
+        lines.push(result_line(
+            &item,
+            &hits,
+            w,
+            row == p.cursor,
+            chosen,
+            gutter,
+        ));
     }
     if p.view.is_empty() && !p.running {
         lines.push(Line::from(Span::styled(
-            if p.total() == 0 {
+            if p.total() == 0 && p.source == Source::Machines {
+                r"  no machines yet: open one (\\HOST\C$), or set machines.inventory_csv"
+            } else if p.total() == 0 {
                 "  no pins yet: m{key} in a folder, or M on an item"
             } else {
                 "  no match"
@@ -198,9 +227,14 @@ fn help_lines(p: &crate::picker::Picker, w: usize) -> Vec<Line<'static>> {
             theme::fg(ERR),
         )));
     }
+    let second = if p.source == Source::Machines {
+        "          is:online is:offline  (type a user to find their machine)"
+    } else {
+        "          is:folder is:web is:unc is:unreachable  on:<server>"
+    };
     for text in [
         " filters: #tag and  #a,b or  !#tag not",
-        "          is:folder is:web is:unc is:unreachable  on:<server>",
+        second,
         " ranked: name prefix › tag prefix › substring › fuzzy",
     ] {
         out.push(Line::from(Span::styled(text, theme::dim())));
@@ -215,7 +249,7 @@ fn kind_color(kind: ItemKind) -> ratatui::style::Color {
         ItemKind::Pin(PinKind::App) => OK,
         ItemKind::Pin(PinKind::Web) | ItemKind::Tag => NET,
         ItemKind::Pin(PinKind::Sync | PinKind::Backup) => theme::WARN,
-        ItemKind::Pin(PinKind::Machine) => ERR,
+        ItemKind::Pin(PinKind::Machine) | ItemKind::Machine => ERR,
         ItemKind::View => ACCENT,
     }
 }
@@ -316,6 +350,7 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
     match item.kind {
         ItemKind::View => return draw_view_preview(f, inner, app, &item),
         ItemKind::Tag => return draw_tag_preview(f, inner, app, &item),
+        ItemKind::Machine => return draw_machine_preview(f, inner, app, &item),
         ItemKind::Pin(_) => {}
     }
     let Some(pin) = app.pins.pins.get(item.id) else {
@@ -361,10 +396,8 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
             }
         }
         PinKind::Machine => {
-            lines.push(info_line("Host", pin.detail()));
-            if let Some(u) = extra("user") {
-                lines.push(info_line("User", u));
-            }
+            lines.push(info_line("Host", extra("host").unwrap_or_default()));
+            lines.extend(machine_lines(app, &item, vw));
             lines.push(info_line(
                 "Login",
                 extra("auth").unwrap_or_else(|| "admin".to_string()),
@@ -571,4 +604,75 @@ fn draw_tag_preview(f: &mut Frame, inner: Rect, app: &App, item: &PickItem) {
         ],
     );
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// A machine that isn't pinned: what the sources say, and the live probe.
+fn draw_machine_preview(f: &mut Frame, inner: Rect, app: &App, item: &PickItem) {
+    let mut lines = vec![Line::default()];
+    lines.extend(machine_lines(
+        app,
+        item,
+        (inner.width as usize).saturating_sub(12),
+    ));
+    let h = inner.height as usize;
+    lines.truncate(h.saturating_sub(2));
+    while lines.len() < h.saturating_sub(1) {
+        lines.push(Line::default());
+    }
+    lines.push(Line::from(vec![
+        Span::styled(" Enter", theme::bold(FG)),
+        Span::styled(" open   ", theme::dim()),
+        Span::styled("^a", theme::bold(FG)),
+        Span::styled(" pin it", theme::dim()),
+    ]));
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Host, user, where it was found, details, and the port-445 status.
+fn machine_lines(app: &App, item: &PickItem, vw: usize) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    let Some(host) = app.picked_host(item) else {
+        return out;
+    };
+    let record = app.machine_record(item);
+    if item.kind == ItemKind::Machine {
+        out.push(info_line("Host", host.clone()));
+    }
+    let user = record
+        .as_ref()
+        .and_then(|r| r.user.clone())
+        .or_else(|| app.machine_user(&host));
+    if let Some(u) = user {
+        out.push(info_line("User", u));
+    }
+    if let Some(r) = &record {
+        out.push(info_line("Found in", r.source.to_string()));
+        if !r.details.is_empty() {
+            out.push(info_line("Details", truncate(&r.details.join(" · "), vw)));
+        }
+    }
+    let (online, status) = app.machine_status(&host);
+    let (mark, color) = match online {
+        Some(true) => ("● ", OK),
+        Some(false) => ("× ", ERR),
+        None => ("○ ", DIM),
+    };
+    out.push(Line::from(vec![
+        Span::styled(format!(" {:<10}", "Status"), theme::dim()),
+        Span::styled(format!("{mark}{}", truncate(&status, vw)), theme::fg(color)),
+    ]));
+    out
+}
+
+/// `⠋ loading the inventory…` or the first source error, under the separator.
+fn machine_note(app: &App) -> Option<Line<'static>> {
+    if app.machine_found_loading {
+        return Some(Line::from(Span::styled(
+            format!(" {} loading the inventory…", spinner(app)),
+            theme::dim(),
+        )));
+    }
+    app.machine_found_errors
+        .first()
+        .map(|e| Line::from(Span::styled(format!(" ⚠ {e}"), theme::fg(ERR))))
 }

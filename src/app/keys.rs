@@ -308,6 +308,7 @@ impl App {
             Action::RenamePin => self.rename_pin(),
             Action::PinPicker => self.open_pin_picker(""),
             Action::TagPicker => self.open_tag_picker(),
+            Action::MachinePicker => self.open_machine_picker(""),
             Action::PinCwd => self.pin_cwd(),
             Action::TagRename(old, new) => self.tag_rename(&old, &new, None),
             Action::TagDelete(tag) => self.tag_delete(&tag, None),

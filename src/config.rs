@@ -34,6 +34,10 @@ pub struct MachinesSection {
     pub recent_days: Option<u32>,
     #[serde(default)]
     pub watch: bool,
+    /// An inventory export (`host,user,…` with a header row) for the machine picker.
+    pub inventory_csv: Option<String>,
+    /// A command that prints machines as JSON (e.g. `getad`), for the machine picker.
+    pub source_cmd: Option<String>,
 }
 
 impl Config {

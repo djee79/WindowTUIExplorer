@@ -489,6 +489,7 @@ impl App {
         match reopen {
             Some(Reopen::Pins(q)) => self.open_pin_picker(&q),
             Some(Reopen::Tags) => self.open_tag_picker(),
+            Some(Reopen::Machines(q)) => self.open_machine_picker(&q),
             None => {}
         }
     }

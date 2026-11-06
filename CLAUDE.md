@@ -46,6 +46,7 @@ does all day:
 | Content search | `grep-searcher` + `grep-regex` + `grep-matcher` (ripgrep's crates) |
 | Glob / regex | `globset`, `regex` |
 | Secrets in memory | `zeroize` |
+| JSON (`machines.source_cmd`) | `serde_json` |
 | Clipboard | `arboard` |
 | Terminal images | `ratatui-image` (kitty / sixel / iTerm2 protocols, halfblocks fallback) |
 | Image decode | `image` (png, jpg, gif, webp, bmp, tiff, ico) + `kamadak-exif` for photo metadata |

@@ -511,3 +511,234 @@ impl App {
         matches!(e.kind, EntryKind::Machine(_)).then(|| e.name.clone())
     }
 }
+
+// ---------------------------------------------------------------- the machine picker
+
+/// The slow sources are read again after this (the picker reopens with what's cached).
+const SOURCES_STALE: Duration = Duration::from_secs(300);
+
+impl App {
+    /// `<leader>m`: pinned machines, then recent ones, then the inventory CSV and
+    /// `source_cmd` (they stream in when they arrive). The rows carry the user and the
+    /// other details, so typing a person's name finds their machine.
+    pub(super) fn open_machine_picker(&mut self, query: &str) {
+        if !self.pins_loaded {
+            self.set_status("pins are still loading".into(), false);
+            return;
+        }
+        self.load_machine_sources(false);
+        let mut items = Vec::new();
+        let mut pinned: Vec<String> = Vec::new();
+        for (id, p) in self.pins.pins.iter().enumerate() {
+            if p.kind != PinKind::Machine {
+                continue;
+            }
+            let Some(host) = p.extra.get("host").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let mut item = self.pin_pick_item(id, p, &HashMap::new());
+            if let Some(r) = self
+                .machine_found
+                .iter()
+                .find(|r| r.host.eq_ignore_ascii_case(host))
+            {
+                item.detail = record_detail(host, r);
+            }
+            pinned.push(host.to_string());
+            items.push(item);
+        }
+        let recent: Vec<machines::MachineRecord> = self
+            .recent_machines
+            .iter()
+            .map(|r| machines::MachineRecord {
+                host: r.host.clone(),
+                user: None,
+                details: Vec::new(),
+                source: "recent",
+            })
+            .collect();
+        self.machine_rows = machines::merge(vec![recent, self.machine_found.clone()])
+            .into_iter()
+            .filter(|r| !pinned.iter().any(|h| h.eq_ignore_ascii_case(&r.host)))
+            .collect();
+        items.extend(
+            self.machine_rows
+                .iter()
+                .enumerate()
+                .map(|(id, r)| self.machine_row_item(id, r)),
+        );
+        // Pinned and recent machines get the port-445 probe (the dot, is:online); the
+        // inventory can be thousands, so those are probed when the cursor stops on one.
+        let hosts: Vec<String> = pinned
+            .into_iter()
+            .chain(self.recent_machines.iter().map(|r| r.host.clone()))
+            .collect();
+        for h in hosts {
+            self.probe_machine_quietly(&h, false);
+        }
+        let picker = crate::picker::Picker::new(
+            "Machines",
+            crate::picker::Source::Machines,
+            items,
+            self.worker.waker(),
+            query,
+        );
+        self.show_picker(picker);
+    }
+
+    fn machine_row_item(&self, id: usize, r: &machines::MachineRecord) -> crate::picker::PickItem {
+        crate::picker::PickItem {
+            id,
+            name: r.host.clone(),
+            detail: record_detail(&r.host, r),
+            kind: crate::picker::ItemKind::Machine,
+            key: None,
+            tags: Vec::new(),
+            unc: true,
+            local: false,
+            reachable: self.machine_status(&r.host).0,
+            server: Some(r.host.to_lowercase()),
+        }
+    }
+
+    /// Reads the slow sources when configured and not fresh (or `force`).
+    pub(super) fn load_machine_sources(&mut self, force: bool) {
+        let csv = self.config.machines.inventory_csv.clone();
+        let cmd = self.config.machines.source_cmd.clone();
+        if (csv.is_none() && cmd.is_none()) || self.machine_found_loading {
+            return;
+        }
+        if !force
+            && self
+                .machine_found_at
+                .is_some_and(|t| t.elapsed() < SOURCES_STALE)
+        {
+            return;
+        }
+        self.machine_found_loading = true;
+        self.worker.machine_sources(csv, cmd);
+        self.dirty = true;
+    }
+
+    pub(super) fn on_machine_sources(
+        &mut self,
+        results: Vec<(&'static str, Result<Vec<machines::MachineRecord>, String>)>,
+    ) {
+        self.machine_found_loading = false;
+        self.machine_found_at = Some(Instant::now());
+        self.machine_found_errors.clear();
+        let mut lists = Vec::new();
+        for (_, r) in results {
+            match r {
+                Ok(list) => lists.push(list),
+                Err(e) => {
+                    tracing::warn!(error = %e, "machine source");
+                    self.machine_found_errors.push(e);
+                }
+            }
+        }
+        self.machine_found = machines::merge(lists);
+        if let Some(e) = self.machine_found_errors.first().cloned() {
+            self.set_status(e, true);
+        }
+        self.dirty = true;
+        // An open machine picker gets the hosts it doesn't list yet.
+        let open = self
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.source == crate::picker::Source::Machines);
+        if !open {
+            return;
+        }
+        let pinned: Vec<String> = self
+            .pins
+            .pins
+            .iter()
+            .filter(|p| p.kind == PinKind::Machine)
+            .filter_map(|p| p.extra.get("host")?.as_str().map(str::to_string))
+            .collect();
+        let new: Vec<machines::MachineRecord> = self
+            .machine_found
+            .iter()
+            .filter(|r| {
+                !pinned.iter().any(|h| h.eq_ignore_ascii_case(&r.host))
+                    && !self
+                        .machine_rows
+                        .iter()
+                        .any(|o| o.host.eq_ignore_ascii_case(&r.host))
+            })
+            .cloned()
+            .collect();
+        let start = self.machine_rows.len();
+        let items: Vec<_> = new
+            .iter()
+            .enumerate()
+            .map(|(i, r)| self.machine_row_item(start + i, r))
+            .collect();
+        self.machine_rows.extend(new);
+        if let Some(p) = self.picker.as_mut() {
+            p.add(items);
+        }
+    }
+
+    /// The machine picker's cursor stopped on a machine: probe it (port 445, quietly).
+    pub(super) fn probe_picked_machine(&mut self) {
+        let Some(item) = self.picker.as_ref().and_then(|p| p.selected()) else {
+            return;
+        };
+        if let Some(h) = self.picked_host(item) {
+            self.probe_machine_quietly(&h, false);
+        }
+    }
+
+    /// The host of a machine row (pinned or not).
+    pub fn picked_host(&self, item: &crate::picker::PickItem) -> Option<String> {
+        match item.kind {
+            crate::picker::ItemKind::Machine => Some(item.name.clone()),
+            crate::picker::ItemKind::Pin(PinKind::Machine) => self
+                .pins
+                .pins
+                .get(item.id)
+                .and_then(|p| p.extra.get("host")?.as_str().map(str::to_string)),
+            _ => None,
+        }
+    }
+
+    /// What the sources say about a picker row: its user, details and source.
+    pub fn machine_record(
+        &self,
+        item: &crate::picker::PickItem,
+    ) -> Option<machines::MachineRecord> {
+        match item.kind {
+            crate::picker::ItemKind::Machine => self.machine_rows.get(item.id).cloned(),
+            _ => {
+                let host = self.picked_host(item)?;
+                self.machine_found
+                    .iter()
+                    .find(|r| r.host.eq_ignore_ascii_case(&host))
+                    .cloned()
+            }
+        }
+    }
+}
+
+/// `jdoe · laptop · Piping`: what a machine row shows and search runs over.
+fn record_detail(host: &str, r: &machines::MachineRecord) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if r.user.is_none() && r.details.is_empty() {
+        parts.push(host);
+    }
+    parts.extend(r.user.as_deref());
+    parts.extend(r.details.iter().map(String::as_str));
+    parts.join(" · ")
+}
+
+impl App {
+    /// Every probed machine (lowercase host) and whether it answered.
+    pub fn machine_online(&self) -> HashMap<String, bool> {
+        self.machines
+            .iter()
+            .filter_map(|(k, i)| Some((k.clone(), i.probe.as_ref()?.is_ok())))
+            .collect()
+    }
+}
