@@ -9,6 +9,7 @@ use crate::app::{App, DirState, Mode, visible_indices};
 use crate::fs::worker::ListError;
 use crate::fs::{Entry, EntryKind, Listing};
 use crate::preview::PreviewKind;
+use crate::preview::image::ImagePreview;
 use chrono::{DateTime, Local};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -16,6 +17,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 use ratatui_image::Image;
+use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 /// Rows kept between the cursor and the panel edge while scrolling.
@@ -41,7 +43,9 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         height: inner.height.saturating_sub(2),
         ..inner
     });
-    app.image_drawn = draw_preview(f, preview, app);
+    let drawn = draw_preview(f, preview, app);
+    app.image_drawn = drawn.as_ref().map(|d| d.rect);
+    app.image_place = drawn.and_then(|d| d.place);
 }
 
 pub(super) fn panel<'a>(title: String, focused: bool) -> Block<'a> {
@@ -216,7 +220,7 @@ fn draw_current(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 /// The preview panel. Returns where a picture was drawn, if one was.
-fn draw_preview(f: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
+fn draw_preview(f: &mut Frame, area: Rect, app: &App) -> Option<Drawn> {
     let entry = app.selected();
     let title = entry.map(|e| e.name.clone()).unwrap_or_default();
     let block = panel(title, false);
@@ -529,9 +533,16 @@ pub(super) fn info_line(label: &str, value: String) -> Line<'static> {
     ])
 }
 
+/// Where the preview put a picture, and (iTerm2) the picture the UI loop still has to
+/// write there after the frame.
+struct Drawn {
+    rect: Rect,
+    place: Option<Arc<ImagePreview>>,
+}
+
 /// A picture with a caption line (`1920×1080 · JPEG · 412.0 KB`). Returns where the
-/// picture landed, so the UI loop can erase it once it moves (see `crate::preview`).
-fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Rect> {
+/// picture goes, so the UI loop can write it and erase it once it moves (`crate::preview`).
+fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Drawn> {
     let area = app.image_area?;
     let caption_area = Rect {
         y: inner.bottom().saturating_sub(1),
@@ -555,16 +566,25 @@ fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Rect> 
                 human_size(e.size)
             );
             let size = p.protocol.size();
-            // Overlays (help, pickers) cover the column: no picture under them.
-            let covered = matches!(app.mode, Mode::Help | Mode::Picker);
+            // Overlays (help, pickers, which-key) cover the column: no picture under
+            // them. An iTerm2 picture is written after the frame and would cover them.
+            let covered = matches!(app.mode, Mode::Help | Mode::Picker) || app.which_key_visible();
             if !covered && size.width <= area.width && size.height <= area.height {
                 let rect = Rect {
                     width: size.width,
                     height: size.height,
                     ..area
                 };
-                f.render_widget(Image::new(&p.protocol), rect);
-                drawn = Some(rect);
+                drawn = Some(Drawn { rect, place: None });
+                if crate::preview::iterm2_data(&p.protocol).is_some() {
+                    // The UI loop writes it after the frame (crate::preview docs).
+                    drawn = Some(Drawn {
+                        rect,
+                        place: Some(Arc::clone(p)),
+                    });
+                } else {
+                    f.render_widget(Image::new(&p.protocol), rect);
+                }
             }
         }
         Some(Some(Err(err))) => {

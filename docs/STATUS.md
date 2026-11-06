@@ -346,3 +346,16 @@ Manual checklist:
 - [ ] Resize the window with a picture shown: it refits, no ghost.
 - [ ] `g?` and `<Space>p` over a picture: no picture bleeding through.
 - [ ] A big photo on the NAS: spinner, then the picture; one over 50 MB says so.
+
+### M2b fix: iTerm2 pictures landed in the wrong place (2026-11-06)
+
+Seen in sentier: the picture appeared bottom right, cut off, and stayed after moving on.
+`examples/image_place.rs` found why: an iTerm2 picture lands wherever the real terminal's
+cursor is, and with the cursor hidden (ratatui hides it) ConPTY never sends cursor moves.
+Round 2 results: a picture inside ratatui's frame landed right only half the time (small
+update and full frame alike); written after the frame with the cursor shown, moved, then
+hidden again: both in place, with or without a 15 ms wait.
+→ The UI marks where an iTerm2 picture goes; the UI loop writes it after the frame with
+`preview::place_iterm2`, only when it changed (new picture, moved, resized). Halfblocks
+still render through ratatui. While the which-key popup is up the picture is hidden too
+(a picture written after the frame would cover the popup).

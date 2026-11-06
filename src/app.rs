@@ -200,6 +200,8 @@ pub struct App {
     /// Set by the UI each frame: the box a picture may fill, and where one was drawn.
     pub image_area: Option<ratatui::layout::Rect>,
     pub image_drawn: Option<ratatui::layout::Rect>,
+    /// An iTerm2 picture for the UI loop to write at `image_drawn` after the frame.
+    pub image_place: Option<Arc<crate::preview::image::ImagePreview>>,
     /// The window was resized: the old picture must be erased by hand.
     pub image_resized: bool,
     /// When the cursor last moved (pictures wait for it to be still).
@@ -269,6 +271,7 @@ impl App {
             image_cache: crate::preview::Lru::new(crate::preview::CACHE_ENTRIES),
             image_area: None,
             image_drawn: None,
+            image_place: None,
             image_resized: false,
             moved_at: Instant::now(),
             reach: HashMap::new(),
@@ -938,25 +941,28 @@ pub fn visible_indices(listing: &Listing, show_hidden: bool, filter: &str) -> Ve
 /// next event or the next time-driven change. Returns how the user quit.
 pub fn run(terminal: &mut DefaultTerminal, app: &mut App, rx: &EventRx) -> anyhow::Result<Quit> {
     let mut last_draw = Instant::now() - FRAME;
-    // Where the last frame put a picture.
+    // Where the last frame put a picture, and which one (by address).
     let mut last_image: Option<ratatui::layout::Rect> = None;
+    let mut last_picture: usize = 0;
     loop {
         let now = Instant::now();
         app.tick(now);
         if app.dirty && now.duration_since(last_draw) >= FRAME {
             app.image_drawn = None;
+            app.image_place = None;
             let frame = terminal.draw(|f| ui::draw(f, app))?;
-            // An iTerm2 picture stays until its cells are written again, and ratatui skips
-            // cells it thinks are unchanged. So when the picture moved or went away, write
-            // the old picture's cells again from this frame (crate::preview docs).
             let drawn = app.image_drawn;
+            let place = app.image_place.take();
+            let picture = place.as_ref().map_or(0, |p| Arc::as_ptr(p) as usize);
+            let changed = drawn != last_image || picture != last_picture || app.image_resized;
+            // 1. An iTerm2 picture stays until its cells are written again, and ratatui
+            //    skips cells it thinks are unchanged. So when the picture moved or went
+            //    away, write the old picture's cells again from this frame.
             let repaint: Vec<(u16, u16, ratatui::buffer::Cell)> = match last_image {
-                Some(old) if drawn != Some(old) || app.image_resized => {
-                    crate::preview::repaint_cells(old, drawn)
-                        .into_iter()
-                        .filter_map(|(x, y)| Some((x, y, frame.buffer.cell((x, y))?.clone())))
-                        .collect()
-                }
+                Some(old) if changed => crate::preview::repaint_cells(old, drawn)
+                    .into_iter()
+                    .filter_map(|(x, y)| Some((x, y, frame.buffer.cell((x, y))?.clone())))
+                    .collect(),
                 _ => Vec::new(),
             };
             if !repaint.is_empty() {
@@ -965,7 +971,17 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App, rx: &EventRx) -> anyho
                 backend.draw(repaint.iter().map(|(x, y, c)| (*x, *y, c)))?;
                 backend.flush()?;
             }
+            // 2. A new iTerm2 picture is written after the frame, with the cursor shown
+            //    so ConPTY really moves it there (crate::preview docs). Only when it
+            //    changed: the frames after leave its cells alone.
+            if changed
+                && let (Some(rect), Some(p)) = (drawn, place.as_ref())
+                && let Some(data) = crate::preview::iterm2_data(&p.protocol)
+            {
+                crate::preview::place_iterm2(terminal.backend_mut(), rect, data)?;
+            }
             last_image = drawn;
+            last_picture = picture;
             app.image_resized = false;
             app.dirty = false;
             last_draw = Instant::now();
@@ -2234,5 +2250,45 @@ mod preview_tests {
         let screen = render(&mut app, 120, 30);
         assert!(screen.contains("large file on the network"), "{screen}");
         assert!(app.image_drawn.is_none());
+    }
+
+    #[test]
+    fn iterm2_pictures_are_placed_after_the_frame_not_drawn_in_it() {
+        let (mut app, _rt, _) = with_photo();
+        let mut iterm2 = ratatui_image::picker::Picker::halfblocks();
+        iterm2.set_protocol_type(ratatui_image::picker::ProtocolType::Iterm2);
+        app.graphics = iterm2;
+        render(&mut app, 120, 30);
+        press(&mut app, "j");
+        settle(&mut app);
+        let Some(key) = app.image.as_ref().map(|s| s.key.clone()) else {
+            panic!()
+        };
+        let dir = std::env::temp_dir().join(format!("sentier-prev2-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("photo.png");
+        assert!(
+            image::RgbaImage::from_pixel(64, 32, image::Rgba([1, 2, 3, 255]))
+                .save(&path)
+                .is_ok()
+        );
+        let Ok(p) = load(&path.to_string_lossy(), &app.graphics, key.cols, key.rows) else {
+            panic!()
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        app.handle(AppEvent::ImagePreview {
+            key,
+            result: Ok(Arc::new(p)),
+        });
+        let screen = render(&mut app, 120, 30);
+        assert!(app.image_drawn.is_some());
+        assert!(app.image_place.is_some(), "handed to the UI loop");
+        assert!(!screen.contains("1337"), "not in ratatui's buffer");
+
+        // The which-key popup would be covered by a picture written after the frame.
+        press(&mut app, "g");
+        app.tick(Instant::now() + app.keymap.timeout + Duration::from_millis(1));
+        render(&mut app, 120, 30);
+        assert!(app.image_drawn.is_none() && app.image_place.is_none());
     }
 }

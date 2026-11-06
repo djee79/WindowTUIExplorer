@@ -9,6 +9,11 @@
 //!   those cells (the image widget marks them "skip"), and a full-screen clear doesn't
 //!   remove it either. So when a picture moves or goes away, the UI loop rewrites the
 //!   old picture's cells ([`repaint_cells`]), which erases it without a flicker.
+//! - An iTerm2 picture lands wherever the real terminal's cursor is. ratatui hides the
+//!   cursor, and ConPTY then doesn't send cursor moves at all, so a picture drawn inside
+//!   ratatui's frame lands wherever ConPTY last painted (`examples/image_place.rs`: wrong
+//!   half the time). So the UI only marks where the picture goes, and the UI loop writes
+//!   it after the frame with the cursor shown ([`place_iterm2`]): right every time.
 //!
 //! Decoding and encoding run on the blocking pool ([`image::load`]); the UI only renders
 //! an already-encoded picture.
@@ -19,6 +24,7 @@ use crate::fs::path::Loc;
 use ratatui::layout::Rect;
 
 use ratatui_image::picker::{Picker, ProtocolType};
+use ratatui_image::protocol::Protocol;
 use std::collections::VecDeque;
 use std::time::SystemTime;
 
@@ -143,6 +149,27 @@ pub fn repaint_cells(old: Rect, new: Option<Rect>) -> Vec<(u16, u16)> {
     out
 }
 
+/// The escape sequence of an iTerm2 picture; None for the other protocols, which draw
+/// through ratatui's buffer.
+pub fn iterm2_data(p: &Protocol) -> Option<&str> {
+    match p {
+        Protocol::ITerm2(i) => Some(&i.data),
+        _ => None,
+    }
+}
+
+/// Writes an iTerm2 picture at `at`, after the frame. The probe (`examples/image_place.rs`)
+/// showed this is the only reliable way through ConPTY: with the cursor hidden, ConPTY
+/// doesn't send cursor moves to the terminal, so the picture would land wherever ConPTY
+/// last painted. Showing the cursor for the write makes it move for real.
+pub fn place_iterm2(out: &mut impl std::io::Write, at: Rect, data: &str) -> std::io::Result<()> {
+    use ratatui::crossterm::cursor::{Hide, MoveTo, Show};
+    use ratatui::crossterm::queue;
+    use ratatui::crossterm::style::Print;
+    queue!(out, Show, MoveTo(at.x, at.y), Print(data), Hide)?;
+    out.flush()
+}
+
 /// Too big to read over the network just because the cursor passed by.
 pub fn too_big_for_network(size: u64, network: bool) -> bool {
     network && size > MAX_NETWORK_BYTES
@@ -213,6 +240,15 @@ mod tests {
         let cells = repaint_cells(old, Some(Rect::new(0, 0, 1, 5)));
         assert_eq!(cells, [(1, 0), (2, 0), (1, 1), (2, 1)]);
         assert!(repaint_cells(old, Some(old)).is_empty());
+    }
+
+    #[test]
+    fn iterm2_is_placed_with_the_cursor_shown() {
+        let mut out: Vec<u8> = Vec::new();
+        assert!(place_iterm2(&mut out, Rect::new(69, 2, 10, 5), "PIC").is_ok());
+        let s = String::from_utf8_lossy(&out);
+        // Show cursor, move (1-based row;col), the picture, hide cursor.
+        assert_eq!(s, "\x1b[?25h\x1b[3;70HPIC\x1b[?25l");
     }
 
     #[test]
