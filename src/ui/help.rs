@@ -20,6 +20,17 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         "prompts".to_string(),
         "Esc normal · Esc Esc cancel".to_string(),
     ));
+    // The `:` commands: the name on the left, its arguments with what it does.
+    rows.push((String::new(), String::new()));
+    rows.push(("── : commands".to_string(), String::new()));
+    for (cmd, args, what) in crate::keymap::COMMANDS {
+        let desc = if args.is_empty() {
+            what.to_string()
+        } else {
+            format!("{args}  {what}")
+        };
+        rows.push((format!(":{cmd}"), desc));
+    }
 
     let col_w = KEY_W + DESC_W + 2;
     let avail_h = area.height.saturating_sub(2).max(1) as usize;

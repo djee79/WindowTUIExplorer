@@ -288,6 +288,7 @@ fn kind_color(kind: ItemKind) -> ratatui::style::Color {
         ItemKind::Pin(PinKind::Machine) | ItemKind::Machine => ERR,
         ItemKind::View => ACCENT,
         ItemKind::StartMenu => OK,
+        ItemKind::Action => ACCENT,
     }
 }
 
@@ -388,6 +389,18 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         ItemKind::View => return draw_view_preview(f, inner, app, &item),
         ItemKind::Tag => return draw_tag_preview(f, inner, app, &item),
         ItemKind::Machine => return draw_machine_preview(f, inner, app, &item),
+        ItemKind::Action => {
+            let lines = vec![
+                Line::default(),
+                Line::from(Span::styled(format!(" {}", item.name), theme::bold(ACCENT))),
+                Line::default(),
+                info_line("Also", item.detail.clone()),
+                Line::default(),
+                Line::from(Span::styled(" Enter does it", theme::dim())),
+            ];
+            f.render_widget(Paragraph::new(lines), inner);
+            return;
+        }
         ItemKind::StartMenu => {
             let vw = (inner.width as usize).saturating_sub(12);
             let lines = vec![

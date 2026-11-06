@@ -903,3 +903,20 @@ Manual checklist:
       right; imported web apps open as app windows; groups show as headers in `Space Space`.
 - [ ] `Space Space`, `^s`: Start Menu apps appear; Enter starts one; `^a` pins it.
 - [ ] `:pin url` for a real web app, Chrome as browser.
+
+## Discoverability: nothing to remember (2026-11-06)
+
+User feedback: "I'll never remember these commands by heart". Commands now show up where
+you already are:
+
+- **Launcher "+ …" rows** (`app/launcher.rs` `ACTIONS`): `+ Pin a web app (URL)…`,
+  `+ Show / hide Start Menu apps`, `+ Import from wtm…`, `+ New sync / backup preset from
+  this folder…`. Last in the browse view under "actions"; found by typing (`pin`, `wtm`,
+  `sync`). Shown only for a real (substring) match, never a loose fuzzy one, so typed text
+  that matches nothing still runs on Enter.
+- **`Space n` "new…" group** in which-key: `nu` web app pin, `ns` sync preset, `nb` backup
+  preset, `ni` import wtm.
+- **`:` hints**: one table, `keymap::COMMANDS` (command, arguments, what it does). The
+  empty command line lists them (`cd · pin · import-wtm · …`); typing narrows to
+  `pin url [URL] — pin a web app`. Every listed command is checked to parse.
+- **`g?` help** has a ": commands" section from the same table.

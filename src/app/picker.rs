@@ -108,6 +108,7 @@ impl App {
         if self.launcher_start_menu {
             items.extend(self.start_menu_items());
         }
+        items.extend(self.launcher_action_items());
         let picker = Picker::new(
             "Launcher",
             Source::Launcher,
@@ -401,6 +402,11 @@ impl App {
         let Some((kind, id, _)) = self.picker_selected() else {
             return;
         };
+        let typed = self
+            .picker
+            .as_ref()
+            .map(|p| p.query.text.clone())
+            .unwrap_or_default();
         let host = self
             .picker
             .as_ref()
@@ -409,6 +415,7 @@ impl App {
         self.close_picker();
         match kind {
             ItemKind::StartMenu => self.launch_start_menu(id),
+            ItemKind::Action => self.run_launcher_action(id, &typed),
             ItemKind::View => {
                 if let Some(q) = self.pins.views.get(id).map(|v| v.query.clone()) {
                     self.open_pin_picker(&format!("{q} "));
@@ -479,7 +486,7 @@ impl App {
                 self.close_picker();
                 self.start_tag_rename(&name);
             }
-            ItemKind::Machine | ItemKind::StartMenu => {
+            ItemKind::Machine | ItemKind::StartMenu | ItemKind::Action => {
                 self.set_status(format!("{name} isn't pinned: ^a pins it"), false);
             }
         }
@@ -489,7 +496,10 @@ impl App {
         let Some((kind, id, name)) = self.picker_selected() else {
             return;
         };
-        if matches!(kind, ItemKind::Machine | ItemKind::StartMenu) {
+        if matches!(
+            kind,
+            ItemKind::Machine | ItemKind::StartMenu | ItemKind::Action
+        ) {
             // Recent / inventory rows aren't sentier's to delete.
             return self.set_status(format!("{name} isn't pinned: nothing to delete"), false);
         }
@@ -499,7 +509,7 @@ impl App {
             ItemKind::Pin(_) => self.confirm_unpin(id, reopen),
             ItemKind::View => self.confirm_view_delete(id, reopen),
             ItemKind::Tag => self.tag_delete(&name, reopen),
-            ItemKind::Machine | ItemKind::StartMenu => {}
+            ItemKind::Machine | ItemKind::StartMenu | ItemKind::Action => {}
         }
     }
 

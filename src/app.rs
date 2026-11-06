@@ -11,7 +11,7 @@ mod jobs;
 pub use jobs::JobRow;
 mod backup;
 mod keys;
-mod launcher;
+pub(crate) mod launcher;
 mod machines;
 mod open;
 pub use open::OpenMenu;
@@ -1604,6 +1604,22 @@ mod tests {
         assert_eq!(app.cwd, Loc::Root);
     }
 
+    /// Commands don't have to be remembered: `:` lists them as you type, `g?` lists them.
+    #[test]
+    fn command_line_and_help_list_the_commands() {
+        let (mut app, _rt) = fixture();
+        press(&mut app, ":");
+        let screen = render(&mut app, 200, 30);
+        assert!(screen.contains("cd · pin · import-wtm"), "{screen}");
+        press(&mut app, "pin u");
+        let screen = render(&mut app, 200, 30);
+        assert!(screen.contains("pin url [URL] — pin a web app"), "{screen}");
+        press(&mut app, "<Esc><Esc>g?");
+        let screen = render(&mut app, 220, 60);
+        assert!(screen.contains(": commands"), "{screen}");
+        assert!(screen.contains(":pin url"), "{screen}");
+    }
+
     #[test]
     fn command_line_cd_complete_and_errors() {
         let (mut app, _rt) = fixture();
@@ -2661,17 +2677,36 @@ mod pin_tests {
         press(&mut app, "<Space><Space>");
         assert_eq!(app.mode, Mode::Picker);
         settle(&mut app);
+        let names = picker_names(&app);
         assert_eq!(
-            picker_names(&app),
+            names[..5],
             ["E3D HIT", "Grafana", "Work", "E3D HIT", "Grafana"]
         );
+        // Then the "+ …" rows, so nothing has to be remembered.
+        assert_eq!(names[5], "+ Pin a web app (URL)…");
+        assert_eq!(names.len(), 5 + crate::app::launcher::ACTIONS.len());
         let screen = render(&mut app, 160, 30);
         for want in ["Launcher", "frequent", "untagged", "#aveva", "#monitoring"] {
             assert!(screen.contains(want), "{want}: {screen}");
         }
+        // Typing finds an action too; Enter on it starts the web pin prompts.
+        press(&mut app, "pin a");
+        settle(&mut app);
+        assert_eq!(
+            picker_names(&app)[0],
+            "+ Pin a web app (URL)…",
+            "a real match ranks first"
+        );
+        press(&mut app, "<CR>");
+        assert!(
+            app.prompt
+                .as_ref()
+                .is_some_and(|p| p.kind == PromptKind::PinName)
+        );
+        press(&mut app, "<Esc><Esc>");
 
         // Searching: tiers, no headers.
-        press(&mut app, "wo");
+        press(&mut app, "<Space><Space>wo");
         settle(&mut app);
         assert_eq!(picker_names(&app), ["Work"]);
         assert!(app.picker.as_ref().is_some_and(|p| p.headers.is_empty()));
@@ -2867,7 +2902,14 @@ mod pin_tests {
         press(&mut app, "<Space><Space><C-s>");
         assert!(!app.launcher_start_menu);
         settle(&mut app);
-        assert_eq!(picker_names(&app), ["Notepad++"], "only the pin now");
+        assert_eq!(picker_names(&app)[0], "Notepad++");
+        assert!(
+            app.picker.as_ref().is_some_and(|p| p
+                .view
+                .iter()
+                .all(|i| i.kind != crate::picker::ItemKind::StartMenu)),
+            "only the pin now"
+        );
     }
 }
 

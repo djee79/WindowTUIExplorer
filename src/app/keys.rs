@@ -167,6 +167,24 @@ fn home() -> Result<String, String> {
 }
 
 /// `~` and `~\rest` → the home directory (input sugar for `:cd` and bindings).
+/// The line under `:`: the commands matching what's typed, with what they do.
+fn command_note(text: &str) -> String {
+    if text.trim().is_empty() {
+        let mut heads: Vec<&str> = crate::keymap::COMMANDS
+            .iter()
+            .map(|(c, _, _)| c.split(' ').next().unwrap_or(c))
+            .collect();
+        heads.dedup();
+        return format!("{} · g? lists them all", heads.join(" · "));
+    }
+    let hints = crate::keymap::command_hints(text);
+    if hints.is_empty() {
+        "no such command · g? lists them all".to_string()
+    } else {
+        hints.join("   ·   ")
+    }
+}
+
 pub(super) fn expand_home(text: &str) -> Result<String, String> {
     let text = text.trim();
     match text.strip_prefix('~') {
@@ -550,9 +568,10 @@ impl App {
         };
         match kind {
             PromptKind::ConfirmUnpin | PromptKind::Confirm => p.note = self.pin_prompt_note(kind),
-            PromptKind::PinTags | PromptKind::MachineUser | PromptKind::Preset(_) => {
-                self.prompt_changed(&mut p)
-            }
+            PromptKind::Command
+            | PromptKind::PinTags
+            | PromptKind::MachineUser
+            | PromptKind::Preset(_) => self.prompt_changed(&mut p),
             _ => {}
         }
         self.prompt = Some(p);
@@ -669,7 +688,7 @@ impl App {
             }
             PromptKind::Command => {
                 p.completion = None;
-                p.note.clear();
+                p.note = command_note(&text);
             }
             // Validate as you type; the walk starts on Enter.
             PromptKind::NameSearch => {

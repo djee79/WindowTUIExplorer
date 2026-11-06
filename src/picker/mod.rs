@@ -32,6 +32,8 @@ pub enum ItemKind {
     /// A machine that isn't pinned (recent, inventory CSV, `source_cmd`), in the machine
     /// picker; the name is its host.
     Machine,
+    /// One of the launcher's "+ …" rows (pin a URL, Start Menu, import wtm, new presets).
+    Action,
     /// A Start Menu shortcut in the launcher (`^s`): the name, the `.lnk` path.
     StartMenu,
 }
@@ -44,6 +46,7 @@ impl ItemKind {
             ItemKind::Tag => "tag",
             ItemKind::Machine => "machine",
             ItemKind::StartMenu => "start",
+            ItemKind::Action => "+",
         }
     }
 
@@ -115,7 +118,19 @@ impl PickItem {
 /// at least two have been used and there are groups), then the untagged, then each
 /// first tag A→Z under its header. Within a group: most used, then A→Z. A frequent item
 /// also stays in its group, as in wtm.
-pub fn browse_order(mut items: Vec<Arc<PickItem>>) -> (Vec<Arc<PickItem>>, Vec<(usize, String)>) {
+pub fn browse_order(items: Vec<Arc<PickItem>>) -> (Vec<Arc<PickItem>>, Vec<(usize, String)>) {
+    // The "+ …" rows go last, under their own header, in the order given.
+    let (actions, items): (Vec<_>, Vec<_>) =
+        items.into_iter().partition(|i| i.kind == ItemKind::Action);
+    let (mut out, mut headers) = browse_items(items);
+    if !actions.is_empty() {
+        headers.push((out.len(), "actions".to_string()));
+        out.extend(actions);
+    }
+    (out, headers)
+}
+
+fn browse_items(mut items: Vec<Arc<PickItem>>) -> (Vec<Arc<PickItem>>, Vec<(usize, String)>) {
     let group = |i: &PickItem| i.tags.first().cloned().unwrap_or_default();
     items.sort_by_cached_key(|i| (group(i), std::cmp::Reverse(i.score), i.name.to_lowercase()));
     let has_groups = items.iter().any(|i| !i.tags.is_empty());
@@ -314,6 +329,9 @@ impl Picker {
             // Within a tier: frecency, then (launcher) A→Z; otherwise nucleo's order
             // stands (the sort is stable).
             if self.source == Source::Launcher {
+                // "+ …" rows only for a real match (`pin`, `wtm`), never a loose fuzzy
+                // one: typed text that matches nothing else still runs on Enter.
+                view.retain(|i| i.kind != ItemKind::Action || i.tier(&text) < 3);
                 view.sort_by_cached_key(|i| {
                     (
                         i.tier(&text),

@@ -490,6 +490,70 @@ const NAMED: &[(&str, Action)] = &[
 /// yet" instead of "unknown".
 const LATER: &[(&str, &str)] = &[("picker", "M6")];
 
+/// The `:` commands worth knowing, for the hint under the command line and `g?`:
+/// (command, its arguments, what it does). Keep in step with [`Action::parse`].
+pub const COMMANDS: &[(&str, &str, &str)] = &[
+    (
+        "cd",
+        "<path>",
+        "go to a folder (any form, UNC too; Tab completes)",
+    ),
+    ("pin", "", "pin this folder (name, tags, key)"),
+    (
+        "pin url",
+        "[URL]",
+        "pin a web app (opens as its own window)",
+    ),
+    ("import-wtm", "", "import wtm's launcher entries as pins"),
+    ("launcher", "", "the launcher (also Space Space)"),
+    ("sync", "[name]", "run a sync preset (dry run first)"),
+    ("sync!", "[name]", "run an update sync without the preview"),
+    ("sync new", "", "new sync preset from this folder"),
+    ("backup", "[name]", "run a backup preset"),
+    ("backup new", "", "new backup preset from this folder"),
+    (
+        "connect",
+        "[path]",
+        "log in to a share (the one under the cursor)",
+    ),
+    ("net list", "", "live network connections"),
+    ("net drop", "<server>", "disconnect from a server"),
+    ("tags", "", "the tag picker"),
+    ("tag rename", "<old> <new>", "rename a tag on every pin"),
+    ("tag delete", "<tag>", "remove a tag from every pin"),
+    (
+        "view save",
+        "<name>",
+        "save the last pin-picker query as a view",
+    ),
+    ("rename", "", "bulk rename in $EDITOR (Neovim)"),
+    ("machines", "", "user PCs (also gm)"),
+    ("set", "rnu nornu nu nonu", "line numbers"),
+    ("q", "", "quit (wq: and cd the shell here)"),
+];
+
+/// The commands that start with what's typed (else with its first word, so `sync HIT`
+/// still shows the sync ones), as `name args — what it does`.
+pub fn command_hints(typed: &str) -> Vec<String> {
+    let t = typed.trim_start().to_lowercase();
+    let word = t.split_whitespace().next().unwrap_or("");
+    let pick = |prefix: &str| -> Vec<String> {
+        COMMANDS
+            .iter()
+            .filter(|(c, a, _)| format!("{c} {a}").starts_with(prefix))
+            .map(|(c, a, d)| {
+                if a.is_empty() {
+                    format!("{c} — {d}")
+                } else {
+                    format!("{c} {a} — {d}")
+                }
+            })
+            .collect()
+    };
+    let exact = pick(&t);
+    if exact.is_empty() { pick(word) } else { exact }
+}
+
 impl Action {
     /// Parses a `run` string or a `:` command line (without the `:`).
     pub fn parse(text: &str) -> Result<Action, String> {
@@ -680,6 +744,22 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ),
         ("<C-Space>", Launcher, ""),
         ("<leader>p", PinPicker, "pins picker"),
+        (
+            "<leader>nu",
+            PinUrl(String::new()),
+            "new web app pin (a URL)",
+        ),
+        (
+            "<leader>ns",
+            Sync("new".to_string(), false),
+            "new sync preset from this folder",
+        ),
+        (
+            "<leader>nb",
+            Backup("new".to_string()),
+            "new backup preset from this folder",
+        ),
+        ("<leader>ni", ImportWtm, "import wtm's launcher entries"),
         ("<leader>t", TagPicker, "tags: pick, filter, rename"),
         ("<leader>m", MachinePicker, "machines picker"),
         ("<leader>j", Jobs, "jobs panel"),
@@ -725,6 +805,7 @@ fn group_label(prefix: &[Key], leader: Key) -> &'static str {
             _ => "more",
         },
         [l, k] if *l == leader && k.code == KeyCode::Char('r') => "run a preset",
+        [l, k] if *l == leader && k.code == KeyCode::Char('n') => "new… (web app, presets)",
         _ => "more",
     }
 }
@@ -1112,6 +1193,44 @@ mod tests {
             let got = Action::parse(s).err().unwrap_or_default();
             assert!(got.contains(want), "{s}: {got}");
         }
+    }
+
+    #[test]
+    fn command_hints_and_the_new_group() {
+        let h = command_hints("pin u");
+        assert_eq!(
+            h,
+            ["pin url [URL] — pin a web app (opens as its own window)"]
+        );
+        assert_eq!(command_hints("pi").len(), 2, "pin and pin url");
+        // A name typed after the command still shows its family.
+        assert!(
+            command_hints("sync HIT")
+                .iter()
+                .all(|s| s.starts_with("sync"))
+        );
+        assert!(command_hints("zzz").is_empty());
+        // Every listed command parses (arguments filled in where needed).
+        for (c, a, _) in COMMANDS {
+            let line = match *a {
+                "" => c.to_string(),
+                "<path>" => format!("{c} C:\\"),
+                "<old> <new>" => format!("{c} a b"),
+                "rnu nornu nu nonu" => format!("{c} rnu"),
+                _ => format!("{c} x"),
+            };
+            assert!(Action::parse(&line).is_ok(), "{line}");
+        }
+        // Space n: the "new…" group in which-key.
+        let km = Keymap::default();
+        let cont = km.continuations(&[km.leader]);
+        assert!(
+            cont.iter()
+                .any(|c| c.key.plain_char() == Some('n') && c.group && c.desc.contains("new")),
+            "{cont:?}"
+        );
+        let n = km.continuations(&[km.leader, Key::plain(KeyCode::Char('n'))]);
+        assert_eq!(n.len(), 4);
     }
 
     #[test]

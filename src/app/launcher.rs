@@ -15,7 +15,65 @@ use crate::launcher::entry::{self, WtmEntry};
 use crate::picker::{ItemKind, PickItem, Source};
 use crate::pins::Pin;
 
+/// The launcher's "+ …" rows: (name, how else to get there). Shown last with no query,
+/// and found by typing (`pin`, `wtm`, `start`…), so nothing has to be remembered.
+pub const ACTIONS: &[(&str, &str)] = &[
+    ("+ Pin a web app (URL)…", "^a here · :pin url · Space n u"),
+    ("+ Show / hide Start Menu apps", "^s here"),
+    ("+ Import from wtm…", ":import-wtm · Space n i"),
+    (
+        "+ New sync preset from this folder…",
+        ":sync new · Space n s",
+    ),
+    (
+        "+ New backup preset from this folder…",
+        ":backup new · Space n b",
+    ),
+];
+
 impl App {
+    pub(super) fn launcher_action_items(&self) -> Vec<PickItem> {
+        ACTIONS
+            .iter()
+            .enumerate()
+            .map(|(id, (name, how))| PickItem {
+                id,
+                name: name.to_string(),
+                detail: how.to_string(),
+                kind: ItemKind::Action,
+                key: None,
+                tags: Vec::new(),
+                unc: false,
+                local: false,
+                reachable: None,
+                server: None,
+                score: 0,
+            })
+            .collect()
+    }
+
+    /// Enter on a "+ …" row (the launcher is closed already). `typed`: the query, a URL
+    /// for the web pin when it looks like one.
+    pub(super) fn run_launcher_action(&mut self, id: usize, typed: &str) {
+        match id {
+            0 => {
+                let url = if typed.contains('.') { typed } else { "" };
+                self.new_web_pin(url);
+            }
+            1 => {
+                self.launcher_start_menu = !self.launcher_start_menu;
+                if self.launcher_start_menu && self.start_menu.is_none() {
+                    self.worker.scan_start_menu();
+                }
+                self.open_launcher("");
+            }
+            2 => self.import_wtm_command(),
+            3 => self.sync_command("new", false),
+            4 => self.backup_command("new"),
+            _ => {}
+        }
+    }
+
     /// `:import-wtm`.
     pub(super) fn import_wtm_command(&mut self) {
         if !self.pins_ready() {
