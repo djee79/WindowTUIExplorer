@@ -635,3 +635,43 @@ Manual checklist:
 - [ ] `:rename` opens Neovim in the same terminal; after `:wq` sentier comes back intact.
 - [ ] `r` on `report.pdf`: cursor before `.pdf`.
 - [ ] On a colleague's `C$`: rename asks naming the machine; `audit.log` has the line.
+
+## M4b presets, slice 1: sync presets (code complete 2026-11-06, manual check pending)
+
+- A `kind = "sync"` pin is a preset (`jobs/preset.rs`): `source`, `dest`, `mode`
+  (`mirror` | `update`, default **update**), `exclude_dirs` (`/XD`), `exclude_files`
+  (`/XF`). A preset whose folders are the same or nest is refused at load, reported like
+  any broken pin, and kept in the file as written.
+- Enter on it (picker, Locations, `'key`), `:sync <name>`, `<leader>rs` (the pin picker
+  filtered to `is:sync`): a **dry run first**, `robocopy /MIR /L /R:0 /W:0` on the worker
+  (Esc kills it). The preview (05-sync-preview) shows files to copy, how many replace a
+  local copy, local files (and folders) **DELETED** in mirror or "kept" in update,
+  unchanged; then the list worth a look (deletions in mirror, replacements in update).
+  `Tab` lists every change, `j`/`k` `^d`/`^u` `gg`/`G` scroll, `u` flips mirror ↔ update for
+  this run, `R` dry-runs again, `Enter` runs, `Esc`/`q` cancels ("nothing was touched").
+  A failed dry run (dead share, access denied) shows robocopy's error and won't run.
+  Nothing to do: Enter just closes.
+- The dry run always uses `/MIR`, so it lists local-only files in both modes and `u`
+  needs no second pass.
+- `Shift-Enter` in a picker or `:sync! <name>` skips the preview for an **update** preset;
+  mirror always previews.
+- The run is a normal job (`sync · mirror` in the jobs panel), using the preview's totals
+  (no second `/L` pass). When it ends, the outcome goes to
+  `%LOCALAPPDATA%\sentier\presets.json` (keyed by source + dest, so a rename keeps it;
+  merged entry by entry so a headless run isn't overwritten). The pin's preview pane shows
+  `Last run  today 08:12 ✓ 3.80 GB in 2m41s` / `yesterday 17:03 ✗ failed (2 locked)`.
+- robocopy: `/XD` / `/XF` support; a dry run never retries (`/R:0 /W:0`); the tracker
+  keeps extra files' sizes and `*EXTRA Dir` folders.
+
+Not yet: creating a sync preset from inside sentier (for now, a `[[pin]]` in pins.toml;
+`Ctrl-e` edits name/tags/key), backup presets (slice 2), `sentier run` (slice 3). A
+mapped drive and its UNC path (`P:\HIT` vs `\srv01\aveva\HIT`) aren't recognised as the
+same folder by the nesting check.
+
+Manual checklist (office):
+- [ ] A real HIT → local preset in mirror: preview counts look right; Esc leaves D: untouched.
+- [ ] `u` then Enter: update run; local-only files survive. Mirror run: they're gone.
+- [ ] Preset on a dead share (`\10.255.255.1\x`): the dry run fails with ERROR 53 quickly
+      (no 30 s retries), UI responsive, Esc works while it runs.
+- [ ] `Shift-Enter` in WezTerm: does it arrive as Shift-Enter? (else `:sync!`).
+- [ ] `last:` line after a run, and again after restarting sentier.

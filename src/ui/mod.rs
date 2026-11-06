@@ -9,6 +9,7 @@ mod locations;
 mod netlist;
 mod picker;
 mod statusbar;
+mod sync;
 mod theme;
 mod whichkey;
 
@@ -50,6 +51,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.mode == Mode::Jobs {
         jobs::draw(f, body, app);
+    }
+    if app.mode == Mode::SyncPreview {
+        sync::draw(f, body, app);
     }
     if app.mode == Mode::Help {
         help::draw(f, body, app);

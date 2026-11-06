@@ -15,6 +15,8 @@ mod picker;
 mod pins;
 mod preview;
 mod search;
+mod sync;
+pub use sync::{PreviewStatus, SyncPreviewState};
 mod tags;
 
 pub use keys::{Prompt, PromptKind};
@@ -99,6 +101,8 @@ pub enum Mode {
     NetList,
     /// The credential prompt (a share refused the login, or `:connect`).
     Credentials,
+    /// A sync preset's dry-run preview (Enter runs it, `u` mirror/update, `Tab` all).
+    SyncPreview,
     /// `J`: the jobs panel (list, detail, report).
     Jobs,
 }
@@ -265,6 +269,10 @@ pub struct App {
     paste_token: u64,
     pending_paste: Option<jobs::PendingPaste>,
     last_paste: Option<(jobs::Register, bool)>,
+    /// Sync presets (M4b): the open dry-run preview and the last runs from presets.json.
+    pub sync_preview: Option<SyncPreviewState>,
+    pub preset_runs: crate::jobs::preset::Runs,
+    sync_token: u64,
     /// File operations: the open rename / delete prompt's subject, how many are running,
     /// the name to put the cursor on when the listing comes back, and a program to run
     /// with the TUI suspended (`:rename` in the editor).
@@ -375,6 +383,9 @@ impl App {
             paste_token: 0,
             pending_paste: None,
             last_paste: None,
+            sync_preview: None,
+            preset_runs: Default::default(),
+            sync_token: 0,
             op_draft: None,
             ops_running: 0,
             select_next: None,
@@ -400,6 +411,7 @@ impl App {
             .load_recent_machines(crate::machines::DEFAULT_RECENT_DAYS);
         app.worker.load_keymap();
         app.worker.load_job_reports();
+        app.worker.load_preset_runs();
         app.set_cwd(start, None);
         app
     }
@@ -961,6 +973,13 @@ impl App {
             AppEvent::FileOpDone { op, result } => self.on_file_op_done(op, result),
             AppEvent::JobReports(reports) => self.on_job_reports(reports),
             AppEvent::AvevaChecked { token, hits } => self.on_aveva_checked(token, hits),
+            AppEvent::SyncPreviewed { token, result } => self.on_sync_previewed(token, result),
+            AppEvent::PresetRuns(runs) => {
+                // A run recorded before the file was read is newer: keep it.
+                for (k, v) in runs {
+                    self.preset_runs.entry(k).or_insert(v);
+                }
+            }
             AppEvent::NetDropped(results) => self.on_net_dropped(results),
             AppEvent::PinsLoaded(result) => self.on_pins_loaded(result),
             AppEvent::PinsSaveFailed(e) => {
@@ -1528,11 +1547,11 @@ mod tests {
 
         press(&mut app, ":frobnicate<CR>");
         assert!(app.status.as_ref().is_some_and(|s| s.is_error));
-        press(&mut app, ":sync<CR>");
+        press(&mut app, ":import-wtm<CR>");
         assert!(
             app.status
                 .as_ref()
-                .is_some_and(|s| s.text.contains("arrives in M4b"))
+                .is_some_and(|s| s.text.contains("arrives in M5"))
         );
         press(&mut app, ":set nornu<CR>");
         assert!(!app.relative_number && app.number);
@@ -4032,5 +4051,118 @@ mod job_tests {
         press(&mut app, "gl");
         press(&mut app, "D");
         assert!(status(&app).contains("in Locations dd removes"));
+    }
+
+    fn preview_done(a: &App) -> bool {
+        a.sync_preview
+            .as_ref()
+            .is_some_and(|s| !matches!(s.status, PreviewStatus::Running))
+    }
+
+    /// A sync preset end to end with real robocopy: dry run, nothing touched, `u` to
+    /// update (keeps the local-only file), then mirror (deletes it), last runs kept.
+    #[test]
+    fn sync_preset_previews_runs_and_remembers() {
+        use crate::jobs::preset::{Change, SyncMode};
+        let dir = temp_tree();
+        let local = dir.join("dst");
+        let _ = std::fs::write(local.join("stale.txt"), "old");
+        let mut l = Live::new(&dir);
+        l.until(|a| a.pins_loaded);
+        let text = format!(
+            "[[pin]]\nkind = 'sync'\nname = 'proj sync'\nsource = '{}'\ndest = '{}'\n\
+             mode = 'mirror'\nkey = 's'\n",
+            dir.join("src").display(),
+            local.display()
+        );
+        let Ok((store, notes)) = crate::pins::parse(&text) else {
+            panic!("{text}")
+        };
+        assert!(notes.is_empty(), "{notes:?}");
+        l.app.pins = store;
+
+        press(&mut l.app, ":sync proj<CR>");
+        assert_eq!(l.app.mode, Mode::SyncPreview);
+        l.until(preview_done);
+        let Some(pv) = l
+            .app
+            .sync_preview
+            .as_ref()
+            .and_then(|s| s.preview().cloned())
+        else {
+            panic!("{:?}", l.app.sync_preview.as_ref().map(|s| &s.status))
+        };
+        assert_eq!(pv.to_copy(), (3, 4));
+        assert_eq!(pv.count(Change::Extra).0, 1);
+        assert!(
+            pv.rows.iter().any(|r| r.rel == r"proj\sub\c.txt"),
+            "{:?}",
+            pv.rows
+        );
+        assert!(
+            local.join("stale.txt").exists(),
+            "a dry run touches nothing"
+        );
+        assert!(!local.join("a.txt").exists());
+        let screen = render(&mut l.app, 120, 40);
+        assert!(screen.contains("Sync preview · proj sync"), "{screen}");
+        assert!(screen.contains("local files will be DELETED"), "{screen}");
+        assert!(screen.contains("- stale.txt"), "{screen}");
+
+        // `u`: this run updates; the local-only file is kept.
+        press(&mut l.app, "u");
+        let screen = render(&mut l.app, 120, 40);
+        assert!(screen.contains("local-only files, kept"), "{screen}");
+        press(&mut l.app, "<CR>");
+        assert!(l.app.sync_preview.is_none());
+        l.until(|a| a.jobs.first().is_some_and(|j| j.phase.is_over()));
+        let job = &l.app.jobs[0];
+        assert_eq!(job.phase, Phase::Done, "{:?}", job.error);
+        assert_eq!(job.total_files, Some(3), "totals came from the preview");
+        assert_eq!(
+            job.preset.as_ref().map(|p| p.label.as_str()),
+            Some("sync · update")
+        );
+        assert!(local.join("proj").join("sub").join("c.txt").exists());
+        assert!(local.join("stale.txt").exists(), "update never deletes");
+        let key = crate::jobs::preset::SyncPreset::from_pin(&l.app.pins.pins[0]).map(|p| p.key());
+        let run = key.ok().and_then(|k| l.app.preset_runs.get(&k).cloned());
+        assert_eq!(run.map(|r| (r.phase, r.files)), Some((Phase::Done, 3)));
+        assert!(
+            l.app
+                .last_run_line(&l.app.pins.pins[0])
+                .is_some_and(|s| s.starts_with("today ") && s.contains('✓'))
+        );
+
+        // Mirror now: nothing to copy, the stale file goes.
+        press(&mut l.app, "'s");
+        assert_eq!(l.app.mode, Mode::SyncPreview);
+        l.until(preview_done);
+        assert_eq!(
+            l.app.sync_preview.as_ref().map(|s| s.mode),
+            Some(SyncMode::Mirror)
+        );
+        press(&mut l.app, "<CR>");
+        l.until(|a| a.jobs.len() == 2 && a.jobs.iter().all(|j| j.phase.is_over()));
+        assert!(
+            !local.join("stale.txt").exists(),
+            "mirror deletes local extras"
+        );
+        assert!(local.join("a.txt").exists());
+
+        // Up to date: Enter just closes. `:sync!` on a mirror preset still previews.
+        press(&mut l.app, ":sync! proj sync<CR>");
+        assert_eq!(l.app.mode, Mode::SyncPreview);
+        l.until(preview_done);
+        press(&mut l.app, "<CR>");
+        assert!(status(&l.app).contains("up to date"), "{}", status(&l.app));
+        assert_eq!(l.app.jobs.len(), 2);
+        press(&mut l.app, ":sync proj<CR>");
+        press(&mut l.app, "<Esc>");
+        assert_eq!(l.app.mode, Mode::Normal);
+        assert!(status(&l.app).contains("nothing was touched"));
+        press(&mut l.app, ":sync nope<CR>");
+        assert!(status(&l.app).contains("no sync preset matches"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

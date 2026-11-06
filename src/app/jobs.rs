@@ -349,14 +349,15 @@ impl App {
             overwrite: req.overwrite,
             threads: self.config.jobs.robocopy_threads.unwrap_or(0),
             log,
+            mirror: false,
+            exclude_dirs: Vec::new(),
+            exclude_files: Vec::new(),
+            totals: None,
         };
-        let cancel = self.worker.start_job(id, spec);
-        self.job_cancel.insert(id, cancel);
-        self.jobs.push(job);
+        self.launch_job(job, spec);
         if req.op == Op::Move {
             self.register = None;
         }
-        self.jobs_cursor = 0;
         self.set_status(
             format!(
                 "{} {} ({}) · J shows jobs",
@@ -368,8 +369,16 @@ impl App {
         );
     }
 
+    /// Hands the job to the worker and lists it first in the panel.
+    pub(super) fn launch_job(&mut self, job: Job, spec: Spec) {
+        let cancel = self.worker.start_job(job.id, spec);
+        self.job_cancel.insert(job.id, cancel);
+        self.jobs.push(job);
+        self.jobs_cursor = 0;
+    }
+
     /// Ids are the start time in ms, so reports from earlier sessions never collide.
-    fn new_job_id(&mut self) -> u64 {
+    pub(super) fn new_job_id(&mut self) -> u64 {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as u64);
@@ -395,6 +404,9 @@ impl App {
         let report = job.report(now);
         let (phase, title) = (job.phase, job.title.clone());
         self.worker.save_report(report.clone());
+        if let Some(p) = &report.preset {
+            self.record_preset_run(&p.key, jobs::preset::LastRun::from_report(&report));
+        }
         // The folders it changed show the change.
         let mut touched: Vec<String> = vec![report.dest.clone()];
         if report.op == Op::Move {

@@ -27,6 +27,12 @@ pub struct Spec {
     /// `/MT:n`, 0 = off.
     pub threads: u32,
     pub log: String,
+    /// Sync presets: `/MIR` instead of `/E`.
+    pub mirror: bool,
+    pub exclude_dirs: Vec<String>,
+    pub exclude_files: Vec<String>,
+    /// (files, bytes) already known from a preview: the `/L` pass is skipped.
+    pub totals: Option<(u64, u64)>,
 }
 
 /// Runs everything, then sends `Finished`.
@@ -60,25 +66,30 @@ fn run_robocopy(spec: &Spec, cancel: &CancelToken, send: &dyn Fn(JobEvent)) -> b
     let opts = |list_only: bool| Options {
         moving: spec.moving,
         overwrite: spec.overwrite,
-        mirror: false,
+        mirror: spec.mirror,
         list_only,
         threads: if list_only { 0 } else { spec.threads },
         log: (!list_only).then(|| spec.log.clone()),
+        exclude_dirs: spec.exclude_dirs.clone(),
+        exclude_files: spec.exclude_files.clone(),
     };
-    let (mut files, mut bytes) = (0, 0);
-    for step in &spec.plan.steps {
-        let mut t = Tracker::new(true);
-        let r = robocopy_once(&robocopy::args(step, &opts(true)), cancel, &mut |evs| {
-            for e in evs {
-                t.apply(e);
+    // A preview already counted it: no second `/L` pass.
+    let (mut files, mut bytes) = spec.totals.unwrap_or((0, 0));
+    let to_scan = if spec.totals.is_some() {
+        &[][..]
+    } else {
+        &spec.plan.steps[..]
+    };
+    for step in to_scan {
+        let (t, _) = match dry_run(step, &opts(true), cancel) {
+            Ok(r) => r,
+            Err(e) => {
+                send(JobEvent::Error(e));
+                return false;
             }
-        });
+        };
         if cancel.is_cancelled() {
             return true;
-        }
-        if let Err(e) = r {
-            send(JobEvent::Error(e));
-            return false;
         }
         if let Some(s) = t.summary {
             files += s.files.copied;
@@ -102,6 +113,29 @@ fn run_robocopy(spec: &Spec, cancel: &CancelToken, send: &dyn Fn(JobEvent)) -> b
         }
     }
     false
+}
+
+/// One `/L` pass (`opts.list_only` is forced on): what robocopy would do, and its exit
+/// code. Used for a paste's totals and a sync preset's preview.
+pub fn dry_run(
+    step: &robocopy::Step,
+    opts: &Options,
+    cancel: &CancelToken,
+) -> Result<(Tracker, i32), String> {
+    let opts = Options {
+        list_only: true,
+        threads: 0,
+        log: None,
+        ..opts.clone()
+    };
+    let mut t = Tracker::new(true);
+    let code = robocopy_once(&robocopy::args(step, &opts), cancel, &mut |evs| {
+        for e in evs {
+            t.apply(e);
+        }
+    })?;
+    t.finish();
+    Ok((t, code))
 }
 
 fn quote_args(args: &[String]) -> String {
@@ -312,6 +346,10 @@ mod tests {
             overwrite,
             threads: 0,
             log: log.to_string(),
+            mirror: false,
+            exclude_dirs: vec![],
+            exclude_files: vec![],
+            totals: None,
         };
         let events = Mutex::new(Vec::new());
         run(&spec, &CancelToken::default(), &|e| {

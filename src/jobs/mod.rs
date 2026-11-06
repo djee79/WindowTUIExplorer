@@ -3,6 +3,7 @@
 //! (robocopy's, parsed, or the same events made by the native backend), and the app
 //! applies them here.
 
+pub mod preset;
 pub mod robocopy;
 pub mod run;
 
@@ -308,6 +309,8 @@ pub struct Job {
     samples: VecDeque<(Instant, u64)>,
     /// The last non-zero speed (bytes/s), shown while the current one is unknown.
     pub last_speed: Option<f64>,
+    /// Started from a sync / backup preset: its last-run state is updated at the end.
+    pub preset: Option<preset::PresetRef>,
 }
 
 impl Job {
@@ -341,6 +344,7 @@ impl Job {
             ended: None,
             samples: VecDeque::new(),
             last_speed: None,
+            preset: None,
         }
     }
 
@@ -516,6 +520,7 @@ impl Job {
             log: self.log.clone(),
             steps: self.steps.clone(),
             overwrite: self.overwrite,
+            preset: self.preset.clone(),
         }
     }
 }
@@ -552,6 +557,8 @@ pub struct Report {
     /// For `r` (retry failed only).
     pub steps: Vec<Step>,
     pub overwrite: Overwrite,
+    #[serde(default)]
+    pub preset: Option<preset::PresetRef>,
 }
 
 impl Report {

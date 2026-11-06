@@ -300,8 +300,10 @@ pub struct Tracker {
     pub current: Option<Current>,
     pub files_done: u64,
     pub bytes_done: u64,
-    /// Files listed (`/L`) or removed (`/MIR`) only in the destination.
-    pub extras: Vec<String>,
+    /// Files listed (`/L`) or removed (`/MIR`) only in the destination, with their size.
+    pub extras: Vec<(u64, String)>,
+    /// Folders only in the destination (`*EXTRA Dir`).
+    pub extra_dirs: Vec<String>,
     /// Files that will be / were copied, with their class (kept for `/L` previews).
     pub listed: Vec<(FileClass, u64, String)>,
     pub retries: Vec<Retry>,
@@ -338,10 +340,14 @@ impl Tracker {
 
     pub fn apply(&mut self, ev: Event) {
         match ev {
-            Event::Dir { .. } => {}
+            Event::Dir { path, extra } => {
+                if extra {
+                    self.extra_dirs.push(path);
+                }
+            }
             Event::File { class, size, path } => {
                 if class == FileClass::Extra {
-                    self.extras.push(path);
+                    self.extras.push((size, path));
                     return;
                 }
                 if self.list_only {
@@ -571,18 +577,38 @@ pub struct Options {
     /// `/MT:n` (0: off).
     pub threads: u32,
     pub log: Option<String>,
+    /// `/XD`: folder names or paths left out (and, with `/MIR`, never deleted).
+    pub exclude_dirs: Vec<String>,
+    /// `/XF`: file names or globs left out.
+    pub exclude_files: Vec<String>,
 }
 
-/// `src dst [files] /E /Z /R:2 /W:5 /BYTES /FP /TEE [/MOV|/MOVE] [/XC /XN /XO | /IS /IT]
-/// [/MT:n] [/L] /UNILOG+:<log>`
+/// `src dst [files] /E|/MIR /Z /R:2 /W:5 /BYTES /FP /TEE [/XD …] [/XF …] [/MOV|/MOVE]
+/// [/XC /XN /XO | /IS /IT] [/MT:n] [/L] /UNILOG+:<log>` (a dry run, `/L`, uses `/R:0 /W:0`)
 pub fn args(step: &Step, o: &Options) -> Vec<String> {
     let mut a = vec![step.src.clone(), step.dst.clone()];
     a.extend(step.files.iter().cloned());
     if step.files.is_empty() {
         a.push(if o.mirror { "/MIR" } else { "/E" }.into());
     }
-    for s in ["/Z", "/R:2", "/W:5", "/BYTES", "/FP", "/TEE"] {
+    // A dry run touches nothing, so a failure is worth no retries or waits.
+    let retries: [&str; 2] = if o.list_only {
+        ["/R:0", "/W:0"]
+    } else {
+        ["/R:2", "/W:5"]
+    };
+    a.push("/Z".into());
+    a.extend(retries.map(String::from));
+    for s in ["/BYTES", "/FP", "/TEE"] {
         a.push(s.into());
+    }
+    if !o.exclude_dirs.is_empty() {
+        a.push("/XD".into());
+        a.extend(o.exclude_dirs.iter().cloned());
+    }
+    if !o.exclude_files.is_empty() {
+        a.push("/XF".into());
+        a.extend(o.exclude_files.iter().cloned());
     }
     if o.moving {
         a.push(
@@ -706,7 +732,7 @@ mod tests {
         let (t, code) = track("mirror_extra", false);
         assert_eq!(code, 3);
         assert_eq!(t.extras.len(), 2);
-        assert!(t.extras.iter().any(|e| e.ends_with(r"old\stale.txt")));
+        assert!(t.extras.iter().any(|(_, e)| e.ends_with(r"old\stale.txt")));
         assert_eq!(t.files_done, 4);
         assert_eq!(t.summary.map(|s| s.files.extras), Some(2));
     }
@@ -867,6 +893,8 @@ Accès refusé.\r\n";
             list_only: false,
             threads: 0,
             log: Some(r"C:\l\j.log".into()),
+            exclude_dirs: vec![],
+            exclude_files: vec![],
         };
         let a = args(&dir, &o);
         assert_eq!(&a[..3], [r"\\srv01\p\HIT", r"D:\HIT", "/E"]);
@@ -887,10 +915,19 @@ Accès refusé.\r\n";
             mirror: true,
             list_only: true,
             overwrite: Overwrite::Changed,
-            ..o
+            exclude_dirs: vec!["tmp".into(), "old dir".into()],
+            exclude_files: vec!["*.bak".into()],
+            ..o.clone()
         };
         let a = args(&dir, &mirror);
         assert!(a.contains(&"/MIR".to_string()) && a.contains(&"/L".to_string()));
         assert!(!a.contains(&"/XO".to_string()) && !a.contains(&"/IS".to_string()));
+        let xd = a.iter().position(|s| s == "/XD").unwrap_or(0);
+        assert_eq!(a[xd..xd + 5], ["/XD", "tmp", "old dir", "/XF", "*.bak"]);
+        assert!(
+            a.contains(&"/R:0".to_string()),
+            "a dry run never waits on retries"
+        );
+        assert!(!args(&dir, &o).contains(&"/R:0".to_string()));
     }
 }

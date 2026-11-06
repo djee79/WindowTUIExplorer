@@ -330,6 +330,11 @@ pub enum Action {
     /// `:view save <name>` (the last pin-picker query) / `:view delete <name>`.
     ViewSave(String),
     ViewDelete(String),
+    /// `:sync <preset>` (dry-run preview first) / `:sync! <preset>` (update mode skips
+    /// it; mirror never does). No name: the sync preset picker.
+    Sync(String, bool),
+    /// `<leader>rs`: the pins picker filtered to sync presets.
+    SyncPicker,
     /// `g<Space>`: the `:cd ` prompt, ready for a path (Yazi's `g<Space>`).
     GotoPath,
     Help,
@@ -421,6 +426,7 @@ const NAMED: &[(&str, Action)] = &[
     ("paste", Action::Paste),
     ("paste-overwrite", Action::PasteOverwrite),
     ("jobs", Action::Jobs),
+    ("sync-picker", Action::SyncPicker),
     ("repeat-paste", Action::RepeatPaste),
     ("goto-path", Action::GotoPath),
     ("help", Action::Help),
@@ -450,13 +456,7 @@ const NAMED: &[(&str, Action)] = &[
 
 /// Commands from the spec that later milestones bring; named so the message says "not
 /// yet" instead of "unknown".
-const LATER: &[(&str, &str)] = &[
-    ("picker", "M6"),
-    ("sync", "M4b"),
-    ("sync!", "M4b"),
-    ("backup", "M4b"),
-    ("import-wtm", "M5"),
-];
+const LATER: &[(&str, &str)] = &[("picker", "M6"), ("backup", "M4b"), ("import-wtm", "M5")];
 
 impl Action {
     /// Parses a `run` string or a `:` command line (without the `:`).
@@ -474,6 +474,8 @@ impl Action {
                 arg.to_string()
             })),
             "net" => Ok(Action::Net(arg.to_string())),
+            "sync" => Ok(Action::Sync(arg.to_string(), false)),
+            "sync!" => Ok(Action::Sync(arg.to_string(), true)),
             "pin" if arg.is_empty() => Ok(Action::PinCwd),
             "tags" if arg.is_empty() => Ok(Action::TagPicker),
             "tag" => {
@@ -630,6 +632,7 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("<leader>t", TagPicker, "tags: pick, filter, rename"),
         ("<leader>m", MachinePicker, "machines picker"),
         ("<leader>j", Jobs, "jobs panel"),
+        ("<leader>rs", SyncPicker, "run a sync preset"),
         ("J", Jobs, "jobs panel"),
         ("<Tab>", ToggleMark, "select + down"),
         ("v", Visual, "visual (range select)"),
@@ -669,6 +672,7 @@ fn group_label(prefix: &[Key], leader: Key) -> &'static str {
             KeyCode::Char(',') => "results",
             _ => "more",
         },
+        [l, k] if *l == leader && k.code == KeyCode::Char('r') => "run a preset",
         _ => "more",
     }
 }
@@ -1002,6 +1006,13 @@ mod tests {
                 Action::Cd(r"C:\Program Files".into()),
             ),
             ("locations", Action::Locations),
+            ("sync", Action::Sync(String::new(), false)),
+            (
+                "sync HIT → local",
+                Action::Sync("HIT → local".into(), false),
+            ),
+            ("sync! HIT", Action::Sync("HIT".into(), true)),
+            ("sync-picker", Action::SyncPicker),
             ("12", Action::GotoLine(12)),
             ("set rnu", Action::SetRelativeNumber(true)),
             ("set nornu", Action::SetRelativeNumber(false)),
@@ -1031,7 +1042,7 @@ mod tests {
             ("nope", "unknown command"),
             ("q now", "no argument"),
             ("picker files", "arrives in M6"),
-            ("sync HIT", "arrives in M4b"),
+            ("backup HIT", "arrives in M4b"),
             ("set", "set what"),
             ("set list", "unknown option"),
             ("tag rename x", "tag rename <old> <new>"),

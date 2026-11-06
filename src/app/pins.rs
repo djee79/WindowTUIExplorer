@@ -191,12 +191,14 @@ impl App {
         let Some(pin) = self.pins.pins.get(idx).cloned() else {
             return;
         };
-        if pin.kind == PinKind::Machine {
-            return self.open_machine_pin(&pin);
+        match pin.kind {
+            PinKind::Machine => return self.open_machine_pin(&pin),
+            PinKind::Sync => return self.open_sync_pin(idx, false),
+            _ => {}
         }
         let Some(target) = pin.target() else {
             let when = match pin.kind {
-                PinKind::Sync | PinKind::Backup => "M4b",
+                PinKind::Backup => "the next M4b slice",
                 _ => "M5",
             };
             self.set_status(

@@ -967,6 +967,53 @@ impl Worker {
         cancel
     }
 
+    /// A sync preset's dry run on the blocking pool: one `SyncPreviewed`. No timeout:
+    /// robocopy gives up on an unreachable share by itself (`/R:0`), and the cancel
+    /// token (Esc) kills it.
+    pub fn sync_preview(
+        &self,
+        token: u64,
+        step: crate::jobs::robocopy::Step,
+        opts: crate::jobs::robocopy::Options,
+    ) -> CancelToken {
+        let cancel = CancelToken::default();
+        let (tx, c) = (self.tx.clone(), cancel.clone());
+        self.rt.spawn_blocking(move || {
+            let result =
+                crate::jobs::run::dry_run(&step, &opts, &c).map(|(t, code)| (Box::new(t), code));
+            if !c.is_cancelled() {
+                let _ = tx.send(AppEvent::SyncPreviewed { token, result });
+            }
+        });
+        cancel
+    }
+
+    /// The presets' last runs: one `PresetRuns`.
+    pub fn load_preset_runs(&self) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let runs = crate::jobs::preset::runs_path()
+                .map(|p| crate::jobs::preset::load_runs(&p))
+                .unwrap_or_default();
+            let _ = tx.send(AppEvent::PresetRuns(runs));
+        });
+    }
+
+    /// Records one preset's last run: read, update, write, so a headless `sentier run`
+    /// writing the same file in between isn't lost.
+    pub fn record_preset_run(&self, key: String, run: crate::jobs::preset::LastRun) {
+        self.rt.spawn_blocking(move || {
+            let Some(p) = crate::jobs::preset::runs_path() else {
+                return;
+            };
+            let mut runs = crate::jobs::preset::load_runs(&p);
+            runs.insert(key, run);
+            if let Err(e) = crate::jobs::preset::save_runs(&p, &runs) {
+                tracing::warn!(error = %e, "saving presets.json");
+            }
+        });
+    }
+
     /// Which of `dirs` look like AVEVA projects: every marker glob matches a name at the
     /// folder's top level. A folder that can't be read in time counts as not one.
     pub fn aveva_check(&self, token: u64, dirs: Vec<String>, markers: Vec<String>) {

@@ -153,6 +153,12 @@ impl Pin {
 
     /// The first problem that keeps this pin from working, if any.
     fn missing(&self) -> Option<String> {
+        if self.kind == PinKind::Sync {
+            // The whole preset: paths, mode, excludes, and source/dest never nested.
+            return crate::jobs::preset::SyncPreset::from_pin(self)
+                .err()
+                .map(|e| format!("sync pin: {e}"));
+        }
         let has = |k: &str| self.extra.get(k).and_then(|v| v.as_str()).is_some();
         let needs = match self.kind {
             PinKind::Folder | PinKind::File if self.path.is_none() => "a path",
@@ -169,7 +175,7 @@ impl Pin {
 }
 
 /// `~` and `~\rest` → the home folder. Reads an environment variable, no I/O.
-fn expand_home(text: &str) -> Option<String> {
+pub(crate) fn expand_home(text: &str) -> Option<String> {
     let text = text.trim();
     match text.strip_prefix('~') {
         Some("") => std::env::var("USERPROFILE").ok(),

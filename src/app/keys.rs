@@ -142,6 +142,7 @@ impl App {
             Mode::Credentials => self.on_credentials_key(key),
             Mode::NetList => self.on_net_list_key(key),
             Mode::Jobs => self.on_jobs_key(key),
+            Mode::SyncPreview => self.on_sync_preview_key(key),
             Mode::Normal => self.on_normal_key(key),
         }
     }
@@ -354,6 +355,8 @@ impl App {
             Action::Connect => self.connect_here(),
             Action::Machines => self.open_machines(),
             Action::Net(arg) => self.net_command(&arg),
+            Action::Sync(name, skip) => self.sync_command(&name, skip),
+            Action::SyncPicker => self.sync_command("", false),
             Action::PrevPage => self.step_page(n, false),
             Action::GotoPage => match count {
                 Some(c) => self.goto_page(c),

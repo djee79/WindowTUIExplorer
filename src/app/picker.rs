@@ -210,7 +210,9 @@ impl App {
         match (ev.code, ctrl) {
             (KeyCode::Char('j' | 'n'), true) | (KeyCode::Down, _) => return self.picker_move(1),
             (KeyCode::Char('k' | 'p'), true) | (KeyCode::Up, _) => return self.picker_move(-1),
-            (KeyCode::Enter, _) => return self.picker_open(),
+            (KeyCode::Enter, _) => {
+                return self.picker_open(ev.modifiers.contains(KeyModifiers::SHIFT));
+            }
             (KeyCode::Char('e'), true) => return self.picker_edit(false),
             (KeyCode::Char('t'), true) => return self.picker_edit(true),
             (KeyCode::Char('x'), true) => return self.picker_delete(),
@@ -310,7 +312,8 @@ impl App {
         Some((item.kind, item.id, item.name.clone()))
     }
 
-    fn picker_open(&mut self) {
+    /// Enter; Shift-Enter (`skip_preview`) runs an update-mode sync preset at once.
+    fn picker_open(&mut self, skip_preview: bool) {
         let Some(p) = self.picker.as_ref() else {
             return;
         };
@@ -353,6 +356,7 @@ impl App {
                 Some(Err(e)) => self.set_status(e.to_string(), true),
                 None => {}
             },
+            ItemKind::Pin(PinKind::Sync) => self.open_sync_pin(id, skip_preview),
             _ => self.open_pin(id),
         }
     }

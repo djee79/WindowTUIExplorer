@@ -160,7 +160,7 @@ fn progress_line(j: &Job, w: usize, now: Instant) -> Line<'static> {
 }
 
 fn job_kind(j: &Job) -> String {
-    let mut s = format!("{} · {}", j.op.word(), j.backend.word());
+    let mut s = kind_word(j.preset.as_ref(), j.op, j.backend);
     if let (Some(f), Some(b)) = (j.total_files, j.total_bytes) {
         s.push_str(&format!(" · {f} files · {}", human_bytes(b)));
     }
@@ -168,7 +168,23 @@ fn job_kind(j: &Job) -> String {
 }
 
 fn report_kind(r: &Report) -> String {
-    format!("{} · {} → {}", r.op.word(), r.backend.word(), r.dest)
+    format!(
+        "{} → {}",
+        kind_word(r.preset.as_ref(), r.op, r.backend),
+        r.dest
+    )
+}
+
+/// `sync · mirror` for a preset's job, else `copy · robocopy`.
+fn kind_word(
+    preset: Option<&crate::jobs::preset::PresetRef>,
+    op: crate::jobs::Op,
+    backend: crate::jobs::Backend,
+) -> String {
+    match preset {
+        Some(p) => p.label.clone(),
+        None => format!("{} · {}", op.word(), backend.word()),
+    }
 }
 
 /// `  2 copied · 1 failed                      19:31`
@@ -197,7 +213,7 @@ fn draw_detail(f: &mut Frame, area: Rect, j: &Job) {
     let now = Instant::now();
     let block = panel(j.title.clone(), false).title(
         Line::from(Span::styled(
-            format!(" {} · {} ", j.op.word(), j.backend.word()),
+            format!(" {} ", kind_word(j.preset.as_ref(), j.op, j.backend)),
             theme::dim(),
         ))
         .right_aligned(),

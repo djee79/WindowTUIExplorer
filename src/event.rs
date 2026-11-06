@@ -71,6 +71,13 @@ pub enum AppEvent {
     },
     /// The job reports kept from earlier sessions.
     JobReports(Vec<crate::jobs::Report>),
+    /// A sync preset's dry run (`/MIR /L`): what robocopy would do and its exit code.
+    SyncPreviewed {
+        token: u64,
+        result: Result<(Box<crate::jobs::robocopy::Tracker>, i32), String>,
+    },
+    /// The presets' last runs, from `presets.json`.
+    PresetRuns(crate::jobs::preset::Runs),
     /// Which pasted folders look like AVEVA projects.
     AvevaChecked {
         token: u64,
