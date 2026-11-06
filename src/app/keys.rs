@@ -43,6 +43,8 @@ pub enum PromptKind {
     ViewKey,
     /// The tag picker's `^e`: the tag's new name.
     TagRename,
+    /// `gP` without a count: which PDF page.
+    GotoPage,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +76,7 @@ impl Prompt {
             PromptKind::ViewName => "view name: ",
             PromptKind::ViewKey => "view key (empty = none): ",
             PromptKind::TagRename => "rename tag to: ",
+            PromptKind::GotoPage => "go to page: ",
         }
     }
 }
@@ -302,6 +305,12 @@ impl App {
             Action::Cd(path) => self.cd(&path),
             Action::NameSearch => self.open_prompt(PromptKind::NameSearch),
             Action::ContentSearch => self.open_prompt(PromptKind::ContentSearch),
+            Action::NextPage => self.step_page(n, true),
+            Action::PrevPage => self.step_page(n, false),
+            Action::GotoPage => match count {
+                Some(c) => self.goto_page(c),
+                None => self.open_prompt_with(PromptKind::GotoPage, ""),
+            },
             Action::NextMatch => self.step_match(n, true),
             Action::PrevMatch => self.step_match(n, false),
             Action::GotoResultFolder => self.goto_result_folder(),
@@ -562,7 +571,8 @@ impl App {
             | PromptKind::Confirm
             | PromptKind::ViewName
             | PromptKind::ViewKey
-            | PromptKind::TagRename => p.note.clear(),
+            | PromptKind::TagRename
+            | PromptKind::GotoPage => p.note.clear(),
         }
     }
 
@@ -615,6 +625,11 @@ impl App {
                     self.mode = Mode::Prompt;
                 }
             }
+            PromptKind::GotoPage => match text.trim().parse::<usize>() {
+                Ok(n) if n > 0 => self.goto_page(n),
+                _ if text.trim().is_empty() => {}
+                _ => self.set_status(format!("not a page number: {}", text.trim()), true),
+            },
         }
     }
 
@@ -637,6 +652,7 @@ impl App {
             | PromptKind::ViewName
             | PromptKind::ViewKey
             | PromptKind::TagRename => self.pin_cancel(p.kind),
+            PromptKind::GotoPage => {}
         }
     }
 

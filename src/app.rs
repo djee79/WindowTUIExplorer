@@ -206,6 +206,8 @@ pub struct App {
     pub image_resized: bool,
     /// When the cursor last moved (pictures wait for it to be still).
     moved_at: Instant,
+    /// The page shown for each PDF previewed (0-based), so coming back keeps the page.
+    pdf_pages: HashMap<Loc, u32>,
     /// Reachability of Locations entries, keyed by the location each one opens.
     pub reach: HashMap<Loc, Reach>,
     last_probe_round: Option<Instant>,
@@ -274,6 +276,7 @@ impl App {
             image_place: None,
             image_resized: false,
             moved_at: Instant::now(),
+            pdf_pages: HashMap::new(),
             reach: HashMap::new(),
             last_probe_round: None,
             status: None,
@@ -2299,5 +2302,76 @@ mod preview_tests {
         app.tick(Instant::now() + app.keymap.timeout + Duration::from_millis(1));
         render(&mut app, 120, 30);
         assert!(app.image_drawn.is_none() && app.image_place.is_none());
+    }
+
+    #[test]
+    fn pdf_pages_step_clamp_and_are_remembered() {
+        let status = |app: &App| {
+            app.status
+                .as_ref()
+                .map(|s| s.text.clone())
+                .unwrap_or_default()
+        };
+        let (mut app, _rt, _) = with_photo();
+        let cwd = app.cwd.clone();
+        app.dirs.insert(
+            cwd.clone(),
+            DirState {
+                listing: Some(listing(vec![
+                    entry("notes.txt", EntryKind::File, 1536, false),
+                    entry("plan.pdf", EntryKind::File, 9000, false),
+                ])),
+                ..DirState::default()
+            },
+        );
+        app.set_cwd(cwd, None);
+        render(&mut app, 120, 30);
+        press(&mut app, "j"); // plan.pdf
+        settle(&mut app);
+        let page = |app: &App| app.image.as_ref().map(|s| s.key.page);
+        assert_eq!(page(&app), Some(0));
+        let screen = render(&mut app, 120, 30);
+        assert!(screen.contains("rendering page 1"), "{screen}");
+
+        // Two pages: the answer tells the count.
+        let pdf = crate::platform::tests::tiny_pdf(&[(595, 842), (1191, 842)]);
+        let Some(key) = app.image.as_ref().map(|s| s.key.clone()) else {
+            panic!()
+        };
+        let Ok(p) = crate::preview::image::pdf(&pdf, 0, &app.graphics, key.cols, key.rows) else {
+            panic!()
+        };
+        app.handle(AppEvent::ImagePreview {
+            key,
+            result: Ok(Arc::new(p)),
+        });
+        let screen = render(&mut app, 120, 30);
+        assert!(screen.contains("page 1 / 2 · A4 portrait"), "{screen}");
+
+        press(&mut app, "5]p");
+        app.tick(Instant::now());
+        assert_eq!(page(&app), Some(1), "clamped to the last page");
+        press(&mut app, "[p");
+        app.tick(Instant::now());
+        assert_eq!(page(&app), Some(0));
+        press(&mut app, "[p");
+        assert!(status(&app).contains("first page"));
+        press(&mut app, "2gP");
+        app.tick(Instant::now());
+        assert_eq!(page(&app), Some(1));
+        press(&mut app, "gP1<CR>");
+        app.tick(Instant::now());
+        assert_eq!(page(&app), Some(0));
+        press(&mut app, "gPx<CR>");
+        assert!(status(&app).contains("not a page number"));
+
+        // Leave and come back: the page is kept.
+        press(&mut app, "2gPkj");
+        settle(&mut app);
+        assert_eq!(page(&app), Some(1));
+
+        // Not on a PDF.
+        press(&mut app, "k]p");
+        assert!(status(&app).contains("PDF under the cursor"));
     }
 }

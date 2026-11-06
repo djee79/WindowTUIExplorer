@@ -317,6 +317,10 @@ pub enum Action {
     NameSearch,
     /// `S`: recursive content search below the current folder.
     ContentSearch,
+    /// `]p` / `[p` / `gP`: page through the PDF under the cursor (counts work).
+    NextPage,
+    PrevPage,
+    GotoPage,
     /// `]m` / `[m`: next / previous match in the preview of a content-search result.
     NextMatch,
     PrevMatch,
@@ -377,6 +381,9 @@ const NAMED: &[(&str, Action)] = &[
     ("quit-no-write", Action::QuitNoWrite),
     ("name-search", Action::NameSearch),
     ("content-search", Action::ContentSearch),
+    ("next-page", Action::NextPage),
+    ("prev-page", Action::PrevPage),
+    ("goto-page", Action::GotoPage),
     ("next-match", Action::NextMatch),
     ("prev-match", Action::PrevMatch),
     ("goto-result-folder", Action::GotoResultFolder),
@@ -537,6 +544,9 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("f", Filter, "filter this directory"),
         ("s", NameSearch, "search names below here"),
         ("S", ContentSearch, "search contents below here"),
+        ("]p", NextPage, "next PDF page"),
+        ("[p", PrevPage, "previous PDF page"),
+        ("gP", GotoPage, "go to PDF page"),
         ("]m", NextMatch, "next match in the preview"),
         ("[m", PrevMatch, "previous match in the preview"),
         ("gr", GotoResultFolder, "go to the result's folder"),

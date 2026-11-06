@@ -438,9 +438,16 @@ impl Worker {
             };
             let result = match read {
                 Ok(bytes) => {
-                    let (cols, rows) = (key.cols, key.rows);
+                    let (cols, rows, page) = (key.cols, key.rows, key.page);
+                    let is_pdf = preview::PreviewKind::of(&key.loc.name())
+                        == Some(preview::PreviewKind::Pdf);
                     let decode = tokio::task::spawn_blocking(move || {
-                        preview::image::decode(&bytes, &picker, cols, rows).map(Arc::new)
+                        if is_pdf {
+                            preview::image::pdf(&bytes, page, &picker, cols, rows)
+                        } else {
+                            preview::image::decode(&bytes, &picker, cols, rows)
+                        }
+                        .map(Arc::new)
                     });
                     decode.await.unwrap_or_else(|e| Err(e.to_string()))
                 }

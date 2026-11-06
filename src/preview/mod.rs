@@ -38,6 +38,8 @@ pub const CACHE_ENTRIES: usize = 64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewKind {
     Image,
+    /// A page of a PDF, rendered by Windows (`platform::pdf_page`).
+    Pdf,
 }
 
 impl PreviewKind {
@@ -47,9 +49,80 @@ impl PreviewKind {
             "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "ico" => {
                 Some(PreviewKind::Image)
             }
+            "pdf" => Some(PreviewKind::Pdf),
             _ => None,
         }
     }
+}
+
+/// What a PDF preview shows next to the page.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PdfInfo {
+    /// 0-based.
+    pub page: u32,
+    pub count: u32,
+    pub width_mm: f32,
+    pub height_mm: f32,
+}
+
+impl PdfInfo {
+    /// From the page size in device-independent pixels (1/96 inch).
+    pub fn from_dip(page: u32, count: u32, w: f32, h: f32) -> PdfInfo {
+        PdfInfo {
+            page,
+            count,
+            width_mm: w / 96.0 * 25.4,
+            height_mm: h / 96.0 * 25.4,
+        }
+    }
+
+    /// `page 2 / 14 · A3 landscape · 420×297 mm (16.5×11.7 in)`.
+    pub fn caption(&self) -> String {
+        let (w, h) = (self.width_mm, self.height_mm);
+        let sheet = sheet_name(w, h)
+            .map(|s| format!(" · {s}"))
+            .unwrap_or_default();
+        format!(
+            "page {} / {}{sheet} · {:.0}×{:.0} mm ({:.1}×{:.1} in)",
+            self.page + 1,
+            self.count,
+            w,
+            h,
+            w / 25.4,
+            h / 25.4
+        )
+    }
+}
+
+/// Named sheet sizes, portrait, in mm.
+const SHEETS: &[(&str, f32, f32)] = &[
+    ("A0", 841.0, 1189.0),
+    ("A1", 594.0, 841.0),
+    ("A2", 420.0, 594.0),
+    ("A3", 297.0, 420.0),
+    ("A4", 210.0, 297.0),
+    ("ANSI A", 215.9, 279.4),
+    ("ANSI B", 279.4, 431.8),
+    ("ANSI C", 431.8, 558.8),
+    ("ANSI D", 558.8, 863.6),
+    ("ANSI E", 863.6, 1117.6),
+    ("Arch C", 457.2, 609.6),
+    ("Arch D", 609.6, 914.4),
+    ("Arch E", 914.4, 1219.2),
+];
+
+/// `A3 landscape` when the page is a named sheet size (within 3 mm), either way round.
+pub fn sheet_name(w_mm: f32, h_mm: f32) -> Option<String> {
+    let (short, long) = if w_mm <= h_mm {
+        (w_mm, h_mm)
+    } else {
+        (h_mm, w_mm)
+    };
+    let (name, _, _) = SHEETS
+        .iter()
+        .find(|(_, a, b)| (short - a).abs() <= 3.0 && (long - b).abs() <= 3.0)?;
+    let way = if w_mm > h_mm { "landscape" } else { "portrait" };
+    Some(format!("{name} {way}"))
 }
 
 /// The graphics protocol to draw with. `override_` is a protocol name (`halfblocks`,
@@ -92,6 +165,8 @@ pub struct ImageKey {
     pub loc: Loc,
     pub size: u64,
     pub modified: Option<SystemTime>,
+    /// The PDF page (0-based); 0 for pictures.
+    pub page: u32,
     pub cols: u16,
     pub rows: u16,
 }
@@ -191,7 +266,7 @@ mod tests {
         ] {
             assert_eq!(PreviewKind::of(name), Some(PreviewKind::Image), "{name}");
         }
-        for name in ["a.pdf", "png", "a.png.txt", "dwg", ""] {
+        for name in ["a.docx", "png", "a.png.txt", "dwg", ""] {
             assert_eq!(PreviewKind::of(name), None, "{name}");
         }
     }
@@ -248,6 +323,31 @@ mod tests {
         let s = String::from_utf8_lossy(&out);
         // Show cursor, move (1-based row;col), the picture, hide cursor.
         assert_eq!(s, "\x1b[?25h\x1b[3;70HPIC\x1b[?25l");
+    }
+
+    #[test]
+    fn sheet_names() {
+        let cases: &[(f32, f32, Option<&str>)] = &[
+            (210.0, 297.0, Some("A4 portrait")),
+            (297.0, 210.0, Some("A4 landscape")),
+            (420.2, 296.8, Some("A3 landscape")),
+            (841.0, 1189.0, Some("A0 portrait")),
+            (215.9, 279.4, Some("ANSI A portrait")),
+            (863.6, 558.8, Some("ANSI D landscape")),
+            (914.4, 609.6, Some("Arch D landscape")),
+            (200.0, 200.0, None),
+            (216.0, 356.0, None), // US legal: not in the list
+        ];
+        for (w, h, want) in cases {
+            assert_eq!(sheet_name(*w, *h).as_deref(), *want, "{w}×{h}");
+        }
+        assert_eq!(PreviewKind::of("Plan.PDF"), Some(PreviewKind::Pdf));
+        // A4 in DIPs: 793.7 × 1122.5.
+        let info = PdfInfo::from_dip(1, 14, 793.7, 1122.5);
+        assert_eq!(
+            info.caption(),
+            "page 2 / 14 · A4 portrait · 210×297 mm (8.3×11.7 in)"
+        );
     }
 
     #[test]

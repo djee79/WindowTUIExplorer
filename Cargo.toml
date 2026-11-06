@@ -23,7 +23,7 @@ toml = "1.2.0"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Com", "Win32_NetworkManagement_NetManagement", "Win32_NetworkManagement_WNet"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Com", "Win32_NetworkManagement_NetManagement", "Win32_NetworkManagement_WNet", "Win32_System_WinRT", "Foundation", "Data_Pdf", "Storage_Streams"] }
 
 [profile.release]
 lto = "fat"

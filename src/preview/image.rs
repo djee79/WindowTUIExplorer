@@ -45,6 +45,8 @@ pub struct ImagePreview {
     pub width: u32,
     pub height: u32,
     pub format: String,
+    /// For a PDF page: which page, of how many, and its size.
+    pub pdf: Option<super::PdfInfo>,
 }
 
 impl std::fmt::Debug for ImagePreview {
@@ -90,25 +92,58 @@ pub fn decode(bytes: &[u8], picker: &Picker, cols: u16, rows: u16) -> Result<Ima
         .unwrap_or_else(|| "?".to_string());
     let img = reader.decode().map_err(|e| e.to_string())?;
     let (width, height) = (img.width(), img.height());
-    let picture = if picker.protocol_type() == ProtocolType::Iterm2 {
-        let size = fit_cells(width, height, cols, rows);
-        Picture::Iterm2 {
-            data: encode_iterm2(&img, size)?,
-            size,
-        }
-    } else {
-        Picture::Cells(
-            picker
-                .new_protocol(img, Size::new(cols, rows), Resize::Fit(None))
-                .map_err(|e| e.to_string())?,
-        )
-    };
     Ok(ImagePreview {
-        picture,
+        picture: encode(img, picker, cols, rows)?,
         width,
         height,
         format,
+        pdf: None,
     })
+}
+
+/// Renders page `page` (0-based, clamped) of the PDF in `bytes` and encodes it to fit
+/// `cols`×`rows` cells. Windows renders it (`platform::pdf_page`), sharp enough for the
+/// box at twice the cell resolution.
+pub fn pdf(
+    bytes: &[u8],
+    page: u32,
+    picker: &Picker,
+    cols: u16,
+    rows: u16,
+) -> Result<ImagePreview, String> {
+    let width = (f64::from(cols) * CELL_W * SHARPNESS) as u32;
+    let rendered =
+        crate::platform::pdf_page(bytes, page, width).map_err(|e| format!("PDF: {e}"))?;
+    let img = image::load_from_memory(&rendered.png).map_err(|e| e.to_string())?;
+    let (w, h) = (img.width(), img.height());
+    Ok(ImagePreview {
+        picture: encode(img, picker, cols, rows)?,
+        width: w,
+        height: h,
+        format: "PDF".to_string(),
+        pdf: Some(super::PdfInfo::from_dip(
+            rendered.index,
+            rendered.count,
+            rendered.width_dip,
+            rendered.height_dip,
+        )),
+    })
+}
+
+/// A decoded picture, for the terminal: sentier's iTerm2 encoder, or ratatui-image's
+/// cells (halfblocks).
+fn encode(img: DynamicImage, picker: &Picker, cols: u16, rows: u16) -> Result<Picture, String> {
+    if picker.protocol_type() == ProtocolType::Iterm2 {
+        let size = fit_cells(img.width(), img.height(), cols, rows);
+        return Ok(Picture::Iterm2 {
+            data: encode_iterm2(&img, size)?,
+            size,
+        });
+    }
+    picker
+        .new_protocol(img, Size::new(cols, rows), Resize::Fit(None))
+        .map(Picture::Cells)
+        .map_err(|e| e.to_string())
 }
 
 /// The cells a `w`×`h` px picture covers in a `cols`×`rows` box: as big as fits, keeping
@@ -300,5 +335,27 @@ mod tests {
             .is_err()
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pdf_pages_render_and_report_their_size() {
+        let pdf = crate::platform::tests::tiny_pdf(&[(595, 842), (1191, 842)]);
+        for proto in [ProtocolType::Halfblocks, ProtocolType::Iterm2] {
+            let Ok(got) = super::pdf(&pdf, 1, &picker(proto), 40, 30) else {
+                panic!("{proto:?}")
+            };
+            let Some(info) = &got.pdf else { panic!() };
+            assert_eq!((info.page, info.count), (1, 2));
+            assert!(
+                info.caption().contains("A3 landscape"),
+                "{}",
+                info.caption()
+            );
+            let size = got.picture.size();
+            assert!(size.width <= 40 && size.height <= 30 && size.width > 0);
+            // Landscape: wider than tall, in cells of 1:2.
+            assert!(size.width > size.height, "{size:?}");
+        }
+        assert!(super::pdf(b"%PDF-broken", 0, &picker(ProtocolType::Iterm2), 10, 10).is_err());
     }
 }

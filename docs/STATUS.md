@@ -379,3 +379,26 @@ even in debug builds (`[profile.dev.package."*"] opt-level = 3`); the timeout co
 the file only (`preview::image::read`, the part that can hang on a dead share), decoding is
 untimed; big reductions use `thumbnail`. Measured on the real files: ~20 ms decode, ~70 ms
 decode + shrink + PNG for 3311×2851 and 5120×2880. Files over 256 MB aren't previewed.
+
+## M2b previews, slice 2: PDF pages (code complete 2026-11-06, manual check pending)
+
+- `platform::pdf_page`: WinRT `Windows.Data.Pdf` (features `Data_Pdf`, `Storage_Streams`,
+  `Foundation`, `Win32_System_WinRT`). Loads from memory (the file read stays under the
+  preview timeout), renders one page to PNG, returns page count and size in DIPs. The
+  render width is in DIPs, so Windows adds the display scaling (≥ the width asked).
+  Measured on real files: 35-140 ms a page, including a 201-page manual.
+- The page goes through the same encoder as pictures (iTerm2 sized in cells / halfblocks),
+  so placement, erasing, caching and HiDPI all carry over. `ImageKey` has the page.
+- Caption: `page 2 / 14 · A3 landscape · 420×297 mm (16.5×11.7 in) · 1.2 MB`; sheet names
+  A0-A4, ANSI A-E, Arch C-E (±3 mm, either way round). Spinner: `rendering page 2…`.
+- Keys: `]p` / `[p` (counts: `5]p`), `{n}gP`, `gP` alone prompts for the number. Stops at
+  the first / last page. Each PDF keeps its page while sentier runs.
+- In search results, picture/PDF previews show `Found in …` above the caption.
+
+Not in this slice: the PDF title (Windows.Data.Pdf doesn't expose it), preloading the next
+page, `zp` full screen + zoom, password-protected PDFs (they show the error).
+
+Manual checklist:
+- [ ] A drawing PDF: page fills the column, caption names the sheet size.
+- [ ] `]p` `[p` `10]p` `gP` on a long PDF; leave and come back: same page.
+- [ ] A PDF on the NAS; one over 50 MB says so.

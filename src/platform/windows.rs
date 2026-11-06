@@ -306,3 +306,150 @@ fn wide(p: PWSTR) -> String {
 pub fn attrs(meta: &std::fs::Metadata) -> Attrs {
     attrs_from_raw(meta.file_attributes())
 }
+
+/// One page of a PDF, rendered by Windows (`Windows.Data.Pdf`, built into Windows 10+).
+pub struct PdfPage {
+    /// The page as a PNG. Asked `width_dip` wide in device-independent pixels, so its real
+    /// width includes the display scaling (e.g. 540 px for 300 at 180 %).
+    pub png: Vec<u8>,
+    /// 0-based; clamped to the document.
+    pub index: u32,
+    pub count: u32,
+    /// The page size in device-independent pixels (1/96 inch), rotation applied.
+    pub width_dip: f32,
+    pub height_dip: f32,
+}
+
+/// Renders page `index` of the PDF in `bytes` to a PNG `width` DIPs wide. Works from memory,
+/// so the file read (the part that can hang on a share) stays with the caller's timeout.
+pub fn pdf_page(bytes: &[u8], index: u32, width: u32) -> io::Result<PdfPage> {
+    use windows::Data::Pdf::{PdfDocument, PdfPageRenderOptions};
+    use windows::Storage::Streams::{DataReader, DataWriter, InMemoryRandomAccessStream};
+    use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+    let err = |e: windows::core::Error| io::Error::other(e.message());
+    // WinRT needs the thread initialized; a blocking-pool thread may not be yet.
+    // S_FALSE / RPC_E_CHANGED_MODE mean it already is, which is fine.
+    // SAFETY: plain initialization call, no pointers.
+    let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+
+    let input = InMemoryRandomAccessStream::new().map_err(err)?;
+    let writer = DataWriter::CreateDataWriter(&input).map_err(err)?;
+    writer.WriteBytes(bytes).map_err(err)?;
+    writer.StoreAsync().map_err(err)?.join().map_err(err)?;
+    writer.FlushAsync().map_err(err)?.join().map_err(err)?;
+    writer.DetachStream().map_err(err)?;
+    input.Seek(0).map_err(err)?;
+
+    let doc = PdfDocument::LoadFromStreamAsync(&input)
+        .map_err(err)?
+        .join()
+        .map_err(err)?;
+    let count = doc.PageCount().map_err(err)?;
+    if count == 0 {
+        return Err(io::Error::other("the PDF has no pages"));
+    }
+    let index = index.min(count - 1);
+    let page = doc.GetPage(index).map_err(err)?;
+    let size = page.Size().map_err(err)?;
+    let options = PdfPageRenderOptions::new().map_err(err)?;
+    options.SetDestinationWidth(width.max(1)).map_err(err)?;
+    let output = InMemoryRandomAccessStream::new().map_err(err)?;
+    page.RenderWithOptionsToStreamAsync(&output, &options)
+        .map_err(err)?
+        .join()
+        .map_err(err)?;
+
+    let len = u32::try_from(output.Size().map_err(err)?)
+        .map_err(|_| io::Error::other("rendered page too big"))?;
+    let reader =
+        DataReader::CreateDataReader(&output.GetInputStreamAt(0).map_err(err)?).map_err(err)?;
+    reader.LoadAsync(len).map_err(err)?.join().map_err(err)?;
+    let mut png = vec![0u8; len as usize];
+    reader.ReadBytes(&mut png).map_err(err)?;
+    Ok(PdfPage {
+        png,
+        index,
+        count,
+        width_dip: size.Width,
+        height_dip: size.Height,
+    })
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// A valid PDF with blank pages of the given sizes in points (1/72 inch), with a
+    /// correct cross-reference table.
+    pub(crate) fn tiny_pdf(pages: &[(u32, u32)]) -> Vec<u8> {
+        let mut objs: Vec<String> = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            format!(
+                "<< /Type /Pages /Kids [{}] /Count {} >>",
+                (0..pages.len())
+                    .map(|i| format!("{} 0 R", i + 3))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                pages.len()
+            ),
+        ];
+        for (w, h) in pages {
+            objs.push(format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w} {h}] >>"
+            ));
+        }
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend(format!("{} 0 obj\n{o}\nendobj\n", i + 1).bytes());
+        }
+        let xref = out.len();
+        out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).bytes());
+        for off in offsets {
+            out.extend(format!("{off:010} 00000 n \n").bytes());
+        }
+        out.extend(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objs.len() + 1
+            )
+            .bytes(),
+        );
+        out
+    }
+
+    #[test]
+    fn renders_a_pdf_page_from_memory() {
+        // A4 portrait (595×842 pt), then A3 landscape (1191×842 pt).
+        let pdf = tiny_pdf(&[(595, 842), (1191, 842)]);
+        let page = match pdf_page(&pdf, 0, 300) {
+            Ok(p) => p,
+            Err(e) => panic!("{e}"),
+        };
+        assert_eq!((page.index, page.count), (0, 2));
+        // Points × 96/72 = DIPs.
+        assert!((page.width_dip - 793.3).abs() < 1.0, "{}", page.width_dip);
+        assert!(
+            (page.height_dip - 1122.7).abs() < 1.0,
+            "{}",
+            page.height_dip
+        );
+        let Ok(img) = image::load_from_memory(&page.png) else {
+            panic!("not an image")
+        };
+        // The width is in device-independent pixels: Windows applies the display
+        // scaling (≥ 100 %), so the PNG is at least that wide, with the page's shape.
+        assert!(img.width() >= 300, "{}", img.width());
+        let shape = f64::from(img.height()) / f64::from(img.width());
+        assert!((shape - 842.0 / 595.0).abs() < 0.02, "{shape}");
+
+        let Ok(last) = pdf_page(&pdf, 9, 100) else {
+            panic!()
+        };
+        assert_eq!(last.index, 1, "clamped to the last page");
+        assert!(last.width_dip > last.height_dip, "landscape");
+
+        assert!(pdf_page(b"not a pdf", 0, 100).is_err());
+    }
+}

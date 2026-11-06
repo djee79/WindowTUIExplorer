@@ -558,13 +558,17 @@ fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Drawn>
     let mut drawn = None;
     match state.map(|s| s.result.as_ref()) {
         Some(Some(Ok(p))) => {
-            caption = format!(
-                "{}×{} · {} · {}",
-                p.width,
-                p.height,
-                p.format,
-                human_size(e.size)
-            );
+            caption = match &p.pdf {
+                // `page 2 / 14 · A3 landscape · 420×297 mm (16.5×11.7 in) · 1.2 MB`
+                Some(info) => format!("{} · {}", info.caption(), human_size(e.size)),
+                None => format!(
+                    "{}×{} · {} · {}",
+                    p.width,
+                    p.height,
+                    p.format,
+                    human_size(e.size)
+                ),
+            };
             let size = p.picture.size();
             // Overlays (help, pickers, which-key) cover the column: no picture under
             // them. An iTerm2 picture is written after the frame and would cover them.
@@ -602,8 +606,12 @@ fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Drawn>
             f.render_widget(Paragraph::new(lines), inner);
         }
         Some(None) => {
+            let what = match (PreviewKind::of(&e.name), state) {
+                (Some(PreviewKind::Pdf), Some(s)) => format!("rendering page {}…", s.key.page + 1),
+                _ => "rendering…".to_string(),
+            };
             let line = Line::from(Span::styled(
-                format!(" {} rendering…", spinner(app)),
+                format!(" {} {what}", spinner(app)),
                 theme::dim(),
             ));
             f.render_widget(Paragraph::new(vec![Line::default(), line]), inner);
@@ -618,6 +626,21 @@ fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Drawn>
         ))),
         caption_area,
     );
+    // In search results, where the file really is (the row above the caption is free).
+    if app.search_state(&app.cwd).is_some()
+        && let Some(dir) = app.cwd.join(&e.name).ok().and_then(|t| t.parent())
+    {
+        let found = Rect {
+            y: caption_area.y.saturating_sub(1),
+            ..caption_area
+        };
+        let w = (found.width as usize).saturating_sub(12);
+        let dir = format!("{}\\", dir.display().trim_end_matches('\\'));
+        f.render_widget(
+            Paragraph::new(info_line("Found in", super::truncate_left(&dir, w))),
+            found,
+        );
+    }
     drawn
 }
 
