@@ -44,7 +44,7 @@ does all day:
 | Fuzzy pickers | `nucleo` (Helix's matcher: multi-threaded, incremental, streaming injection) |
 | Recursive walk | `ignore` (`WalkParallel`, the ripgrep/fd walker) |
 | Content search | `grep-searcher` + `grep-regex` + `grep-matcher` (ripgrep's crates) |
-| Glob / regex | `globset`, `regex` |
+| Glob / regex | `globset`, `regex`, `fancy-regex` (lookbehind/backrefs, PowerRename's "Boost" mode) |
 | Secrets in memory | `zeroize` |
 | JSON (`machines.source_cmd`) | `serde_json` |
 | Clipboard | `arboard` |
@@ -134,6 +134,12 @@ src/
     zip.rs           staging + zip writer + verify + retention
     inuse.rs         "who has this project open" (NetFileEnum on the file server)
     report.rs        final job report + per-job log file
+  rename/
+    engine.rs        search/replace, regex (regex / fancy-regex), match-all, case, apply-to
+    tokens.rs        ${...} enumeration + random strings, $date vars, $EXIF vars, sentier extras
+    plan.rs          preview plan: collisions, invalid names, case-only and cycle renames
+    apply.rs         two-phase apply, journal, undo
+    presets.rs       saved rename presets + history
   open/
     rules.rs         open.toml: openers, rules, glob matching, placeholders
     run.rs           inline (suspend TUI) / detached spawning, built-in openers
@@ -327,8 +333,9 @@ paths, tags are the main way to narrow things down.
   `a` makes a new file, `A` a new directory (a trailing `\` in `a` also makes a directory).
 - `dd` deletes to the Recycle Bin (`trash` crate) with a confirmation. `D` permanently deletes
   with a stronger confirmation. Network paths have no Recycle Bin: say so in the confirmation.
-- Bulk rename: `:rename` opens the selection's names in `$EDITOR` (Neovim), one per line.
-  The edited lines are applied after a preview of the changes.
+- Bulk rename: `r` / `cw` with a selection (or a visual range), or `:rename`, opens the
+  PowerRename-style panel (section 16). `:rename-edit` opens the selection's names in
+  `$EDITOR` (Neovim), one per line, and applies the edited lines after the same preview.
 - All operations run in the worker and report back. Errors go to the status bar.
 
 ### 6. Launcher (ported from wtm)
@@ -891,6 +898,101 @@ The prompt appears only when Windows refuses.
   - `:net drop <server>` disconnects
   - `:net drop-all` disconnects everything sentier opened
 
+### 16. Bulk rename (PowerRename-style)
+
+`r` (or `cw`) with a selection or a visual range opens a full-screen rename panel on those
+items (Yazi's idiom; `r` on a single item without a selection stays the inline rename).
+`:rename` opens it too: on the selection, or on the cursor item when nothing is selected.
+`R` keeps its meaning (retry / refresh / re-probe). **The syntax is PowerRename's**, so
+existing habits and saved patterns carry over, and sentier adds what a terminal tool can do
+better (real undo, collision checks, presets).
+
+#### Layout
+
+- **Top:** two input lines, `Search for` and `Replace with`. They're vim-aware prompts
+  (insert/normal), with history (`Ctrl-p`/`Ctrl-n`) and completion for `${` and `$` tokens.
+- **Middle:** a row of option toggles showing their state.
+- **Body:** a live preview table with columns `Original │ Renamed │ status`. Changed parts are
+  highlighted, and items are numbered with the relative gutter. It updates on every keystroke,
+  computed off-thread for big lists.
+
+#### Options (PowerRename parity)
+
+Toggled in panel normal mode (`Esc` from a field):
+
+| Key | Option | Notes |
+|---|---|---|
+| `r` | Use regular expressions | Rust `regex`, close to ECMAScript. `$1`, `$2`, `${name}` captures in Replace. |
+| `b` | Extended regex ("Boost" mode) | switches to `fancy-regex`: lookbehind, backreferences |
+| `a` | Match all occurrences | off = first match only, like PowerRename |
+| `c` | Case sensitive | off by default |
+| `n` | Apply to: name only · extension only · name + extension | cycles |
+| `f` `d` `s` | Include files · folders · subfolders' contents | subfolders walk with the search walker |
+| `t` | Text formatting: none · lowercase · UPPERCASE · Title case · Capitalize Each Word | cycles |
+| `e` | Enumerate items (`${...}` counters) | |
+| `x` | Random string values | |
+| `m` | Date source: file creation time · modified time · EXIF date taken | creation time is PowerRename's default |
+| `o` | Show only items that change (PowerRename's "Renamed" header filter) | |
+| `Space` | Include/exclude the item under the cursor (PowerRename's Original-column checkbox) | |
+
+#### Replace tokens (same syntax as PowerRename)
+
+- **Enumeration** (with `e`): `${}` (starts at 0), `${start=X}`, `${increment=X}`,
+  `${padding=X}`, combined with `;` (e.g. `${padding=4;increment=2;start=10}`). Several
+  counters can appear in one string. Items are numbered **in the order shown** (the current
+  sentier sort), so the preview is the truth.
+- **Random** (with `x`): `${rstringalnum=X}`, `${rstringalpha=X}`, `${rstringdigit=X}`,
+  `${ruuidv4}`.
+- **Date/time** of the date source: `$YYYY $YY $Y $MMMM $MMM $MM $M $DDDD $DDD $DD $D`
+  `$hh $h $mm $m $ss $s $fff $ff $f`. Month and weekday names follow the Windows user locale.
+- **EXIF/XMP photo metadata:**
+  - camera: `$CAMERA_MAKE $CAMERA_MODEL $LENS $ISO $APERTURE $SHUTTER $FOCAL $FLASH`
+    `$EXPOSURE_BIAS $ORIENTATION $COLOR_SPACE`
+  - image: `$WIDTH $HEIGHT $AUTHOR $COPYRIGHT`
+  - GPS: `$LATITUDE $LONGITUDE $ALTITUDE`
+  - date taken: `$DATE_TAKEN_YYYY $DATE_TAKEN_YY $DATE_TAKEN_MM $DATE_TAKEN_DD`
+    `$DATE_TAKEN_HH $DATE_TAKEN_mm $DATE_TAKEN_SS`
+  - Files without EXIF produce an empty value, flagged in the status column.
+- **sentier extras:**
+  - `${parent}`: the parent folder's name
+  - `${name}`: the original stem
+  - `${ext}`: the original extension
+  - `${n}` with `reset=folder`: a counter that restarts in each folder when subfolders are
+    included
+  - `${pdf_title}`: from PDF metadata (via the preview code)
+- A `$` that isn't a token stays literal. `$$` is a literal `$`.
+
+#### Safety checks (status column; Apply is blocked while any ✕ remains)
+
+- **Collisions:** two items mapping to the same name, or a target that already exists and
+  isn't part of the batch → `✕ collides with …`.
+- **Invalid names:** `< > : " / \ | ? *`, control characters, reserved names
+  (`CON PRN AUX NUL COM1… LPT1…`), a trailing space or dot, an empty name, or a full path
+  over 260 characters (allowed, flagged `⚠ long path`).
+- **Case-only renames** (`b-1001.pdf` → `B-1001.pdf`) work despite Windows being
+  case-insensitive: they go through a temporary name.
+- **Swaps and cycles** (`a→b`, `b→a`): the two-phase apply handles them. Everything is first
+  renamed to unique temporary names, then to the final names.
+- **Unchanged** items are marked `·` and skipped.
+
+#### Apply, undo, presets
+
+- `Enter` in normal mode → `Rename 37 items? (2 skipped)` → apply. Each rename uses
+  `MoveFileExW`. Failures (locked file, access denied) are listed per item; the others still
+  go through. Admin-share rules from section 14 apply (confirmation names the machine, audit
+  log).
+- **Real undo:** every batch is written to a journal
+  (`%LOCALAPPDATA%\sentier\rename-journal\`). `u` in the file view right after a rename, or
+  `:undo-rename [n]` later, reverts whole batches, newest first, after a preview, as long as
+  the renamed files still exist. This goes beyond PowerRename, which relies on Explorer's
+  single Undo.
+- **Presets:** `Ctrl-s` saves the current search, replace and all toggles under a name
+  (`[[rename.preset]]` in `rename.toml`), e.g. "ISO rev bump" or "photos by date taken".
+  `Ctrl-o` opens the preset picker. The last-used options are restored when the panel opens
+  (PowerRename's "restore flags on launch").
+- **History:** the last 50 searches and replaces are kept per field (PowerRename's "recently
+  used strings" / autocomplete).
+
 ## Keymap (vim-first)
 
 The author lives in Neovim (LazyVim) and Yazi. Bindings follow vim first, then LazyVim
@@ -924,7 +1026,8 @@ filters) · `dialog` (confirmations, sync preview).
 | `yy` `yp` `yP` `yn` | yank files · copy path · copy UNC-resolved path · copy name |
 | `x` `p` `P` | cut · paste · paste overwrite |
 | `dd` `D` | Recycle Bin · permanent delete (both confirm) |
-| `r` / `cw` · `a` · `A` | rename · new file · new dir |
+| `r` / `cw` · `a` · `A` | rename (with a selection: the bulk rename panel, section 16) · new file · new dir |
+| `u` | undo the last rename batch (section 16) |
 | `.` | repeat last paste/operation here |
 | `J` | toggle the job panel |
 | `g.` | toggle hidden/system files |
@@ -1027,6 +1130,8 @@ iterm2 | halfblocks), `preview.cell_px`, `preview.max_network_mb`, `preview.cach
 4b. **M4b, project presets:** sync preset with `/L` preview + mirror safeguards, backup
    pipeline (staging → zip → verify → rename → retention), in-use check, last-run state,
    `sentier run`.
+4c. **M4c, bulk rename:** the PowerRename-parity engine + token set, live preview, safety
+   checks, two-phase apply, journal + undo, presets.
 5. **M5, launcher + open-with:** open.toml rules/openers, `o`/`O` menu, Windows-registered
    handlers, inline mode for Neovim. Then the launcher: app/web/file pins, wtm import, frecency, Start Menu scan, context
    actions.

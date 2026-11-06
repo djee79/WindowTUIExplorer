@@ -1,0 +1,45 @@
+ sentier  Rename  11 items in  \\srv01\project\HIT\hitiso                                                                          PowerRename-style · r on a selection
+╭─ Bulk rename ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                              │
+│  Search for     (B-\d{4})_rev(\d+)                                                                                    ^p/^n history                          │
+│                                                                                                                                                              │
+│  Replace with   HIT_$1_R$2▏                                                                                           ${ and $ complete                      │
+│                                                                                                                                                              │
+│  r regex [x]    b boost [ ]    a match all [x]    c case [ ]    n apply to name only    f files [x]    d folders [ ]    s subfolders [ ]                     │
+│  t format none    e enumerate [ ]    x random [ ]    m dates from created    o only changed [ ]                                                              │
+│                                                                                                                                                              │
+│  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  │
+│      Original                                    Renamed                                             Status                                                  │
+│    4 B-1001_rev3.pdf                             HIT_B-1001_R3.pdf                                   ok                                                      │
+│    3 B-1001_rev3.dwg                             HIT_B-1001_R3.dwg                                   ok                                                      │
+│    2 B-1002_rev2.pdf                             HIT_B-1002_R2.pdf                                   ok                                                      │
+│    1 B-1002_rev2.dwg                             HIT_B-1002_R2.dwg                                   ok                                                      │
+│  5   B-1003_rev1.pdf                             HIT_B-1003_R1.pdf                                   × collides with existing HIT_B-1003_R1.pdf              │
+│    1 B-1004_rev1.pdf                             HIT_B-1004_R1.pdf                                   ok                                                      │
+│    2 B-1005_rev0.pdf                             HIT_B-1005_R0.pdf                                   ok                                                      │
+│    3 site_photo_0412.jpg                         site_photo_0412.jpg                                 ·  unchanged                                            │
+│    4 iso_index.xlsx                              iso_index.xlsx                                      ·  unchanged                                            │
+│    5 B-1003_rev1.dwg                             HIT_B-1003_R1.dwg                                   ok                                                      │
+│    6 B-1006_rev0.pdf                             HIT_B-1006_R0.pdf                                   ok                                                      │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  │
+│  8 will be renamed  ·  2 unchanged  ·  1 blocked: fix it or exclude it (Space) before Enter can apply                                                        │
+│                                                                                                                                                              │
+│  Two-phase apply (temporary names first) handles swaps and case-only renames.                                                                                │
+│  Every batch goes to the rename journal:  u  undoes it right after,  :undo-rename  later.                                                                    │
+│                                                                                                                                                              │
+│  Tokens (same as PowerRename):                                                                                                                               │
+│  ${padding=4;start=10;increment=2}   ${rstringalnum=6}  ${ruuidv4}   $YYYY $MM $DD $hh $mm   $CAMERA_MODEL $DATE_TAKEN_YYYY                                  │
+│  sentier extras:  ${parent}  ${name}  ${ext}  ${pdf_title}  ${n;reset=folder}                                                                                │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ INSERT  Replace with  ·  preview updates as you type
+ Tab next field   Esc options (normal)   Space include/exclude   Enter apply   ^s save preset   ^o presets   q close
+
