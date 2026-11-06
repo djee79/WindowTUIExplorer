@@ -978,3 +978,29 @@ milestone at the office (the checklists above) and the few items marked "not yet
   this terminal; `:rename` uses the same editor.
 - Tests can no longer read or write the user's config.toml, keymap.toml or machines.tsv
   either (temp paths under `cargo test`).
+
+## Design drop adopted; M4c bulk rename, slices 1–2 (code complete 2026-11-06)
+
+Design drop (docs/sentier-screens/, gitignored): section 16 + screen 12 adopted into
+CLAUDE.md with placeholder names. Decisions: the panel opens with `r` / `cw` on a selection
+or visual range, or `:rename` (`R` stays retry / refresh); the Neovim flow is
+`:rename-edit`; `fancy-regex` added; the drop's lost `serde_json` row kept.
+
+- Slice 1, engine (`rename/`): PowerRename's search (literal / regex / Boost with
+  `fancy-regex`), options, tokens (enumeration, random, `$YYYY`…`$f` with Windows-locale
+  month / day names, `$CAMERA_*` / `$DATE_TAKEN_*`, extras `${parent} ${name} ${ext}
+  ${pdf_title} ${n;reset=folder}`), and the plan with its checks. `$1` means group 1 as in
+  PowerRename (the regex crate would read `$1_R` as a group named `1_R`).
+- Slice 2, the panel (`app/rename.rs`, `ui/rename.rs`, screen 12): Search for / Replace with
+  (Tab switches), live preview table with the relative gutter and Original │ Renamed │
+  Status, the toggles in options mode (`Esc`: `r b a c n f d t e x m o`), `Space` excludes /
+  includes, `j/k gg G ^d ^u`. Enter refuses while anything is blocked, else asks
+  ("Rename 8 items? (2 skipped)", the popup lists `a → b`); no comes back to the panel,
+  yes applies through the existing two-phase bulk rename (swaps, case-only), with the
+  admin-share confirmation and audit as for any change. Options are remembered for the
+  next time (PowerRename restores its flags).
+
+Not yet (slice 3): `s` subfolders (the toggle shows, the walk isn't wired), the rename
+journal with `u` / `:undo-rename`, presets (`^s` / `^o`, rename.toml) and field history
+(`^p` / `^n`), EXIF and PDF-title values (the tokens exist; the files aren't read for them
+yet), EXIF "date taken" as date source.

@@ -983,9 +983,52 @@ pub fn shell_execute(command: &str, args: &str, dir: &str) -> io::Result<()> {
     }
 }
 
+// ------------------------------------------------------------------ bulk rename (M4c)
+
+/// Month and weekday names in the Windows user's language (full, then abbreviated), for
+/// the `$MMMM` `$MMM` `$DDDD` `$DDD` tokens. Weekdays from Monday. None if Windows
+/// won't say.
+#[allow(clippy::type_complexity)]
+pub fn locale_names() -> Option<([String; 12], [String; 12], [String; 7], [String; 7])> {
+    use windows::Win32::Globalization::{
+        GetLocaleInfoEx, LOCALE_SABBREVDAYNAME1, LOCALE_SABBREVMONTHNAME1, LOCALE_SDAYNAME1,
+        LOCALE_SMONTHNAME1,
+    };
+    let get = |kind: u32| -> Option<String> {
+        let mut buf = [0u16; 80];
+        // SAFETY: a null locale name means the user default; buf is a valid slice.
+        let n = unsafe { GetLocaleInfoEx(PCWSTR::null(), kind, Some(&mut buf)) };
+        let n = usize::try_from(n).ok().filter(|n| *n > 1)?;
+        Some(String::from_utf16_lossy(&buf[..n - 1]))
+    };
+    let months: Vec<String> = (0..12)
+        .filter_map(|i| get(LOCALE_SMONTHNAME1 + i))
+        .collect();
+    let short_m: Vec<String> = (0..12)
+        .filter_map(|i| get(LOCALE_SABBREVMONTHNAME1 + i))
+        .collect();
+    let days: Vec<String> = (0..7).filter_map(|i| get(LOCALE_SDAYNAME1 + i)).collect();
+    let short_d: Vec<String> = (0..7)
+        .filter_map(|i| get(LOCALE_SABBREVDAYNAME1 + i))
+        .collect();
+    Some((
+        months.try_into().ok()?,
+        short_m.try_into().ok()?,
+        days.try_into().ok()?,
+        short_d.try_into().ok()?,
+    ))
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn locale_names_come_back() {
+        let n = locale_names();
+        eprintln!("{n:?}");
+        assert!(n.is_some_and(|(m, _, d, _)| !m[0].is_empty() && !d[6].is_empty()));
+    }
 
     /// Real Windows: .txt always has Notepad registered and a default app.
     #[test]

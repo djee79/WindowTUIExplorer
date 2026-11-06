@@ -18,6 +18,8 @@ mod open;
 pub use open::OpenMenu;
 mod picker;
 mod pins;
+mod rename;
+pub use rename::{Field as RenameField, RenamePanel};
 mod preview;
 mod search;
 mod sync;
@@ -108,6 +110,8 @@ pub enum Mode {
     Credentials,
     /// A sync preset's dry-run preview (Enter runs it, `u` mirror/update, `Tab` all).
     SyncPreview,
+    /// The bulk rename panel (`r` on a selection, `:rename`).
+    Rename,
     /// `O`: the open-with menu.
     OpenWith,
     /// `J`: the jobs panel (list, detail, report).
@@ -303,6 +307,10 @@ pub struct App {
     pub open_resolved: std::collections::BTreeMap<String, Option<String>>,
     pub open_last: crate::open::run::LastUsed,
     pub open_menu: Option<OpenMenu>,
+    /// The bulk rename panel (M4c), its options as last used, and month / day names.
+    pub rename_panel: Option<RenamePanel>,
+    pub rename_options: crate::rename::engine::Options,
+    pub rename_names: crate::rename::tokens::Names,
     /// What Windows has per extension (asked once per session).
     pub open_registered: HashMap<String, crate::open::Registered>,
     /// Frecency of everything opened (launcher ranking), from usage.tsv.
@@ -441,6 +449,9 @@ impl App {
             open_resolved: Default::default(),
             open_last: Default::default(),
             open_menu: None,
+            rename_panel: None,
+            rename_options: Default::default(),
+            rename_names: Default::default(),
             open_registered: HashMap::new(),
             usage: Default::default(),
             usage_dirty: false,
@@ -483,6 +494,7 @@ impl App {
         app.worker.find_7z();
         app.worker.load_open_config();
         app.worker.load_usage();
+        app.worker.locale_names();
         app.worker.wtm_offer_check();
         app.set_cwd(start, None);
         app
@@ -1094,6 +1106,7 @@ impl App {
             AppEvent::Ran { what, result } => self.on_ran(what, result),
             // Launches recorded before the file was read stay.
             AppEvent::UsageLoaded(usage) => self.usage.merge(usage),
+            AppEvent::LocaleNames(names) => self.on_locale_names(*names),
             AppEvent::PinsChanged(store) => {
                 self.pins_pending = Some(store);
                 self.apply_pending_pins();
@@ -4546,7 +4559,7 @@ mod job_tests {
         let mut l = Live::new(&src);
         // Two selected: a.txt, b.txt.
         l.goto("a.txt");
-        press(&mut l.app, "2<Tab>:rename<CR>");
+        press(&mut l.app, "2<Tab>:rename-edit<CR>");
         let Some(req) = l.app.inline.take() else {
             panic!("no editor request")
         };
@@ -4580,7 +4593,7 @@ mod job_tests {
         );
 
         // A wrong line count renames nothing.
-        press(&mut l.app, ":rename<CR>");
+        press(&mut l.app, ":rename-edit<CR>");
         let Some(req) = l.app.inline.take() else {
             panic!()
         };
@@ -5275,5 +5288,106 @@ mod job_tests {
             Some((PromptKind::Command, "tag rename ".to_string()))
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The bulk rename panel, as in mockup 12: `r` on a selection, a PowerRename regex,
+    /// a collision blocks Enter until that item is excluded, the question, a "no" comes
+    /// back to the panel, a "yes" renames on disk; the options are remembered.
+    #[test]
+    fn bulk_rename_panel_previews_blocks_and_renames() {
+        let dir = std::env::temp_dir().join(format!(
+            "sentier-rename-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        for f in [
+            "B-1001_rev3.pdf",
+            "B-1003_rev1.pdf",
+            "HIT_B-1003_R1.pdf",
+            "notes.txt",
+        ] {
+            let _ = std::fs::write(dir.join(f), "x");
+        }
+        let mut l = Live::new(&dir);
+        l.goto("B-1001_rev3.pdf");
+        press(&mut l.app, "<Tab>");
+        l.goto("B-1003_rev1.pdf");
+        press(&mut l.app, "<Tab>");
+        press(&mut l.app, "r");
+        assert_eq!(l.app.mode, Mode::Rename);
+        assert_eq!(
+            l.app.rename_panel.as_ref().map(|p| p.sources.len()),
+            Some(2)
+        );
+
+        type_text(&mut l.app, r"(B-\d{4})_rev(\d+)");
+        press(&mut l.app, "<Tab>");
+        type_text(&mut l.app, "HIT_$1_R$2");
+        press(&mut l.app, "<Esc>r");
+        let rows = l_plan(&l.app);
+        assert_eq!(
+            rows,
+            [
+                ("HIT_B-1001_R3.pdf".to_string(), "ok".to_string()),
+                (
+                    "HIT_B-1003_R1.pdf".to_string(),
+                    "collides with existing HIT_B-1003_R1.pdf".to_string()
+                )
+            ]
+        );
+        let screen = render(&mut l.app, 160, 40);
+        assert!(
+            screen.contains("Bulk rename") && screen.contains("r regex [x]"),
+            "{screen}"
+        );
+        assert!(screen.contains("1 blocked"), "{screen}");
+        // Blocked: Enter refuses.
+        press(&mut l.app, "<CR>");
+        assert_eq!(l.app.mode, Mode::Rename);
+        assert!(status(&l.app).contains("blocked"));
+        // Exclude it (Space on its row): now it can go.
+        press(&mut l.app, "j ");
+        press(&mut l.app, "<CR>");
+        assert!(
+            l.app.confirm_note().contains("Rename 1 item? (1 skipped)"),
+            "{}",
+            l.app.confirm_note()
+        );
+        press(&mut l.app, "n");
+        assert_eq!(l.app.mode, Mode::Rename, "no: back to the panel");
+        press(&mut l.app, "<CR>y");
+        assert!(l.app.rename_panel.is_none());
+        l.until(|a| a.ops_running == 0 && dir.join("HIT_B-1001_R3.pdf").exists());
+        assert!(!dir.join("B-1001_rev3.pdf").exists());
+        assert!(dir.join("B-1003_rev1.pdf").exists(), "excluded: untouched");
+        // The options are remembered; :rename works on the cursor item.
+        l.goto("notes.txt");
+        press(&mut l.app, ":rename<CR>");
+        assert!(l.app.rename_panel.as_ref().is_some_and(|p| p.options.regex));
+        press(&mut l.app, "<Esc>q");
+        assert_eq!(l.app.mode, Mode::Normal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn l_plan(app: &App) -> Vec<(String, String)> {
+        use crate::rename::plan::Status;
+        let Some(p) = app.rename_panel.as_ref() else {
+            return Vec::new();
+        };
+        let Ok(plan) = &p.plan else { return Vec::new() };
+        plan.rows
+            .iter()
+            .map(|r| {
+                let s = match &r.status {
+                    Status::Rename => "ok".to_string(),
+                    Status::Blocked(w) | Status::Warn(w) => w.clone(),
+                    Status::Unchanged => "unchanged".to_string(),
+                    Status::Excluded => "excluded".to_string(),
+                };
+                (r.new_name.clone(), s)
+            })
+            .collect()
     }
 }

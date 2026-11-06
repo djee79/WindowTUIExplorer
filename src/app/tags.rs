@@ -403,6 +403,8 @@ impl App {
         };
         self.set_status("unchanged".into(), false);
         self.reopen_picker(reopen);
+        // The bulk rename panel asked: back to it.
+        self.rename_answered(false);
     }
 
     fn apply_confirm(&mut self, c: Confirm) {
@@ -416,6 +418,7 @@ impl App {
             return self.start_job(*req, *plan);
         }
         if let Confirm::FileOp { op, .. } = c {
+            self.rename_answered(true);
             return self.run_op(op);
         }
         let msg = match &c {

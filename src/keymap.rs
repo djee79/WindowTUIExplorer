@@ -297,9 +297,10 @@ pub enum Action {
     /// `a`: new file (a trailing `\` makes a folder); `A`: new folder.
     NewFile,
     NewDir,
-    /// `D`: delete permanently (type yes).
+    /// `D`: delete permanently (asks, red popup).
     DeletePermanent,
-    /// `:rename`: bulk rename in `$EDITOR`.
+    /// `:rename`: the bulk rename panel; `:rename-edit`: the names in `$EDITOR`.
+    RenamePanel,
     BulkRename,
     /// `<leader>p`: the pin picker.
     PinPicker,
@@ -445,7 +446,8 @@ const NAMED: &[(&str, Action)] = &[
     ("new-file", Action::NewFile),
     ("new-dir", Action::NewDir),
     ("delete-permanent", Action::DeletePermanent),
-    ("rename", Action::BulkRename),
+    ("rename", Action::RenamePanel),
+    ("rename-edit", Action::BulkRename),
     ("bulk-rename", Action::BulkRename),
     ("pin-picker", Action::PinPicker),
     ("tag-picker", Action::TagPicker),
@@ -548,7 +550,16 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "<name>",
         "save the last pin-picker query as a view",
     ),
-    ("rename", "", "bulk rename in $EDITOR (Neovim)"),
+    (
+        "rename",
+        "",
+        "bulk rename panel, PowerRename-style (also r on a selection)",
+    ),
+    (
+        "rename-edit",
+        "",
+        "bulk rename the names in $EDITOR (Neovim)",
+    ),
     ("machines", "", "user PCs (also gm)"),
     ("set", "rnu nornu nu nonu", "line numbers"),
     ("q", "", "quit (wq: and cd the shell here)"),

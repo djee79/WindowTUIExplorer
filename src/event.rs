@@ -107,6 +107,8 @@ pub enum AppEvent {
     StartMenu(crate::launcher::startmenu::Apps),
     /// pins.toml was changed by something else (`sentier pin`, an editor): read again.
     PinsChanged(crate::pins::PinStore),
+    /// Month and weekday names in the Windows user's language (rename tokens).
+    LocaleNames(Box<crate::rename::tokens::Names>),
     /// The frecency store, read at startup.
     UsageLoaded(crate::frecency::Usage),
     /// Something was started, shown or copied (`what`), or why not.

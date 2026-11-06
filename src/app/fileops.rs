@@ -74,6 +74,10 @@ impl App {
         if self.at_root() {
             return self.rename_pin();
         }
+        // With a selection or a visual range: the bulk rename panel (Yazi's idiom).
+        if self.visual.is_some() || !self.marked.is_empty() {
+            return self.open_rename_panel();
+        }
         let Some(e) = self.selected().cloned() else {
             return;
         };

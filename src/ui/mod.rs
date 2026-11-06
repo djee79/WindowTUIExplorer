@@ -10,6 +10,7 @@ mod locations;
 mod netlist;
 mod openwith;
 mod picker;
+mod rename;
 mod statusbar;
 mod sync;
 mod theme;
@@ -53,6 +54,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.mode == Mode::Jobs {
         jobs::draw(f, body, app);
+    }
+    if app.mode == Mode::Rename || (app.mode == Mode::Prompt && app.rename_panel.is_some()) {
+        rename::draw(f, body, app);
     }
     if app.mode == Mode::OpenWith {
         openwith::draw(f, body, app);

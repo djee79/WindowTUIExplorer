@@ -1117,6 +1117,24 @@ impl Worker {
         });
     }
 
+    /// Month and weekday names from the Windows user locale: one `LocaleNames` (nothing
+    /// if Windows won't say; English stays).
+    pub fn locale_names(&self) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            if let Some((months, months_short, days, days_short)) = platform::locale_names() {
+                let _ = tx.send(AppEvent::LocaleNames(Box::new(
+                    crate::rename::tokens::Names {
+                        months,
+                        months_short,
+                        days,
+                        days_short,
+                    },
+                )));
+            }
+        });
+    }
+
     /// The frecency store: one `UsageLoaded`.
     pub fn load_usage(&self) {
         let tx = self.tx.clone();

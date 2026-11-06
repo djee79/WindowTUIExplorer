@@ -210,6 +210,7 @@ impl App {
             Mode::Jobs => self.on_jobs_key(key),
             Mode::SyncPreview => self.on_sync_preview_key(key),
             Mode::OpenWith => self.on_open_menu_key(key),
+            Mode::Rename => self.on_rename_key(key),
             Mode::Normal => self.on_normal_key(key),
         }
     }
@@ -388,6 +389,7 @@ impl App {
             Action::NewFile => self.start_new(false),
             Action::NewDir => self.start_new(true),
             Action::BulkRename => self.start_bulk_rename(),
+            Action::RenamePanel => self.open_rename_panel(),
             Action::CommandLine => self.open_prompt(PromptKind::Command),
             Action::GotoPath => self.open_prompt_with(PromptKind::Command, "cd "),
             Action::SetMark(c) => self.set_mark(c),

@@ -306,6 +306,24 @@ fn prompt_spans(p: &Prompt) -> Vec<Span<'static>> {
 pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     let sep = || Span::styled("  ·  ", theme::dim());
     let mut left: Vec<Span> = vec![Span::raw(" ")];
+    // The bulk rename panel: which part has the keys, and what they do there.
+    if let (Mode::Rename, Some(p)) = (app.mode, app.rename_panel.as_ref()) {
+        let (b, text) = if p.normal {
+            (
+                badge(" OPTIONS ", ACCENT),
+                "  letters toggle options  ·  jk move  ·  Space include/exclude  ·  i/Tab type  ·  Enter apply  ·  q close",
+            )
+        } else {
+            (
+                badge(" INSERT ", OK),
+                "  preview updates as you type  ·  Tab next field  ·  Esc options  ·  Enter apply",
+            )
+        };
+        left.push(b);
+        left.push(Span::styled(text, theme::dim()));
+        bar(f, area, left, Vec::new());
+        return;
+    }
     // A yes/no popup is up: the status line just says how to answer it.
     if let (Mode::Prompt, Some(d)) = (app.mode, app.dialog_view()) {
         left.push(badge(" CONFIRM ", if d.danger { ERR } else { ACCENT }));

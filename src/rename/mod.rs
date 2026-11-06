@@ -6,9 +6,6 @@
 //!
 //! All pure; the panel (`app::rename`) runs the plan and applies it through the worker.
 
-// Until the panel uses it (M4c slice 2), the engine is only exercised by its tests.
-#![allow(dead_code)]
-
 pub mod engine;
 pub mod plan;
 pub mod tokens;
