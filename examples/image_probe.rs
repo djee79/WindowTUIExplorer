@@ -15,6 +15,9 @@
 //!
 //! At the end it prints a report and writes it to `%TEMP%\sentier_image_probe.txt`.
 //! The report holds terminal names and versions only, no paths or user names.
+//!
+//! `cargo run --example image_probe -- --ghost` (iTerm2 only) instead tests ways to remove
+//! an old picture from the screen; see the `--ghost` section at the end.
 
 use image::{DynamicImage, Rgba, RgbaImage};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -63,11 +66,19 @@ struct Outcome {
 }
 
 fn main() -> anyhow::Result<()> {
-    let image = match std::env::args().nth(1) {
-        Some(path) => image::open(&path)?,
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let ghost = args.first().is_some_and(|a| a == "--ghost");
+    if ghost {
+        args.remove(0);
+    }
+    let image = match args.first() {
+        Some(path) => image::open(path)?,
         None => test_card(),
     };
     let env = terminal_env();
+    if ghost {
+        return ghost_main(&env, &image);
+    }
 
     // ratatui::init enters the alternate screen + raw mode and installs a panic hook that
     // restores the terminal.
@@ -327,4 +338,237 @@ fn report(env: &[(&str, String)], detected: &str, query_ms: u128, outcomes: &[Ou
         );
     }
     s
+}
+
+// ------------------------------------------------------------------------------ --ghost
+//
+// `cargo run --example image_probe -- --ghost`: iTerm2 only. Its pictures stay on screen
+// after the cells under them are drawn blank again, so this tries the ways sentier could
+// remove an old preview picture:
+//   1. no remedy, a text preview drawn over the same place
+//   2. (A) write spaces over the old picture's cells, then draw
+//   3. (B) clear the whole screen, then redraw (may blink)
+
+/// The picture's box: big on the left, or small and further right.
+fn image_rect(area: Rect, moved: bool) -> Rect {
+    let [_, body] = Layout::vertical([Constraint::Length(4), Constraint::Fill(1)]).areas(area);
+    let rect = if moved {
+        Rect {
+            x: body.x + body.width / 2,
+            y: body.y + 2,
+            width: (body.width / 3).max(10),
+            height: (body.height / 3).max(5),
+        }
+    } else {
+        Rect {
+            x: body.x + 2,
+            y: body.y,
+            width: (body.width * 2 / 3).max(20),
+            height: body.height.saturating_sub(1).max(8),
+        }
+    };
+    rect.intersection(body)
+}
+
+/// Remedy A: write spaces straight to the terminal over `rect`, outside ratatui's diff.
+fn erase(rect: Rect) -> std::io::Result<()> {
+    use ratatui::crossterm::{cursor::MoveTo, queue, style::Print};
+    use std::io::Write;
+    let mut out = std::io::stdout();
+    let blank = " ".repeat(rect.width as usize);
+    for y in rect.y..rect.y + rect.height {
+        queue!(out, MoveTo(rect.x, y), Print(&blank))?;
+    }
+    out.flush()
+}
+
+/// A frame of plain text where the picture was, like a text-file preview.
+fn draw_text_over(f: &mut Frame, title: &str, question: &str, keys: &str) {
+    let area = f.area();
+    f.render_widget(Clear, area);
+    let [head, body] = Layout::vertical([Constraint::Length(4), Constraint::Fill(1)]).areas(area);
+    let bold = Style::new().add_modifier(Modifier::BOLD);
+    f.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                format!(" sentier image probe · {title}"),
+                bold.fg(Color::Yellow),
+            )),
+            Line::from(format!(" {question}")),
+            Line::from(Span::styled(
+                format!(" {keys}"),
+                Style::new().fg(Color::Gray),
+            )),
+        ]),
+        head,
+    );
+    // Short lines with gaps, like source code: most cells stay blank.
+    let lines: Vec<Line> = (0..body.height)
+        .map(|i| Line::from(format!("  {i:>3}  fn line_{i}() {{ }}")))
+        .collect();
+    f.render_widget(Paragraph::new(lines), body);
+}
+
+fn ghost_main(env: &[(&str, String)], image: &DynamicImage) -> anyhow::Result<()> {
+    let mut terminal = ratatui::init();
+    let result = ghost_run(&mut terminal, image);
+    ratatui::restore();
+    let answers = result?;
+
+    let mut s = String::new();
+    let _ = writeln!(s, "sentier image probe --ghost (iTerm2)");
+    for (k, v) in env {
+        let v = if v.is_empty() { "(unset)" } else { v.as_str() };
+        let _ = writeln!(s, "  {k:<30} {v}");
+    }
+    let _ = writeln!(s);
+    for (what, a) in &answers {
+        let _ = writeln!(s, "  {what:<52} {}", a.label());
+    }
+    println!("{s}");
+    let path = std::env::temp_dir().join("sentier_image_probe_ghost.txt");
+    match std::fs::write(&path, &s) {
+        Ok(()) => println!("Saved to {}", path.display()),
+        Err(e) => println!("(couldn't save the report: {e})"),
+    }
+    Ok(())
+}
+
+fn ghost_run(
+    terminal: &mut DefaultTerminal,
+    image: &DynamicImage,
+) -> anyhow::Result<Vec<(&'static str, Answer)>> {
+    let mut picker = Picker::halfblocks();
+    picker.set_protocol_type(ProtocolType::Iterm2);
+    let mut state = picker.new_resize_protocol(image.clone());
+    let size = terminal.size()?;
+    let area = Rect::new(0, 0, size.width, size.height);
+    let big = image_rect(area, false);
+    let gone = "y gone   p traces left   n still there   q quit";
+    let mut answers = Vec::new();
+    let step = |terminal: &mut DefaultTerminal,
+                answers: &mut Vec<(&'static str, Answer)>,
+                label: &'static str|
+     -> anyhow::Result<bool> {
+        match ask()? {
+            Some(a) => {
+                answers.push((label, a));
+                Ok(true)
+            }
+            None => {
+                terminal.clear()?;
+                Ok(false)
+            }
+        }
+    };
+
+    // 0. Show it.
+    terminal.clear()?;
+    terminal.draw(|f| {
+        draw_step(
+            f,
+            "1/4 iTerm2",
+            "Do you see the test card?",
+            "y yes   n no   q quit",
+            &mut state,
+            false,
+        )
+    })?;
+    if !step(terminal, &mut answers, "picture shows")? || answers[0].1 == Answer::No {
+        return Ok(answers);
+    }
+
+    // 1. No remedy: a text preview takes the place.
+    terminal.draw(|f| {
+        draw_text_over(
+            f,
+            "2/4 no remedy, text drawn over it",
+            "Is the picture COMPLETELY gone, only text left?",
+            gone,
+        )
+    })?;
+    if !step(
+        terminal,
+        &mut answers,
+        "no remedy: text over it, picture gone",
+    )? {
+        return Ok(answers);
+    }
+
+    // 2. Remedy A: spaces over the old cells, then the small picture.
+    terminal.clear()?;
+    terminal.draw(|f| draw_step(f, "3/4 setup", "(one moment)", "", &mut state, false))?;
+    erase(big)?;
+    terminal.draw(|f| {
+        draw_step(
+            f,
+            "3/4 remedy A: spaces written over the old picture",
+            "The picture moved right and got smaller. Is the OLD, bigger copy gone?",
+            gone,
+            &mut state,
+            true,
+        )
+    })?;
+    if !step(
+        terminal,
+        &mut answers,
+        "A: spaces over old cells, old copy gone",
+    )? {
+        return Ok(answers);
+    }
+
+    // 3. Remedy B: full clear, then the big picture again.
+    terminal.clear()?;
+    terminal.draw(|f| {
+        draw_step(
+            f,
+            "4/4 remedy B: whole screen cleared",
+            "The picture is big again. Is the small copy gone?",
+            gone,
+            &mut state,
+            false,
+        )
+    })?;
+    if !step(terminal, &mut answers, "B: full clear, old copy gone")? {
+        return Ok(answers);
+    }
+    // Blink check: watch three clear + redraw rounds, then answer.
+    terminal.draw(|f| {
+        draw_step(
+            f,
+            "4/4 remedy B: blink check",
+            "Watch the screen: it gets cleared and redrawn 3 times in a moment…",
+            "",
+            &mut state,
+            false,
+        )
+    })?;
+    std::thread::sleep(Duration::from_millis(1200));
+    for _ in 0..3 {
+        terminal.clear()?;
+        terminal.draw(|f| {
+            draw_step(
+                f,
+                "4/4 remedy B: blink check",
+                "Watch the screen: it gets cleared and redrawn 3 times in a moment…",
+                "",
+                &mut state,
+                false,
+            )
+        })?;
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    terminal.draw(|f| {
+        draw_step(
+            f,
+            "4/4 remedy B: blink check",
+            "Did the screen visibly BLINK during those 3 redraws?",
+            "y blinked   p barely   n no",
+            &mut state,
+            false,
+        )
+    })?;
+    step(terminal, &mut answers, "B: full clear blinks")?;
+    terminal.clear()?;
+    Ok(answers)
 }
