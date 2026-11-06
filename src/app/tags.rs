@@ -34,6 +34,13 @@ pub enum Confirm {
         plan: Box<crate::jobs::Plan>,
         why: String,
     },
+    /// Importing wtm's launcher entries (`offer`: asked at first run, not `:import-wtm`).
+    ImportWtm {
+        pins: Vec<crate::pins::Pin>,
+        usage: Box<crate::frecency::Usage>,
+        offer: bool,
+        why: String,
+    },
     /// Running a backup preset (`direct`: zip the source without staging).
     Backup {
         preset: Box<crate::jobs::zip::BackupPreset>,
@@ -53,7 +60,10 @@ impl Confirm {
             Confirm::DeleteView { reopen, .. }
             | Confirm::RenameTag { reopen, .. }
             | Confirm::DeleteTag { reopen, .. } => reopen,
-            Confirm::Paste { .. } | Confirm::FileOp { .. } | Confirm::Backup { .. } => None,
+            Confirm::Paste { .. }
+            | Confirm::FileOp { .. }
+            | Confirm::Backup { .. }
+            | Confirm::ImportWtm { .. } => None,
         }
     }
 }
@@ -218,7 +228,11 @@ impl App {
                 format!("remove #{tag} from {}? {yes}", pins_word(n))
             }
             Some(Confirm::FileOp { why, .. }) => format!("{why} y = yes, anything else keeps it"),
-            Some(Confirm::Paste { why, .. } | Confirm::Backup { why, .. }) => {
+            Some(
+                Confirm::Paste { why, .. }
+                | Confirm::Backup { why, .. }
+                | Confirm::ImportWtm { why, .. },
+            ) => {
                 format!("{why} Go ahead? y = yes, anything else cancels")
             }
             None => String::new(),
@@ -293,7 +307,17 @@ impl App {
 
     pub(super) fn store_cancel(&mut self, kind: PromptKind) {
         let reopen = match kind {
-            PromptKind::Confirm => self.confirm.take().and_then(Confirm::reopen),
+            PromptKind::Confirm => match self.confirm.take() {
+                // Declining the first-run offer writes pins.toml, so it isn'"'"'t asked again.
+                Some(Confirm::ImportWtm { offer: true, .. }) => {
+                    self.save_pins();
+                    return self.set_status(
+                        "not imported from wtm; :import-wtm does it any time".into(),
+                        false,
+                    );
+                }
+                c => c.and_then(Confirm::reopen),
+            },
             PromptKind::ViewName | PromptKind::ViewKey => {
                 self.view_draft.take().and_then(|d| d.reopen)
             }
@@ -305,6 +329,9 @@ impl App {
     }
 
     fn apply_confirm(&mut self, c: Confirm) {
+        if let Confirm::ImportWtm { pins, usage, .. } = c {
+            return self.import_wtm(pins, *usage);
+        }
         if let Confirm::Backup { preset, direct, .. } = c {
             return self.run_backup(*preset, direct);
         }
@@ -328,9 +355,10 @@ impl App {
                 let n = self.pins.delete_tag(tag);
                 format!("removed #{tag} from {}", pins_word(n))
             }
-            Confirm::Paste { .. } | Confirm::FileOp { .. } | Confirm::Backup { .. } => {
-                String::new()
-            }
+            Confirm::Paste { .. }
+            | Confirm::FileOp { .. }
+            | Confirm::Backup { .. }
+            | Confirm::ImportWtm { .. } => String::new(),
         };
         self.save_pins();
         self.set_status(msg, false);

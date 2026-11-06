@@ -89,6 +89,22 @@ pub enum AppEvent {
         ext: String,
         registered: crate::open::Registered,
     },
+    /// wtm's launcher entries (with the pins they become), its usage, and problems; or
+    /// why it couldn't be read. `offer`: the first-run offer.
+    WtmFound {
+        #[allow(clippy::type_complexity)]
+        result: Result<
+            (
+                Vec<(crate::launcher::entry::WtmEntry, crate::pins::Pin)>,
+                crate::frecency::Usage,
+                Vec<String>,
+            ),
+            String,
+        >,
+        offer: bool,
+    },
+    /// The Start Menu's apps (name, `.lnk` path).
+    StartMenu(crate::launcher::startmenu::Apps),
     /// The frecency store, read at startup.
     UsageLoaded(crate::frecency::Usage),
     /// Something was started, shown or copied (`what`), or why not.

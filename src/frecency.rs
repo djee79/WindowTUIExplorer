@@ -50,6 +50,13 @@ impl Usage {
         self.map.len()
     }
 
+    /// Copies `other`'s entry for `from` here as `to` (an import re-keying history).
+    pub fn take_from(&mut self, other: &Usage, from: &str, to: &str) {
+        if let Some(&v) = other.map.get(from) {
+            self.map.insert(to.to_string(), v);
+        }
+    }
+
     /// Takes in what another copy recorded (the file read at startup after launches
     /// were already recorded here): the higher count and the later time win.
     pub fn merge(&mut self, other: Usage) {

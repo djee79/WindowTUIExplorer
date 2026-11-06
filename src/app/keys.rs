@@ -69,6 +69,13 @@ pub enum PresetField {
     DestDir,
     Keep,
     Engine,
+    /// A web pin's address and browser.
+    Url,
+    Browser,
+    /// An app pin's program, its arguments and the folder it runs in.
+    Command,
+    Args,
+    Dir,
 }
 
 impl PresetField {
@@ -80,6 +87,11 @@ impl PresetField {
             PresetField::DestDir => "zips go to: ",
             PresetField::Keep => "keep newest (0 = all): ",
             PresetField::Engine => "zip engine (builtin | 7zip): ",
+            PresetField::Url => "url: ",
+            PresetField::Browser => "browser (edge | chrome | brave | vivaldi | path): ",
+            PresetField::Command => "command: ",
+            PresetField::Args => "arguments (empty = none): ",
+            PresetField::Dir => "start in (empty = its folder): ",
         }
     }
 
@@ -87,7 +99,7 @@ impl PresetField {
     pub fn is_path(self) -> bool {
         matches!(
             self,
-            PresetField::Source | PresetField::Dest | PresetField::DestDir
+            PresetField::Source | PresetField::Dest | PresetField::DestDir | PresetField::Dir
         )
     }
 }
@@ -396,6 +408,8 @@ impl App {
             Action::Sync(name, skip) => self.sync_command(&name, skip),
             Action::SyncPicker => self.sync_command("", false),
             Action::Launcher => self.open_launcher(""),
+            Action::ImportWtm => self.import_wtm_command(),
+            Action::PinUrl(url) => self.new_web_pin(&url),
             Action::OpenWith => self.open_menu(),
             Action::Reveal => self.open_targets_with("reveal"),
             Action::Properties => self.open_targets_with("properties"),

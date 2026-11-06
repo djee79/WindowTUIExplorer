@@ -348,6 +348,10 @@ pub enum Action {
     /// `gx` / `gw`: the current folder in Explorer / a new WezTerm tab.
     ExplorerHere,
     TerminalHere,
+    /// `:import-wtm`: wtm's launcher entries as pins.
+    ImportWtm,
+    /// `:pin url [URL]`: a web app pin.
+    PinUrl(String),
     /// `<leader><leader>` / `<C-Space>`: the launcher.
     Launcher,
     /// `<leader>rs`: the pins picker filtered to sync presets.
@@ -446,6 +450,7 @@ const NAMED: &[(&str, Action)] = &[
     ("jobs", Action::Jobs),
     ("sync-picker", Action::SyncPicker),
     ("launcher", Action::Launcher),
+    ("import-wtm", Action::ImportWtm),
     ("open-with", Action::OpenWith),
     ("reveal", Action::Reveal),
     ("properties", Action::Properties),
@@ -483,7 +488,7 @@ const NAMED: &[(&str, Action)] = &[
 
 /// Commands from the spec that later milestones bring; named so the message says "not
 /// yet" instead of "unknown".
-const LATER: &[(&str, &str)] = &[("picker", "M6"), ("backup", "M4b"), ("import-wtm", "M5")];
+const LATER: &[(&str, &str)] = &[("picker", "M6")];
 
 impl Action {
     /// Parses a `run` string or a `:` command line (without the `:`).
@@ -506,6 +511,9 @@ impl Action {
             "sync!" => Ok(Action::Sync(arg.to_string(), true)),
             "backup" => Ok(Action::Backup(arg.to_string())),
             "pin" if arg.is_empty() => Ok(Action::PinCwd),
+            "pin" if arg == "url" || arg.starts_with("url ") => {
+                Ok(Action::PinUrl(arg[3..].trim().to_string()))
+            }
             "tags" if arg.is_empty() => Ok(Action::TagPicker),
             "tag" => {
                 let words: Vec<&str> = arg.split_whitespace().collect();
@@ -1057,6 +1065,12 @@ mod tests {
             ),
             ("sync! HIT", Action::Sync("HIT".into(), true)),
             ("sync-picker", Action::SyncPicker),
+            ("pin url", Action::PinUrl(String::new())),
+            (
+                "pin url https://x.example",
+                Action::PinUrl("https://x.example".into()),
+            ),
+            ("import-wtm", Action::ImportWtm),
             ("backup HIT", Action::Backup("HIT".into())),
             ("12", Action::GotoLine(12)),
             ("set rnu", Action::SetRelativeNumber(true)),
@@ -1087,7 +1101,6 @@ mod tests {
             ("nope", "unknown command"),
             ("q now", "no argument"),
             ("picker files", "arrives in M6"),
-            ("import-wtm", "arrives in M5"),
             ("set", "set what"),
             ("set list", "unknown option"),
             ("tag rename x", "tag rename <old> <new>"),

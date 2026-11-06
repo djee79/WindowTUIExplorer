@@ -1073,6 +1073,34 @@ impl Worker {
         });
     }
 
+    /// wtm's launcher entries as pins, and its usage re-keyed: one `WtmFound` (`offer`:
+    /// the first-run offer rather than `:import-wtm`).
+    pub fn wtm_read(&self, offer: bool) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let _ = tx.send(read_wtm(offer));
+        });
+    }
+
+    /// First run (no pins.toml yet) with a wtm config next to it: offer the import.
+    pub fn wtm_offer_check(&self) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let first_run = pins::store_path().is_some_and(|p| !p.exists());
+            if first_run && wtm_paths().0.is_some_and(|c| c.is_file()) {
+                let _ = tx.send(read_wtm(true));
+            }
+        });
+    }
+
+    /// The Start Menu's apps: one `StartMenu`.
+    pub fn scan_start_menu(&self) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let _ = tx.send(AppEvent::StartMenu(crate::launcher::startmenu::scan()));
+        });
+    }
+
     /// The frecency store: one `UsageLoaded`.
     pub fn load_usage(&self) {
         let tx = self.tx.clone();
@@ -1330,6 +1358,45 @@ impl Worker {
             let _ = tx.send(AppEvent::Opened { loc, result });
         });
     }
+}
+
+/// wtm's `%APPDATA%\wtm\config.toml` and `%LOCALAPPDATA%\wtm\usage.tsv` (none in tests:
+/// they never read the user's own files).
+fn wtm_paths() -> (Option<std::path::PathBuf>, Option<std::path::PathBuf>) {
+    if cfg!(test) {
+        return (None, None);
+    }
+    let at = |var: &str, file: &str| {
+        std::env::var_os(var).map(|d| std::path::PathBuf::from(d).join("wtm").join(file))
+    };
+    (
+        at("APPDATA", "config.toml"),
+        at("LOCALAPPDATA", "usage.tsv"),
+    )
+}
+
+/// Blocking: reads wtm's config and usage, tells folders from apps.
+fn read_wtm(offer: bool) -> AppEvent {
+    use crate::launcher::entry;
+    let (config, usage) = wtm_paths();
+    let result = config
+        .ok_or_else(|| "no %APPDATA%".to_string())
+        .and_then(|p| std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display())))
+        .and_then(|text| entry::parse_config(&text))
+        .map(|(entries, problems)| {
+            let pairs: Vec<(entry::WtmEntry, crate::pins::Pin)> = entries
+                .into_iter()
+                .map(|e| {
+                    let target = platform::expand_env(&e.command);
+                    let is_dir = std::path::Path::new(&target).is_dir();
+                    let pin = entry::to_pin(&e, is_dir);
+                    (e, pin)
+                })
+                .collect();
+            let wtm_usage = usage.map(|p| crate::frecency::load(&p)).unwrap_or_default();
+            (pairs, wtm_usage, problems)
+        });
+    AppEvent::WtmFound { result, offer }
 }
 
 /// `C:\a\b.pdf` → `b.pdf`, for messages.

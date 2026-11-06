@@ -105,6 +105,9 @@ impl App {
             server: None,
             score: 0,
         }));
+        if self.launcher_start_menu {
+            items.extend(self.start_menu_items());
+        }
         let picker = Picker::new(
             "Launcher",
             Source::Launcher,
@@ -262,6 +265,7 @@ impl App {
             (KeyCode::Char('t'), true) => return self.picker_edit(true),
             (KeyCode::Char('x'), true) => return self.picker_delete(),
             (KeyCode::Char('a'), true) => return self.picker_pin(),
+            (KeyCode::Char('s'), true) => return self.toggle_start_menu(),
             // Tag picker: Tab chooses (multi-select).
             (KeyCode::Tab, _) if source == Source::Tags => {
                 return self.picker_with(|p| p.toggle_chosen());
@@ -404,6 +408,7 @@ impl App {
             .map(|i| i.name.clone());
         self.close_picker();
         match kind {
+            ItemKind::StartMenu => self.launch_start_menu(id),
             ItemKind::View => {
                 if let Some(q) = self.pins.views.get(id).map(|v| v.query.clone()) {
                     self.open_pin_picker(&format!("{q} "));
@@ -421,6 +426,24 @@ impl App {
 
     /// `^a`: pin the machine under the cursor (machine picker).
     fn picker_pin(&mut self) {
+        // The launcher: pin the Start Menu app under the cursor, else a web app (the
+        // typed text as its URL when it looks like one).
+        if let Some(p) = self
+            .picker
+            .as_ref()
+            .filter(|p| p.source == Source::Launcher)
+        {
+            let text = p.query.text.clone();
+            let start = p
+                .selected()
+                .filter(|i| i.kind == ItemKind::StartMenu)
+                .map(|i| (i.name.clone(), i.detail.clone()));
+            self.close_picker();
+            return match start {
+                Some((name, lnk)) => self.new_app_pin(&name, &lnk),
+                None => self.new_web_pin(&text),
+            };
+        }
         let Some((kind, _, name)) = self.picker_selected() else {
             return;
         };
@@ -456,7 +479,7 @@ impl App {
                 self.close_picker();
                 self.start_tag_rename(&name);
             }
-            ItemKind::Machine => {
+            ItemKind::Machine | ItemKind::StartMenu => {
                 self.set_status(format!("{name} isn't pinned: ^a pins it"), false);
             }
         }
@@ -466,7 +489,7 @@ impl App {
         let Some((kind, id, name)) = self.picker_selected() else {
             return;
         };
-        if kind == ItemKind::Machine {
+        if matches!(kind, ItemKind::Machine | ItemKind::StartMenu) {
             // Recent / inventory rows aren't sentier's to delete.
             return self.set_status(format!("{name} isn't pinned: nothing to delete"), false);
         }
@@ -476,7 +499,7 @@ impl App {
             ItemKind::Pin(_) => self.confirm_unpin(id, reopen),
             ItemKind::View => self.confirm_view_delete(id, reopen),
             ItemKind::Tag => self.tag_delete(&name, reopen),
-            ItemKind::Machine => {}
+            ItemKind::Machine | ItemKind::StartMenu => {}
         }
     }
 

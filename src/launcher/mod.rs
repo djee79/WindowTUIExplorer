@@ -2,6 +2,9 @@
 //! lives in the picker; frecency in [`crate::frecency`]. Pure: the worker runs the
 //! [`Launch`] (ShellExecute, with `%ENV%` expanded, as wtm does).
 
+pub mod entry;
+pub mod startmenu;
+
 use crate::pins::{Pin, PinKind};
 
 /// One ShellExecute: program, arguments (one string, as typed), working folder.

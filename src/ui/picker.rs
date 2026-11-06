@@ -267,11 +267,12 @@ fn help_lines(p: &crate::picker::Picker, w: usize) -> Vec<Line<'static>> {
     } else {
         "          is:folder is:web is:unc is:unreachable  on:<server>"
     };
-    for text in [
-        " filters: #tag and  #a,b or  !#tag not",
-        second,
-        " ranked: name prefix › tag prefix › substring › fuzzy",
-    ] {
+    let third = if p.source == Source::Launcher {
+        " ^s Start Menu apps · ^a pin (a URL, or the Start Menu app) · no match: Enter runs it"
+    } else {
+        " ranked: name prefix › tag prefix › substring › fuzzy"
+    };
+    for text in [" filters: #tag and  #a,b or  !#tag not", second, third] {
         out.push(Line::from(Span::styled(text, theme::dim())));
     }
     out
@@ -286,6 +287,7 @@ fn kind_color(kind: ItemKind) -> ratatui::style::Color {
         ItemKind::Pin(PinKind::Sync | PinKind::Backup) => theme::WARN,
         ItemKind::Pin(PinKind::Machine) | ItemKind::Machine => ERR,
         ItemKind::View => ACCENT,
+        ItemKind::StartMenu => OK,
     }
 }
 
@@ -386,6 +388,21 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         ItemKind::View => return draw_view_preview(f, inner, app, &item),
         ItemKind::Tag => return draw_tag_preview(f, inner, app, &item),
         ItemKind::Machine => return draw_machine_preview(f, inner, app, &item),
+        ItemKind::StartMenu => {
+            let vw = (inner.width as usize).saturating_sub(12);
+            let lines = vec![
+                Line::default(),
+                info_line("App", item.name.clone()),
+                info_line("Shortcut", truncate_left(&item.detail, vw)),
+                Line::default(),
+                Line::from(Span::styled(
+                    " Enter runs it · ^a pins it · ^s hides the Start Menu",
+                    theme::dim(),
+                )),
+            ];
+            f.render_widget(Paragraph::new(lines), inner);
+            return;
+        }
         ItemKind::Pin(_) => {}
     }
     let Some(pin) = app.pins.pins.get(item.id) else {

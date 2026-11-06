@@ -874,3 +874,32 @@ Manual checklist:
 - [ ] A web pin opens a chromeless Edge window; `browser = "chrome"` uses Chrome.
 - [ ] An app pin with `%APPDATA%` in its command runs.
 - [ ] Does `Ctrl-Space` arrive in WezTerm on Windows? (else `Space Space`).
+
+## M5 launcher, slice 2: wtm import, pin a URL, Start Menu (code complete 2026-11-06, manual check pending)
+
+**M5 is code complete.** The `evars.bat` context action (section 6) was dropped by the
+user ("no need for that").
+
+- `:import-wtm` (`launcher/entry.rs`): `%APPDATA%\wtm\config.toml`'s `[[launcher]]`
+  entries become pins after one y/n: `--app=URL` on a browser exe → web pin (`browser`
+  kept unless Edge), a folder → folder pin, the rest → app pin (`command`, `args`, `dir`);
+  `group` → first tag (`Web Apps` → `web-apps`); wtm's global `key` dropped. Entries
+  already pinned (same target, or same kind + name) are skipped and counted. wtm's
+  `usage.tsv` comes along (same key for apps; web keys re-keyed to the URL), so the
+  launcher's "frequent" is right from the start.
+- First run (no `pins.toml` yet) with a wtm config: the same question is offered once;
+  `n` writes an empty `pins.toml` so it isn't asked again.
+- Web and app pins are made and edited in the app (no TOML by hand): `:pin url [URL]` or
+  `^a` in the launcher (the typed text as the URL) → name (from the host) → url (checked,
+  `https://` added) → browser (edge / chrome / brave / vivaldi / a path) → tags → key.
+  `^e` on an app pin walks command → arguments → start-in folder (Tab completes).
+- `^s` in the launcher (`launcher/startmenu.rs`, wtm's `scan_start_menu`): the Start
+  Menu's apps in or out of the list (`[start]`), scanned once on the worker: per-user then
+  all-users `.lnk`, 4 deep, uninstallers skipped, deduped by name. Enter runs one (and
+  counts it for frecency, under the same key its pin would have); `^a` pins it as an app.
+
+Manual checklist:
+- [ ] `:import-wtm` with the real wtm config (26 entries here): the question's counts look
+      right; imported web apps open as app windows; groups show as headers in `Space Space`.
+- [ ] `Space Space`, `^s`: Start Menu apps appear; Enter starts one; `^a` pins it.
+- [ ] `:pin url` for a real web app, Chrome as browser.

@@ -11,6 +11,7 @@ mod jobs;
 pub use jobs::JobRow;
 mod backup;
 mod keys;
+mod launcher;
 mod machines;
 mod open;
 pub use open::OpenMenu;
@@ -292,6 +293,9 @@ pub struct App {
     pub open_registered: HashMap<String, crate::open::Registered>,
     /// Frecency of everything opened (launcher ranking), from usage.tsv.
     pub usage: crate::frecency::Usage,
+    /// The Start Menu's apps once scanned, and whether the launcher lists them (`^s`).
+    pub start_menu: Option<crate::launcher::startmenu::Apps>,
+    pub launcher_start_menu: bool,
     sync_token: u64,
     /// File operations: the open rename / delete prompt's subject, how many are running,
     /// the name to put the cursor on when the listing comes back, and a program to run
@@ -413,6 +417,8 @@ impl App {
             open_menu: None,
             open_registered: HashMap::new(),
             usage: Default::default(),
+            start_menu: None,
+            launcher_start_menu: false,
             sync_token: 0,
             op_draft: None,
             ops_running: 0,
@@ -443,6 +449,7 @@ impl App {
         app.worker.find_7z();
         app.worker.load_open_config();
         app.worker.load_usage();
+        app.worker.wtm_offer_check();
         app.set_cwd(start, None);
         app
     }
@@ -1046,6 +1053,8 @@ impl App {
             AppEvent::Ran { what, result } => self.on_ran(what, result),
             // Launches recorded before the file was read stay.
             AppEvent::UsageLoaded(usage) => self.usage.merge(usage),
+            AppEvent::WtmFound { result, offer } => self.on_wtm_found(result, offer),
+            AppEvent::StartMenu(apps) => self.on_start_menu(apps),
             AppEvent::Registered { ext, registered } => self.on_registered(ext, registered),
             AppEvent::SmbAnswer { open, up } => self.on_smb_answer(open, up),
             AppEvent::PresetRuns(runs) => {
@@ -1621,11 +1630,11 @@ mod tests {
 
         press(&mut app, ":frobnicate<CR>");
         assert!(app.status.as_ref().is_some_and(|s| s.is_error));
-        press(&mut app, ":import-wtm<CR>");
+        press(&mut app, ":picker files<CR>");
         assert!(
             app.status
                 .as_ref()
-                .is_some_and(|s| s.text.contains("arrives in M5"))
+                .is_some_and(|s| s.text.contains("arrives in M6"))
         );
         press(&mut app, ":set nornu<CR>");
         assert!(!app.relative_number && app.number);
@@ -2678,6 +2687,187 @@ mod pin_tests {
         assert!(picker_names(&app).is_empty());
         press(&mut app, "<CR>");
         assert_eq!(app.mode, Mode::Normal);
+    }
+
+    fn wtm_found(app: &mut App, offer: bool) {
+        use crate::launcher::entry;
+        let Ok((entries, problems)) = entry::parse_config(
+            r#"
+            [[launcher]]
+            name = "E3D HIT"
+            command = 'C:\AVEVA\evars.bat'
+            args = "HIT"
+            group = "AVEVA"
+            [[launcher]]
+            name = "Grafana"
+            command = "msedge.exe"
+            args = "--app=https://grafana.example"
+            [[launcher]]
+            name = "Work"
+            command = 'C:\work'
+            "#,
+        ) else {
+            panic!()
+        };
+        let pairs = entries
+            .into_iter()
+            .map(|e| {
+                let p = entry::to_pin(&e, e.command == r"C:\work");
+                (e, p)
+            })
+            .collect();
+        let usage = crate::frecency::Usage::parse("4\t1\tc:\\aveva\\evars.bat hit\n");
+        app.handle(AppEvent::WtmFound {
+            result: Ok((pairs, usage, problems)),
+            offer,
+        });
+    }
+
+    /// wtm's entries come in as pins after one question (what's pinned already is
+    /// skipped), with their launch history; declining the first-run offer is final.
+    #[test]
+    fn wtm_import_asks_then_adds_new_pins() {
+        let (mut app, _rt) = loaded();
+        press(&mut app, r":cd C:\work<CR>");
+        press(&mut app, "mw<CR><CR>"); // "work" pinned already, as a folder
+
+        wtm_found(&mut app, false);
+        let note = app.confirm_note();
+        assert!(
+            note.contains("Import 2 launcher entries from wtm (1 already pinned)"),
+            "{note}"
+        );
+        press(&mut app, "y");
+        let kinds: Vec<(PinKind, &str)> = app
+            .pins
+            .pins
+            .iter()
+            .map(|p| (p.kind, p.name.as_str()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                (PinKind::Folder, "work"),
+                (PinKind::App, "E3D HIT"),
+                (PinKind::Web, "Grafana")
+            ]
+        );
+        assert_eq!(app.pins.pins[1].tags, ["aveva"]);
+        assert!(
+            app.usage.score(r"c:\aveva\evars.bat hit", 1) > 0,
+            "history kept"
+        );
+        // Again: nothing new.
+        wtm_found(&mut app, false);
+        assert!(
+            app.status
+                .as_ref()
+                .is_some_and(|s| s.text.contains("nothing new"))
+        );
+
+        // The first-run offer, declined.
+        let (mut app, _rt) = loaded();
+        wtm_found(&mut app, true);
+        press(&mut app, "n");
+        assert!(app.pins.pins.is_empty());
+        assert!(
+            app.status
+                .as_ref()
+                .is_some_and(|s| s.text.contains(":import-wtm does it any time"))
+        );
+    }
+
+    /// `:pin url` and `^e` make and edit web and app pins entirely in the app.
+    #[test]
+    fn web_and_app_pins_are_made_and_edited_in_the_app() {
+        let (mut app, _rt) = loaded();
+        press(&mut app, ":pin url grafana.example/d/x<CR>");
+        assert_eq!(prompt_text(&app).as_deref(), Some("grafana.example"));
+        press(&mut app, "<C-u>Grafana<CR>");
+        assert_eq!(
+            prompt_text(&app).as_deref(),
+            Some("https://grafana.example/d/x")
+        );
+        press(&mut app, "<C-u>not a url<CR>");
+        assert!(
+            app.prompt
+                .as_ref()
+                .is_some_and(|p| p.note.contains("web address"))
+        );
+        press(&mut app, "<C-u>https://grafana.example/d/x<CR>");
+        assert_eq!(prompt_text(&app).as_deref(), Some("edge"));
+        press(&mut app, "<C-u>firefox<CR>");
+        assert!(
+            app.prompt
+                .as_ref()
+                .is_some_and(|p| p.note.contains("edge, chrome"))
+        );
+        press(&mut app, "<C-u>chrome<CR>monitoring<CR>g<CR>");
+        assert_eq!(app.mode, Mode::Normal);
+        let g = app.pins.pins[0].clone();
+        assert_eq!(
+            (g.kind, g.url.as_deref(), g.browser.as_deref(), g.key_char()),
+            (
+                PinKind::Web,
+                Some("https://grafana.example/d/x"),
+                Some("chrome"),
+                Some('g')
+            )
+        );
+
+        // An app pin, edited with ^e: command, arguments, folder.
+        let Ok((store, _)) =
+            crate::pins::parse("[[pin]]\nkind='app'\nname='E3D'\ncommand='C:\\a\\e3d.bat'\n")
+        else {
+            panic!()
+        };
+        app.pins = store;
+        app.edit_pin(0, false, None);
+        press(&mut app, "<CR>");
+        assert_eq!(prompt_text(&app).as_deref(), Some(r"C:\a\e3d.bat"));
+        press(&mut app, "<CR>HIT<CR>");
+        press(&mut app, r"D:\aveva<CR><CR><CR>");
+        let e = &app.pins.pins[0];
+        assert_eq!(
+            (e.args.as_deref(), e.dir.as_deref()),
+            (Some("HIT"), Some(r"D:\aveva"))
+        );
+    }
+
+    /// `^s` puts the Start Menu's apps in the launcher; `^a` on one pins it.
+    #[test]
+    fn launcher_start_menu_apps_and_pinning_them() {
+        let (mut app, _rt) = loaded();
+        press(&mut app, "<Space><Space>");
+        press(&mut app, "<C-s>");
+        assert!(app.launcher_start_menu);
+        app.handle(AppEvent::StartMenu(vec![(
+            "Notepad++".into(),
+            r"C:\Start\Notepad++.lnk".into(),
+        )]));
+        press(&mut app, "note");
+        settle(&mut app);
+        assert_eq!(picker_names(&app), ["Notepad++"]);
+        let screen = render(&mut app, 160, 30);
+        assert!(
+            screen.contains("[start]") && screen.contains("^s Start Menu"),
+            "{screen}"
+        );
+        press(&mut app, "<C-a>");
+        assert_eq!(prompt_text(&app).as_deref(), Some("Notepad++"));
+        press(&mut app, "<CR>");
+        assert_eq!(
+            prompt_text(&app).as_deref(),
+            Some(r"C:\Start\Notepad++.lnk")
+        );
+        press(&mut app, "<CR><CR><CR>tools<CR><CR>");
+        assert_eq!(app.pins.pins.len(), 1);
+        assert_eq!(app.pins.pins[0].kind, PinKind::App);
+        // ^s again: hidden.
+        press(&mut app, "<Space><Space><C-s>");
+        assert!(!app.launcher_start_menu);
+        settle(&mut app);
+        assert_eq!(picker_names(&app), ["Notepad++"], "only the pin now");
     }
 }
 

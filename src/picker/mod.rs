@@ -32,6 +32,8 @@ pub enum ItemKind {
     /// A machine that isn't pinned (recent, inventory CSV, `source_cmd`), in the machine
     /// picker; the name is its host.
     Machine,
+    /// A Start Menu shortcut in the launcher (`^s`): the name, the `.lnk` path.
+    StartMenu,
 }
 
 impl ItemKind {
@@ -41,6 +43,7 @@ impl ItemKind {
             ItemKind::View => "view",
             ItemKind::Tag => "tag",
             ItemKind::Machine => "machine",
+            ItemKind::StartMenu => "start",
         }
     }
 

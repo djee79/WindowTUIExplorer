@@ -601,8 +601,43 @@ impl App {
                 }
                 v
             }
+            PinKind::Web => vec![Url, Browser],
+            PinKind::App => vec![Command, Args, Dir],
             _ => Vec::new(),
         }
+    }
+
+    /// `:pin url [URL]`, `^a` in the launcher: a web app pin (name → url → browser →
+    /// tags → key). The name starts as the URL's host.
+    pub(super) fn new_web_pin(&mut self, url: &str) {
+        if !self.pins_ready() {
+            return;
+        }
+        let url = normalize_url(url).unwrap_or_default();
+        let host = url
+            .split("://")
+            .nth(1)
+            .and_then(|r| r.split(['/', '?', '#']).next())
+            .unwrap_or_default()
+            .trim_start_matches("www.")
+            .to_string();
+        let mut pin = Pin::blank(PinKind::Web, &host);
+        pin.url = (!url.is_empty()).then_some(url);
+        let mut d = PinDraft::new(pin, None, true);
+        d.fields = self.preset_fields(&d.pin);
+        self.start_draft(d);
+    }
+
+    /// `^a` on a Start Menu app in the launcher: an app pin for its shortcut.
+    pub(super) fn new_app_pin(&mut self, name: &str, command: &str) {
+        if !self.pins_ready() {
+            return;
+        }
+        let mut pin = Pin::blank(PinKind::App, name);
+        pin.command = Some(command.to_string());
+        let mut d = PinDraft::new(pin, None, true);
+        d.fields = self.preset_fields(&d.pin);
+        self.start_draft(d);
     }
 
     /// `:sync new` / `:backup new`: a preset whose source is the current folder, through
@@ -651,6 +686,41 @@ impl App {
     /// Checks one field and writes it into the pin. Err keeps the prompt open.
     fn set_preset_field(&self, pin: &mut Pin, f: PresetField, text: &str) -> Result<(), String> {
         use crate::jobs::preset::check_paths;
+        let opt = |t: &str| (!t.trim().is_empty()).then(|| t.trim().to_string());
+        // App and web fields live on the pin itself.
+        match f {
+            PresetField::Url => {
+                pin.url = Some(normalize_url(text).ok_or("a web address (https://…)")?);
+                return Ok(());
+            }
+            PresetField::Browser => {
+                let b = text.trim();
+                pin.browser = match b.to_ascii_lowercase().as_str() {
+                    "" | "edge" | "msedge" => None,
+                    "chrome" | "brave" | "vivaldi" => Some(b.to_ascii_lowercase()),
+                    _ if b.contains(['\\', '/']) => Some(b.to_string()),
+                    other => {
+                        return Err(format!(
+                            "{other:?}: edge, chrome, brave, vivaldi or a path to the browser"
+                        ));
+                    }
+                };
+                return Ok(());
+            }
+            PresetField::Command => {
+                pin.command = Some(opt(text).ok_or("the program, .bat, .lnk or file to run")?);
+                return Ok(());
+            }
+            PresetField::Args => {
+                pin.args = opt(text);
+                return Ok(());
+            }
+            PresetField::Dir => {
+                pin.dir = opt(text);
+                return Ok(());
+            }
+            _ => {}
+        }
         let source = || {
             pin.extra
                 .get("source")
@@ -698,6 +768,12 @@ impl App {
                 let e = crate::jobs::zip::Engine::parse(text)?;
                 ("engine", toml::Value::String(e.word().into()))
             }
+            // Handled above.
+            PresetField::Url
+            | PresetField::Browser
+            | PresetField::Command
+            | PresetField::Args
+            | PresetField::Dir => return Ok(()),
         };
         pin.extra.insert(key.into(), value);
         Ok(())
@@ -718,8 +794,28 @@ impl App {
                 Some(p) => format!("7zip: faster, multi-threaded ({p}) · builtin: always works"),
                 None => "7-Zip isn't installed here: builtin is used either way".into(),
             },
+            PresetField::Url => "opens as its own window (--app), like an installed app".into(),
+            PresetField::Browser => "empty = Edge (always on Windows 11)".into(),
+            PresetField::Command => {
+                "an .exe, .bat, .lnk or document; %VARS% are expanded when it runs".into()
+            }
+            PresetField::Args => "passed as typed".into(),
+            PresetField::Dir => "the working folder · Tab completes".into(),
         }
     }
+}
+
+/// `grafana.example/x` → `https://grafana.example/x`; None when it isn't one.
+fn normalize_url(text: &str) -> Option<String> {
+    let t = text.trim();
+    if t.is_empty() || t.contains(char::is_whitespace) {
+        return None;
+    }
+    if t.contains("://") {
+        return Some(t.to_string());
+    }
+    let host = t.split('/').next().unwrap_or_default();
+    (host.contains('.') || host.starts_with("localhost")).then(|| format!("https://{t}"))
 }
 
 /// A preset field's current value, to prefill its prompt.
@@ -747,14 +843,21 @@ fn preset_value(pin: &Pin, f: PresetField) -> String {
             .and_then(|v| v.as_str())
             .unwrap_or("builtin")
             .into(),
+        PresetField::Url => pin.url.clone().unwrap_or_default(),
+        PresetField::Browser => pin.browser.clone().unwrap_or_else(|| "edge".into()),
+        PresetField::Command => pin.command.clone().unwrap_or_default(),
+        PresetField::Args => pin.args.clone().unwrap_or_default(),
+        PresetField::Dir => pin.dir.clone().unwrap_or_default(),
     }
 }
 
-/// The whole preset, checked as the loader and `sentier run` will.
+/// The whole preset (or app / web pin), checked as the loader and `sentier run` will.
 fn check_preset(pin: &Pin) -> Result<(), String> {
     match pin.kind {
         PinKind::Sync => crate::jobs::preset::SyncPreset::from_pin(pin).map(|_| ()),
         PinKind::Backup => crate::jobs::zip::BackupPreset::from_pin(pin).map(|_| ()),
+        PinKind::Web if pin.url.is_none() => Err("a web app needs a url".into()),
+        PinKind::App if pin.command.is_none() => Err("an app needs a command".into()),
         _ => Ok(()),
     }
 }
