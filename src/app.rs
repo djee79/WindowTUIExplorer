@@ -1173,6 +1173,14 @@ mod tests {
         press(&mut app, ":cd ..<CR>");
         assert_eq!(app.cwd.display(), r"C:\work");
 
+        // `g<Space>`: the same prompt, with `cd ` already typed.
+        press(&mut app, "g<Space>");
+        let text = app.prompt.as_ref().map(|p| p.editor.text());
+        assert_eq!(text.as_deref(), Some("cd "));
+        press(&mut app, "HIT<CR>");
+        assert_eq!(app.cwd.display(), r"C:\work\HIT");
+        press(&mut app, ":cd ..<CR>");
+
         press(&mut app, ":frobnicate<CR>");
         assert!(app.status.as_ref().is_some_and(|s| s.is_error));
         press(&mut app, ":pin<CR>");

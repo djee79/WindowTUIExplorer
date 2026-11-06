@@ -251,6 +251,12 @@ impl App {
                 false,
             ),
             Action::CommandLine => self.open_prompt(PromptKind::Command),
+            Action::GotoPath => {
+                self.open_prompt(PromptKind::Command);
+                if let Some(p) = self.prompt.as_mut() {
+                    p.editor = LineEditor::new("cd ");
+                }
+            }
             Action::Help => self.mode = Mode::Help,
             Action::Quit | Action::QuitNoWrite => self.quit = Some(Quit::Plain),
             Action::QuitWriteCwd => self.quit = Some(Quit::WithCwd),
