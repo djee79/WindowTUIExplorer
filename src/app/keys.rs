@@ -21,8 +21,12 @@ const MAX_NAV_REPEAT: usize = 32;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
     Command,
-    Search { backward: bool },
+    Search {
+        backward: bool,
+    },
     Filter,
+    /// `s`: recursive name search (runs on Enter).
+    NameSearch,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +49,7 @@ impl Prompt {
             PromptKind::Search { backward: false } => "/",
             PromptKind::Search { backward: true } => "?",
             PromptKind::Filter => "filter: ",
+            PromptKind::NameSearch => "search: ",
         }
     }
 }
@@ -210,6 +215,7 @@ impl App {
             Action::SearchNext => self.search_again(n, false),
             Action::SearchPrev => self.search_again(n, true),
             Action::Filter => self.open_prompt(PromptKind::Filter),
+            Action::Escape if self.filter.is_empty() && self.results_escape() => {}
             Action::Escape => {
                 self.search_hl = false;
                 if !self.filter.is_empty() {
@@ -246,6 +252,9 @@ impl App {
             Action::Quit | Action::QuitNoWrite => self.quit = Some(Quit::Plain),
             Action::QuitWriteCwd => self.quit = Some(Quit::WithCwd),
             Action::Cd(path) => self.cd(&path),
+            Action::NameSearch => self.open_prompt(PromptKind::NameSearch),
+            Action::GotoResultFolder => self.goto_result_folder(),
+            Action::CycleSort => self.cycle_sort(),
             Action::GotoLine(line) => self.set_cursor(line.saturating_sub(1)),
             Action::SetNumber(on) => self.number = on,
             Action::SetRelativeNumber(on) => self.relative_number = on,
@@ -261,7 +270,7 @@ impl App {
         }
     }
 
-    fn history(&mut self, n: usize, back: bool) {
+    pub(super) fn history(&mut self, n: usize, back: bool) {
         let mut target = None;
         for _ in 0..n.min(MAX_HISTORY_STEPS) {
             let (from, to) = if back {
@@ -348,6 +357,8 @@ impl App {
     fn open_prompt(&mut self, kind: PromptKind) {
         let text = match kind {
             PromptKind::Filter => self.filter.clone(),
+            // Prefilled inside results, so `s` refines the current search.
+            PromptKind::NameSearch => self.current_search_query().unwrap_or_default(),
             _ => String::new(),
         };
         self.prompt = Some(Prompt {
@@ -434,6 +445,13 @@ impl App {
                 p.completion = None;
                 p.note.clear();
             }
+            // Validate as you type; the walk starts on Enter.
+            PromptKind::NameSearch => {
+                p.note = match crate::search::query::Query::parse(&text) {
+                    Ok(_) => String::new(),
+                    Err(e) => e.to_string(),
+                };
+            }
         }
     }
 
@@ -460,6 +478,11 @@ impl App {
                 }
             }
             PromptKind::Filter => {}
+            PromptKind::NameSearch if text.trim().is_empty() => self.set_status(
+                "search for what? (s then text, *.pdf, re:…, ext:pdf)".into(),
+                false,
+            ),
+            PromptKind::NameSearch => self.start_search(&text),
         }
     }
 
@@ -473,7 +496,7 @@ impl App {
                 self.search = p.saved_search;
                 self.set_cursor(p.origin);
             }
-            PromptKind::Command => {}
+            PromptKind::Command | PromptKind::NameSearch => {}
         }
     }
 

@@ -80,20 +80,37 @@ fn draw_parent(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_current(f: &mut Frame, area: Rect, app: &mut App) {
     let count = app.view.len();
-    let mut block = panel(app.cwd.name(), true);
+    let search = app.search_state(&app.cwd);
+    let title = match search {
+        Some(s) => format!("search: {}", s.query),
+        None => app.cwd.name(),
+    };
+    let mut block = panel(title, true);
     if app.view_listing.is_some() {
-        let noun = if app.filter.is_empty() {
-            "items"
-        } else {
-            "matches"
+        let noun = match (search.is_some(), app.filter.is_empty()) {
+            (true, true) => "found",
+            (false, true) => "items",
+            (_, false) => "matches",
         };
-        let label = format!(" {} {noun} ", thousands(count as u64));
-        let title = Line::from(vec![
-            Span::styled(label, theme::dim()),
-            Span::styled("─", theme::fg(BORDER)),
-        ]);
-        block = block.title(title.right_aligned());
+        let mut spans = vec![Span::styled(
+            format!(" {} {noun} ", thousands(count as u64)),
+            theme::dim(),
+        )];
+        if let Some(s) = search {
+            // ● while the walk runs, ✓ when it finished, × when cancelled.
+            let (mark, color) = match (s.running(), s.cancelled) {
+                (true, _) => ("● ", theme::ACCENT),
+                (false, true) => ("× ", theme::WARN),
+                (false, false) => ("✓ ", theme::OK),
+            };
+            spans.push(Span::styled(mark, theme::fg(color)));
+        }
+        spans.push(Span::styled("─", theme::fg(BORDER)));
+        block = block.title(Line::from(spans).right_aligned());
     }
+    let in_results = search.is_some();
+    let scored = search.is_some_and(|s| s.scored);
+    let running = search.is_some_and(|s| s.running());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -113,7 +130,9 @@ fn draw_current(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
     let w = inner.width as usize;
-    let cols = Cols::fit(w, gutter_width(count, app.number, app.relative_number));
+    let mut cols = Cols::fit(w, gutter_width(count, app.number, app.relative_number));
+    cols.results = in_results;
+    cols.scored = scored;
     let header = Rect { height: 1, ..inner };
     f.render_widget(Paragraph::new(cols.header(w)).style(theme::dim()), header);
 
@@ -123,10 +142,11 @@ fn draw_current(f: &mut Frame, area: Rect, app: &mut App) {
         ..inner
     };
     if count == 0 {
-        let msg = if app.filter.is_empty() {
-            " empty"
-        } else {
-            " no match"
+        let msg = match (in_results, running, app.filter.is_empty()) {
+            (true, true, _) => " searching…",
+            (true, false, true) => " nothing found",
+            (false, _, true) => " empty",
+            (_, _, false) => " no match",
         };
         f.render_widget(Paragraph::new(Span::styled(msg, theme::dim())), body);
         return;
@@ -318,6 +338,9 @@ struct Cols {
     /// Width of the line-number field (0 = `nonu nornu`). It sits after the 1-cell
     /// selection-marker column and is followed by a space.
     gutter: usize,
+    /// Search results: "Path" instead of "Name", and the score where dates go.
+    results: bool,
+    scored: bool,
 }
 
 /// The number for `row` in neovim's style. Hybrid (`nu rnu`): the cursor row shows its
@@ -359,6 +382,8 @@ impl Cols {
             size: rest >= 24,
             date: rest >= 24 + DATE_W + 2,
             gutter,
+            results: false,
+            scored: false,
         }
     }
 
@@ -384,12 +409,18 @@ impl Cols {
             right.push_str(&format!("{:>SIZE_W$}", "Size"));
         }
         if self.date {
-            right.push_str(&format!("  {:<DATE_W$}", "Modified"));
+            let label = if self.results && self.scored {
+                "Score"
+            } else {
+                "Modified"
+            };
+            right.push_str(&format!("  {label:<DATE_W$}"));
         }
         right.push(' ');
         let lead = " ".repeat(self.lead());
+        let name = if self.results { "Path" } else { "Name" };
         let pad = w.saturating_sub(self.lead() + 4 + right.len());
-        Line::from(format!("{lead}Name{}{right}", " ".repeat(pad)))
+        Line::from(format!("{lead}{name}{}{right}", " ".repeat(pad)))
     }
 
     fn row(
@@ -444,6 +475,7 @@ impl Cols {
             // Virtual entries have no dates; a share's remark goes there instead.
             let date = match e.kind {
                 EntryKind::Share => truncate(&e.detail, DATE_W),
+                _ if self.results && self.scored => format!("{:>5}", e.detail),
                 _ => e.modified.map(fmt_minute).unwrap_or_default(),
             };
             spans.push(Span::styled(format!("  {date:<DATE_W$}"), date_style));
@@ -504,9 +536,26 @@ fn draw_file_info(f: &mut Frame, area: Rect, app: &App, e: &Entry) {
     }
     lines.push(Line::default());
     let w = (area.width as usize).saturating_sub(12);
-    let dir = format!("{}\\", app.cwd.display().trim_end_matches('\\'));
-    lines.push(info_line("Path", super::truncate_left(&dir, w)));
-    lines.push(info_line("", truncate(&e.name, w)));
+    // In search results the entry name is a relative path: show where it really is.
+    let target = app.cwd.join(&e.name).ok();
+    let (dir, name) = match target.as_ref().and_then(|t| Some((t.parent()?, t.name()))) {
+        Some((dir, name)) => (dir.display(), name),
+        None => (app.cwd.display(), e.name.clone()),
+    };
+    let dir = format!("{}\\", dir.trim_end_matches('\\'));
+    let in_results = app.search_state(&app.cwd).is_some();
+    lines.push(info_line(
+        if in_results { "Found in" } else { "Path" },
+        super::truncate_left(&dir, w),
+    ));
+    lines.push(info_line("", truncate(&name, w)));
+    if in_results {
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            Span::styled(" gr", theme::bold(FG)),
+            Span::styled(" go to this folder", theme::dim()),
+        ]));
+    }
     f.render_widget(Paragraph::new(lines), area);
 }
 

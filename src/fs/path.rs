@@ -60,6 +60,9 @@ pub enum Loc {
     Server(String),
     /// A real directory or file.
     Fs(FsPath),
+    /// Search results shown as a folder (`s` / `S`). Entries are named by their path
+    /// relative to `origin`, the directory the search ran from, which is also the parent.
+    Results { id: u64, origin: Box<Loc> },
 }
 
 impl FsPath {
@@ -129,6 +132,31 @@ impl FsPath {
             (None, FsRoot::Drive(l)) => format!("{l}:"),
             (None, FsRoot::Share { share, .. }) => share.clone(),
         }
+    }
+
+    /// Same root and `self`'s components start with `base`'s (case-insensitive).
+    pub fn starts_with(&self, base: &FsPath) -> bool {
+        let same_root = match (&self.root, &base.root) {
+            (FsRoot::Drive(a), FsRoot::Drive(b)) => a == b,
+            (
+                FsRoot::Share {
+                    server: s1,
+                    share: h1,
+                },
+                FsRoot::Share {
+                    server: s2,
+                    share: h2,
+                },
+            ) => s1.eq_ignore_ascii_case(s2) && h1.eq_ignore_ascii_case(h2),
+            _ => false,
+        };
+        same_root
+            && self.parts.len() >= base.parts.len()
+            && self
+                .parts
+                .iter()
+                .zip(&base.parts)
+                .all(|(a, b)| a.to_lowercase() == b.to_lowercase())
     }
 
     /// Appends one component. Rejects separators, `.`/`..` and invalid characters.
@@ -215,6 +243,7 @@ impl Loc {
     pub fn parent(&self) -> Option<Loc> {
         match self {
             Loc::Root => None,
+            Loc::Results { origin, .. } => Some((**origin).clone()),
             Loc::Server(_) => Some(Loc::Root),
             Loc::Fs(p) if p.parts.is_empty() => match &p.root {
                 FsRoot::Drive(_) => Some(Loc::Root),
@@ -259,6 +288,13 @@ impl Loc {
                 }))
             }
             Loc::Fs(p) => p.join(name).map(Loc::Fs),
+            // A result's name is its path relative to the search root.
+            Loc::Results { origin, .. } => match Loc::resolve(origin, name)? {
+                Loc::Fs(p) if origin.as_fs().is_some_and(|o| p.starts_with(o)) => Ok(Loc::Fs(p)),
+                _ => Err(PathError::Invalid(format!(
+                    "not inside the search root: {name}"
+                ))),
+            },
         }
     }
 
@@ -268,6 +304,7 @@ impl Loc {
             Loc::Root => "Locations".to_string(),
             Loc::Server(s) => s.clone(),
             Loc::Fs(p) => p.name(),
+            Loc::Results { .. } => "search".to_string(),
         }
     }
 
@@ -276,6 +313,15 @@ impl Loc {
             Loc::Root => "Locations".to_string(),
             Loc::Server(s) => format!("\\\\{s}"),
             Loc::Fs(p) => p.display(),
+            Loc::Results { origin, .. } => format!("search in {}", origin.display()),
+        }
+    }
+
+    /// The real directory behind this location: itself, or a search's origin.
+    pub fn real(&self) -> &Loc {
+        match self {
+            Loc::Results { origin, .. } => origin.real(),
+            other => other,
         }
     }
 
@@ -286,6 +332,7 @@ impl Loc {
             Loc::Root => false,
             Loc::Server(_) => true,
             Loc::Fs(p) => p.is_network(),
+            Loc::Results { origin, .. } => origin.is_network(),
         }
     }
 
@@ -301,6 +348,8 @@ impl Loc {
             Loc::Root => String::new(),
             Loc::Server(s) => format!("\\\\{}", s.to_lowercase()),
             Loc::Fs(p) => p.key(),
+            // `|` can't appear in a path, so this never collides with a real one.
+            Loc::Results { id, .. } => format!("|search|{id}"),
         }
     }
 }
@@ -578,6 +627,65 @@ mod tests {
             Loc::Root.join("d:").map(|l| l.display()),
             Ok(r"D:\".to_string())
         );
+    }
+
+    #[test]
+    fn results_location() {
+        let origin = Loc::parse(r"\\srv\project\HIT").expect("origin");
+        let res = Loc::Results {
+            id: 7,
+            origin: Box::new(origin.clone()),
+        };
+        assert_eq!(res.parent(), Some(origin.clone()), "parent is the origin");
+        assert_eq!(res.real(), &origin);
+        assert!(res.is_network());
+        assert!(res.as_fs().is_none());
+        assert_ne!(res, origin);
+        assert_eq!(
+            res,
+            Loc::Results {
+                id: 7,
+                origin: Box::new(Loc::Root)
+            },
+            "identity is the id"
+        );
+        let cases: &[(&str, Option<&str>)] = &[
+            (
+                r"hitiso\B-1001_rev3.pdf",
+                Some(r"\\srv\project\HIT\hitiso\B-1001_rev3.pdf"),
+            ),
+            ("evars.bat", Some(r"\\srv\project\HIT\evars.bat")),
+            (r"..\escape.txt", None),
+            (r"C:\abs", None),
+        ];
+        for (name, want) in cases {
+            assert_eq!(
+                res.join(name).ok().map(|l| l.display()).as_deref(),
+                *want,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn starts_with_table() {
+        let p = |s: &str| Loc::parse(s).ok().and_then(|l| l.as_fs().cloned());
+        let cases: &[(&str, &str, bool)] = &[
+            (r"C:\a\b", r"C:\a", true),
+            (r"C:\a", r"C:\a", true),
+            (r"C:\A\b", r"c:\a", true),
+            (r"C:\ab", r"C:\a", false),
+            (r"C:\a", r"C:\a\b", false),
+            (r"D:\a", r"C:\a", false),
+            (r"\\srv\s\x", r"\\SRV\S", true),
+            (r"\\srv\s\x", r"\\srv\t", false),
+        ];
+        for (a, b, want) in cases {
+            let (Some(a1), Some(b1)) = (p(a), p(b)) else {
+                panic!("{a} {b}")
+            };
+            assert_eq!(a1.starts_with(&b1), *want, "{a} starts_with {b}");
+        }
     }
 
     #[test]

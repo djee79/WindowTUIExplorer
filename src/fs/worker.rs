@@ -18,6 +18,8 @@ use crate::event::{AppEvent, EventTx};
 use crate::keymap;
 use crate::locations;
 use crate::platform::{self, DriveKind};
+use crate::search::name::NameMatcher;
+use crate::search::walk::{self, Hit};
 use std::fmt;
 use std::io;
 use std::path::PathBuf;
@@ -106,7 +108,7 @@ impl CancelToken {
     pub fn cancel(&self) {
         self.0.store(true, Ordering::Relaxed);
     }
-    fn is_cancelled(&self) -> bool {
+    pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
 }
@@ -171,6 +173,8 @@ impl Worker {
                     let timeout = timeout_for(&loc, timeouts).await;
                     list_dir(id, &loc, p.to_os_path(), timeout, &cancel, &tx).await
                 }
+                // The app owns search results; there's nothing to list.
+                Loc::Results { .. } => Err(ListError::Other("search results".to_string())),
             };
             if cancel.is_cancelled() {
                 return;
@@ -283,6 +287,38 @@ impl Worker {
             });
             if let Err(e) = call.await.unwrap_or_else(|e| Err(e.to_string())) {
                 let _ = tx.send(AppEvent::SharesSaveFailed(e));
+            }
+        });
+    }
+
+    /// Starts a recursive name search under `root`. Hits stream in as `SearchProgress`.
+    pub fn search(&self, id: u64, root: &FsPath, matcher: Arc<NameMatcher>) -> CancelToken {
+        let cancel = CancelToken::default();
+        let threads = walk::default_threads(root.is_network());
+        walk::spawn(
+            id,
+            root.clone(),
+            matcher,
+            threads,
+            cancel.clone(),
+            self.tx.clone(),
+        );
+        cancel
+    }
+
+    /// Re-scores found hits with a refined query, off the UI thread, as one batch for
+    /// search `id`.
+    pub fn rescore(&self, id: u64, hits: Vec<Hit>, matcher: Arc<NameMatcher>) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let call = tokio::task::spawn_blocking(move || walk::rescore(hits, &matcher));
+            if let Ok(hits) = call.await {
+                let _ = tx.send(AppEvent::SearchProgress {
+                    id,
+                    hits,
+                    scanned: 0,
+                    current: String::new(),
+                });
             }
         });
     }

@@ -44,6 +44,18 @@ pub struct ShareInfo {
     pub remark: String,
 }
 
+/// One directory entry from `FindFirstFileExW` (name, size, times, attributes in one go).
+#[derive(Debug, Clone)]
+pub struct FindEntry {
+    pub name: String,
+    pub size: u64,
+    pub modified: Option<std::time::SystemTime>,
+    pub created: Option<std::time::SystemTime>,
+    pub attrs: Attrs,
+    /// Junction or symlink: listed, but a walk doesn't descend into it by default.
+    pub reparse: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct DiskSpace {
     pub free: u64,

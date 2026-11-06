@@ -124,6 +124,49 @@ Manual checklist for M2:
 - [ ] Add `\\10.255.255.1\x` to shares.txt by hand: its dot turns × after ~2 s, Enter
       stays put, the UI never stalls.
 
+## M2a search: name search (`s`) done, content search (`S`) and benchmark pending
+
+- `src/search/query.rs`: fuzzy / glob (`* ? [`) / `re:` + `ext: type: size: mtime: depth:
+  hidden: follow: !segment`, with table tests.
+- `src/search/name.rs`: nucleo fuzzy over the relative path + a bonus when the name
+  matches too; globset (case-insensitive; path glob when it has `\`); smart-case regex.
+- `src/search/walk.rs`: own thread pool over `FindFirstFileExW` (16 threads on UNC, cores
+  locally), matching in the walker threads, ~16 ms batches + 150 ms progress, pruning
+  ($RECYCLE.BIN, System Volume Information, hidden/system, `!seg`, no link following
+  unless `follow:yes`, capped at depth 64), `.ignore` files with `!` re-includes.
+- `Loc::Results { id, origin }`: results are a folder in the history; its parent is the
+  origin; names are relative paths resolved against the origin (can't escape it).
+- `src/app/search.rs`: up to 8 searches kept, dedup across threads, re-sort throttled to
+  50 ms, 200k hit cap, sort modes (`,s`), `Esc` = cancel walk / then back, `gr`, `s` again
+  = prefilled refine (old hits re-scored off-thread while a fresh walk runs).
+- UI: search header with live `scanned · found · s` + spinner, `⚠ no answer for N s` after
+  3 s without progress, Path/Size/Score columns, "walking …" in the status line,
+  "Found in … gr" in the preview.
+
+Pending:
+- `examples/enum_bench.rs`, first result (2026-11-05, home Synology over LAN,
+  `\\homenas\Media\videos`: 1 714 dirs, 2 280 files, ~1.3 files/dir):
+
+  | threads | A WalkParallel | B read_dir | C FindFirstFileExW large |
+  |---|---|---|---|
+  | 1  | 17.31 s | 17.41 s | 17.29 s |
+  | 16 | 1.47 s  | 1.43 s  | 1.37 s  |
+  | 32 | 1.41 s  | 1.36 s  | 1.23 s  |
+
+  Same counts everywhere. ~10 ms per directory open: latency-bound, so threads give 12×.
+
+  Second result, big directories (`\\homenas\photos\originals`: 286 dirs, 32 295
+  files, ~113 files/dir), warm runs: A 1.75 s / B 1.19 s / **C 1.08 s** at 16 threads;
+  at 32 threads A 1.60 / B 1.23 / C 1.34 (the NAS gets slower past 16).
+
+  **Decision: search uses its own walker on `FindFirstFileExW` large fetch, 16 threads
+  on UNC** (`platform::find_entries`, `search/walk.rs`). `.ignore` is read only when the
+  listing shows one (WalkParallel probed every directory). Cancel no longer waits for a
+  thread stuck in SMB. The `ignore` crate stays for its gitignore matcher. Still worth
+  a run on the office file server (`\\srv01\project\HIT`).
+- `S` content search (grep-searcher + grep-regex + grep-matcher; match counts, `]m`/`[m`).
+- Optional per-share index (`:index add`) is a stretch goal.
+
 ## Spec update adopted 2026-11-06 + keymap pass (code complete, manual check pending)
 
 CLAUDE.md and docs/screens now come from Claude Design (the copy in docs/sentier-screens/

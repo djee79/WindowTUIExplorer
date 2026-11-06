@@ -7,6 +7,7 @@ mod keymap;
 mod locations;
 mod platform;
 mod prompt;
+mod search;
 mod ui;
 
 use anyhow::{Context, Result, bail};
@@ -89,7 +90,13 @@ fn real_main() -> Result<()> {
     if let (Quit::WithCwd, Some(file)) = (quit, &args.cwd_file) {
         // Virtual locations (Locations root, a server node) have no shell equivalent:
         // write nothing and the shell stays where it was.
-        let dir = app.cwd.as_fs().map(|p| p.display()).unwrap_or_default();
+        // Search results write the folder they were searched from.
+        let dir = app
+            .cwd
+            .real()
+            .as_fs()
+            .map(|p| p.display())
+            .unwrap_or_default();
         std::fs::write(file, dir)
             .with_context(|| format!("writing cwd file {}", file.display()))?;
     }

@@ -5,8 +5,10 @@
 //! to the [`AppEvent`]s that come back.
 
 mod keys;
+mod search;
 
 pub use keys::{Prompt, PromptKind};
+pub use search::SearchState;
 
 use crate::event::{AppEvent, EventRx};
 use crate::fs::path::{FsPath, Loc};
@@ -157,6 +159,9 @@ pub struct App {
     back: Vec<Loc>,
     forward: Vec<Loc>,
     prev_dir: Option<Loc>,
+    /// Recursive searches (`s`), newest last; each is a results folder.
+    searches: Vec<SearchState>,
+    next_search_id: u64,
 
     /// Saved `\\server\share` roots for the Locations root.
     pub shares: Vec<FsPath>,
@@ -207,6 +212,8 @@ impl App {
             back: Vec::new(),
             forward: Vec::new(),
             prev_dir: None,
+            searches: Vec::new(),
+            next_search_id: 1,
             shares: Vec::new(),
             shares_loaded: false,
             reach: HashMap::new(),
@@ -269,7 +276,7 @@ impl App {
     }
 
     pub fn is_busy(&self) -> bool {
-        !self.pending.is_empty()
+        !self.pending.is_empty() || self.searching()
     }
 
     pub fn dir(&self, loc: &Loc) -> Option<&DirState> {
@@ -387,7 +394,8 @@ impl App {
     /// Lists `loc` unless a request is already running. Without `force`, a cached
     /// listing or error is good enough.
     fn request(&mut self, loc: Loc, force: bool) {
-        if self.pending.contains_key(&loc) {
+        // Search results are the app's own state; there's nothing to list.
+        if self.pending.contains_key(&loc) || matches!(loc, Loc::Results { .. }) {
             return;
         }
         let state = self.dirs.entry(loc.clone()).or_default();
@@ -574,7 +582,7 @@ impl App {
     }
 
     fn request_space(&mut self, force: bool) {
-        let Some(volume) = self.cwd.as_fs().map(|p| Loc::Fs(p.volume_root())) else {
+        let Some(volume) = self.cwd.real().as_fs().map(|p| Loc::Fs(p.volume_root())) else {
             // Virtual locations have no volume: don't keep showing the last one's space.
             self.space = None;
             self.space_for = None;
@@ -612,9 +620,16 @@ impl App {
             .selected()
             .map(|e| e.name.clone())
             .or_else(|| self.remembered.get(&self.cwd).cloned());
-        let listing = self.dirs.get(&self.cwd).and_then(|s| s.listing.clone());
+        let in_results = matches!(self.cwd, Loc::Results { .. });
+        let listing = if in_results {
+            self.results_listing(&self.cwd)
+        } else {
+            self.dirs.get(&self.cwd).and_then(|s| s.listing.clone())
+        };
+        // Results already honour the query's `hidden:`; don't hide them again.
+        let show_hidden = self.show_hidden || in_results;
         self.view = match &listing {
-            Some(l) => visible_indices(l, self.show_hidden, &self.filter),
+            Some(l) => visible_indices(l, show_hidden, &self.filter),
             None => Vec::new(),
         };
         self.view_listing = listing;
@@ -684,6 +699,19 @@ impl App {
                 self.set_status(format!("couldn't save the shares list: {e}"), true);
             }
             AppEvent::KeymapLoaded(result) => self.on_keymap_loaded(result),
+            AppEvent::SearchProgress {
+                id,
+                hits,
+                scanned,
+                current,
+            } => self.on_search_progress(id, hits, scanned, current),
+            AppEvent::SearchDone {
+                id,
+                scanned,
+                errors,
+                elapsed,
+                cancelled,
+            } => self.on_search_done(id, scanned, errors, elapsed, cancelled),
         }
     }
 
@@ -770,6 +798,7 @@ impl App {
             self.probe_root(true);
         }
         self.key_timeout(now);
+        self.search_tick(now);
         if self.preview_due.is_some_and(|due| now >= due) {
             self.preview_due = None;
             if let Some(p) = self.preview_loc() {
@@ -1179,6 +1208,145 @@ mod tests {
 
         press(&mut app, "gq");
         assert!(app.keys_pending.is_empty(), "unknown sequence clears");
+    }
+
+    fn hit(rel: &str, score: u32, size: u64) -> crate::search::walk::Hit {
+        crate::search::walk::Hit {
+            rel: rel.to_string(),
+            is_dir: false,
+            is_link: false,
+            size,
+            modified: None,
+            created: None,
+            attrs: Attrs::default(),
+            score,
+        }
+    }
+
+    /// `s` from C:\work, with hits fed in as the walker would send them.
+    fn results_fixture() -> (App, tokio::runtime::Runtime, u64) {
+        let (mut app, rt) = fixture();
+        press(&mut app, "sb1001<CR>");
+        let Loc::Results { id, .. } = app.cwd else {
+            panic!("not in results: {}", app.cwd)
+        };
+        app.handle(AppEvent::SearchProgress {
+            id,
+            hits: vec![
+                hit(r"HIT\iso\B-1001_rev2.pdf", 80, 3),
+                hit(r"HIT\iso\B-1001_rev3.pdf", 98, 1),
+            ],
+            scanned: 1200,
+            current: r"HIT\iso".to_string(),
+        });
+        // A duplicate from another walker thread is ignored.
+        app.handle(AppEvent::SearchProgress {
+            id,
+            hits: vec![
+                hit(r"hit\ISO\b-1001_rev3.pdf", 98, 1),
+                hit(r"HIT\B1001.txt", 60, 2),
+            ],
+            scanned: 2400,
+            current: String::new(),
+        });
+        app.tick(Instant::now() + Duration::from_millis(60));
+        (app, rt, id)
+    }
+
+    #[test]
+    fn search_results_are_a_folder() {
+        let (mut app, _rt, id) = results_fixture();
+        assert_eq!(app.view.len(), 3, "deduplicated");
+        assert_eq!(
+            sel(&app),
+            Some(r"HIT\iso\B-1001_rev3.pdf"),
+            "best score first"
+        );
+        assert_eq!(
+            app.cwd.parent(),
+            Some(loc(r"C:\work")),
+            "parent is the origin"
+        );
+
+        let screen = render(&mut app, 140, 14);
+        println!("{screen}");
+        assert!(screen.contains("search \"b1001\"  in  C:\\work"), "header");
+        assert!(screen.contains("2 400 scanned · 3 found"), "progress");
+        assert!(screen.contains("search: b1001"), "panel title");
+        assert!(
+            screen.contains("Path") && screen.contains("Score"),
+            "columns"
+        );
+        assert!(screen.contains("walking HIT\\iso"), "current dir");
+
+        assert!(
+            screen.contains("Found in  C:\\work\\HIT\\iso\\"),
+            "real folder"
+        );
+
+        // `,s` cycles the sort (the cursor stays on its item); size puts 3 B first.
+        press(&mut app, ",s,s");
+        assert_eq!(sel(&app), Some(r"HIT\iso\B-1001_rev3.pdf"), "cursor kept");
+        press(&mut app, "gg");
+        assert_eq!(sel(&app), Some(r"HIT\iso\B-1001_rev2.pdf"), "sort: size");
+
+        // Esc while running cancels the walk but keeps the results.
+        press(&mut app, "<Esc>");
+        assert!(matches!(app.cwd, Loc::Results { .. }));
+        app.handle(AppEvent::SearchDone {
+            id,
+            scanned: 2400,
+            errors: 0,
+            elapsed: Duration::from_millis(2100),
+            cancelled: true,
+        });
+        assert_eq!(app.view.len(), 3);
+        // Esc again goes back to where the search started; L returns to the results.
+        press(&mut app, "<Esc>");
+        assert_eq!(app.cwd, loc(r"C:\work"));
+        press(&mut app, "L");
+        assert!(matches!(app.cwd, Loc::Results { .. }));
+        assert_eq!(app.view.len(), 3, "results kept in history");
+
+        // gr: the real folder of the result, with it selected.
+        press(&mut app, "gg");
+        let name = sel(&app).map(str::to_string);
+        press(&mut app, "gr");
+        assert_eq!(app.cwd, loc(r"C:\work\HIT\iso"), "from {name:?}");
+        assert_eq!(app.remembered(&app.cwd), Some("B-1001_rev2.pdf"));
+    }
+
+    #[test]
+    fn search_refines_and_reports_bad_queries() {
+        let (mut app, _rt, first) = results_fixture();
+        // `s` inside results is prefilled with the query; Enter starts a fresh search.
+        press(&mut app, "s");
+        assert_eq!(
+            app.prompt.as_ref().map(|p| p.editor.text()).as_deref(),
+            Some("b1001")
+        );
+        press(&mut app, " rev3<CR>");
+        let Loc::Results { id, ref origin } = app.cwd else {
+            panic!()
+        };
+        assert_ne!(id, first, "a new search");
+        assert_eq!(**origin, loc(r"C:\work"), "same origin, not nested");
+        assert_eq!(app.current_search_query().as_deref(), Some("b1001 rev3"));
+
+        press(&mut app, "s<C-u>size:huge<CR>");
+        assert!(
+            app.status
+                .as_ref()
+                .is_some_and(|s| s.is_error && s.text.contains("use < or >"))
+        );
+        press(&mut app, "gl");
+        press(&mut app, "sx<CR>");
+        assert!(
+            app.status
+                .as_ref()
+                .is_some_and(|s| s.text.contains("inside a folder")),
+            "no search from Locations"
+        );
     }
 
     #[test]

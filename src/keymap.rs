@@ -254,6 +254,12 @@ pub enum Action {
     QuitNoWrite,
     /// `cd <path>` / `e <path>`: any path form, relative to the cwd, `~` for home.
     Cd(String),
+    /// `s`: recursive name search below the current folder.
+    NameSearch,
+    /// `gr`: in search results, the real folder of the result under the cursor.
+    GotoResultFolder,
+    /// `,s`: cycle the results sort.
+    CycleSort,
     /// `:{n}`: go to row n.
     GotoLine(usize),
     /// `:set nu` / `:set nonu`.
@@ -297,6 +303,9 @@ const NAMED: &[(&str, Action)] = &[
     ("quit", Action::Quit),
     ("quit-write-cwd", Action::QuitWriteCwd),
     ("quit-no-write", Action::QuitNoWrite),
+    ("name-search", Action::NameSearch),
+    ("goto-result-folder", Action::GotoResultFolder),
+    ("cycle-sort", Action::CycleSort),
     // `:` command aliases (vim spellings)
     ("q", Action::Quit),
     ("q!", Action::QuitNoWrite),
@@ -436,6 +445,9 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("n", SearchNext, "next match"),
         ("N", SearchPrev, "previous match"),
         ("f", Filter, "filter this directory"),
+        ("s", NameSearch, "search names below here"),
+        ("gr", GotoResultFolder, "go to the result's folder"),
+        (",s", CycleSort, "cycle results sort"),
         ("<Esc>", Escape, "clear filter / search"),
         ("H", Back, "back in history"),
         ("<C-o>", Back, ""),
@@ -468,6 +480,7 @@ fn group_label(prefix: &[Key], leader: Key) -> &'static str {
             KeyCode::Char('d') => "delete",
             KeyCode::Char('Z') => "quit",
             KeyCode::Char('\'') => "jump",
+            KeyCode::Char(',') => "results",
             _ => "more",
         },
         _ => "more",

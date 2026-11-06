@@ -3,7 +3,11 @@
 
 use super::theme::{self, ACCENT, BAR_BG, ERR, FG, NET, OK, ON_ACCENT};
 use super::{human_size, spinner, thousands, truncate_left, width};
-use crate::app::{App, Mode, Prompt, PromptKind};
+use crate::app::{App, Mode, Prompt, PromptKind, SearchState};
+use std::time::Duration;
+
+/// A running search that hasn't moved this long gets a warning (rule 2's network timeout).
+const STALL_AFTER: Duration = Duration::from_secs(3);
 use crate::fs::path::{FsRoot, Loc};
 use crate::keymap::fmt_keys;
 use crate::prompt::EditMode;
@@ -16,7 +20,8 @@ use ratatui::widgets::Paragraph;
 /// Keys shown in the hint line. Only what exists; it grows with each milestone.
 const HINTS: &[(&str, &str)] = &[
     ("hjkl", "move"),
-    ("/", "search"),
+    ("/", "find here"),
+    ("s", "search below"),
     ("f", "filter"),
     ("H/L", "history"),
     ("''", "previous dir"),
@@ -25,6 +30,17 @@ const HINTS: &[(&str, &str)] = &[
     ("<Space>", "leader"),
     (":", "cmd"),
     ("ZZ", "quit + cd"),
+    ("g?", "help"),
+];
+
+const RESULT_HINTS: &[(&str, &str)] = &[
+    ("j/k", "move"),
+    ("l", "open"),
+    ("gr", "go to folder"),
+    ("s", "refine"),
+    (",s", "sort"),
+    ("f", "filter"),
+    ("H/Esc", "back"),
     ("g?", "help"),
 ];
 
@@ -52,7 +68,55 @@ fn bar(f: &mut Frame, area: Rect, left: Vec<Span<'static>>, right: Vec<Span<'sta
     );
 }
 
+/// `search "q"  in  \\srv\share\HIT` … `● 48 213 scanned · 9 found · 2.1 s`.
+fn draw_search_header(f: &mut Frame, area: Rect, app: &App, s: &SearchState) {
+    let mut right: Vec<Span> = Vec::new();
+    let stalled = s.running() && s.last_progress.elapsed() >= STALL_AFTER;
+    if s.running() {
+        right.push(Span::styled(
+            format!("{}  ", spinner(app)),
+            theme::fg(ACCENT),
+        ));
+    }
+    if stalled {
+        right.push(Span::styled(
+            format!(
+                "⚠ no answer for {:.0} s   ",
+                s.last_progress.elapsed().as_secs_f32()
+            ),
+            theme::fg(theme::WARN),
+        ));
+    }
+    right.push(Span::styled(
+        format!(
+            "{} scanned · {} found · {:.1} s  ",
+            thousands(s.scanned),
+            thousands(s.hits.len() as u64),
+            s.took().as_secs_f32()
+        ),
+        theme::dim(),
+    ));
+    let rw: usize = right.iter().map(|s| s.width()).sum();
+    let origin = truncate_left(
+        &s.origin.display(),
+        (area.width as usize).saturating_sub(rw + 24 + width(&s.query)),
+    );
+    let color = if s.origin.is_network() { NET } else { FG };
+    let left = vec![
+        badge(" sentier ", ACCENT),
+        Span::raw("  "),
+        Span::styled("search ", theme::dim()),
+        Span::styled(format!("\"{}\"", s.query), theme::bold(ACCENT)),
+        Span::styled("  in  ", theme::dim()),
+        Span::styled(origin, theme::bold(color)),
+    ];
+    bar(f, area, left, right);
+}
+
 pub fn draw_header(f: &mut Frame, area: Rect, app: &App) {
+    if let Some(s) = app.search_state(&app.cwd) {
+        return draw_search_header(f, area, app, s);
+    }
     let mut right: Vec<Span> = Vec::new();
     if app.is_busy() {
         right.push(Span::styled(
@@ -97,13 +161,13 @@ pub fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn server_of(loc: &Loc) -> Option<String> {
-    match loc {
+    match loc.real() {
         Loc::Server(s) => Some(s.clone()),
         Loc::Fs(p) => match p.root() {
             FsRoot::Share { server, .. } => Some(server.clone()),
             FsRoot::Drive(_) => None,
         },
-        Loc::Root => None,
+        Loc::Root | Loc::Results { .. } => None,
     }
 }
 
@@ -161,6 +225,42 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         left.push(Span::styled(status.text.clone(), theme::fg(color)));
     } else if app.at_root() {
         left.push(Span::raw(super::locations::summary(app)));
+    } else if let Some(s) = app.search_state(&app.cwd) {
+        left.push(Span::raw("search results"));
+        left.push(sep());
+        left.push(Span::raw(format!(
+            "{} found",
+            thousands(s.hits.len() as u64)
+        )));
+        if app.view.len() != s.hits.len() {
+            left.push(Span::styled(
+                format!(" ({} shown)", thousands(app.view.len() as u64)),
+                theme::dim(),
+            ));
+        }
+        left.push(sep());
+        left.push(Span::raw(format!("sort: {}", s.sort.label())));
+        if s.running() && !s.current.is_empty() {
+            left.push(sep());
+            left.push(Span::styled(
+                format!("walking {}", truncate_left(&s.current, 48)),
+                theme::dim(),
+            ));
+        }
+        if s.truncated {
+            left.push(sep());
+            left.push(Span::styled(
+                "capped: refine the query",
+                theme::fg(theme::WARN),
+            ));
+        }
+        let hint = if s.running() {
+            "Esc cancels the walk, keeps the results "
+        } else {
+            "Esc / H back to the folder "
+        };
+        bar(f, area, left, vec![Span::styled(hint, theme::dim())]);
+        return;
     } else {
         let total = app.view_listing.as_ref().map_or(0, |l| l.entries.len());
         let shown = app.view.len();
@@ -210,7 +310,13 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
 pub fn draw_hints(f: &mut Frame, area: Rect, app: &App) {
     let mut left = vec![Span::raw(" ")];
     let mut used = 1;
-    let hints = if app.at_root() { ROOT_HINTS } else { HINTS };
+    let hints = if app.at_root() {
+        ROOT_HINTS
+    } else if app.search_state(&app.cwd).is_some() {
+        RESULT_HINTS
+    } else {
+        HINTS
+    };
     for (key, what) in hints {
         let w = width(key) + 1 + width(what) + 3;
         if used + w > area.width as usize {

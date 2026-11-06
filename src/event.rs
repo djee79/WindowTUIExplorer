@@ -5,9 +5,11 @@ use crate::fs::path::{FsPath, Loc};
 use crate::fs::worker::{ListError, Probe};
 use crate::keymap::Keymap;
 use crate::platform::DiskSpace;
+use crate::search::walk::Hit;
 use ratatui::crossterm::event::Event as TermEvent;
 use std::sync::Arc;
 use std::sync::mpsc;
+use std::time::Duration;
 
 pub type EventTx = mpsc::Sender<AppEvent>;
 pub type EventRx = mpsc::Receiver<AppEvent>;
@@ -49,6 +51,22 @@ pub enum AppEvent {
     SharesSaveFailed(String),
     /// keymap.toml was read: the built keymap plus any problems to report, or a read error.
     KeymapLoaded(Result<(Keymap, Vec<String>), String>),
+    /// A batch of search hits (possibly empty: then it's only progress).
+    SearchProgress {
+        id: u64,
+        hits: Vec<Hit>,
+        scanned: u64,
+        /// The directory a walker thread is in.
+        current: String,
+    },
+    /// The walk finished or was cancelled.
+    SearchDone {
+        id: u64,
+        scanned: u64,
+        errors: u64,
+        elapsed: Duration,
+        cancelled: bool,
+    },
 }
 
 pub fn channel() -> (EventTx, EventRx) {
