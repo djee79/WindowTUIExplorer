@@ -76,6 +76,11 @@ pub enum AppEvent {
         token: u64,
         result: Result<(Box<crate::jobs::robocopy::Tracker>, i32), String>,
     },
+    /// Whether the server of `open` answered on port 445 (a share that won't list).
+    SmbAnswer {
+        open: String,
+        up: bool,
+    },
     /// Where 7-Zip is installed (None: it isn't).
     SevenZip(Option<String>),
     /// The presets' last runs, from `presets.json`.

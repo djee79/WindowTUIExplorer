@@ -216,12 +216,7 @@ impl App {
             PinKind::Folder => {
                 // Known unreachable: say so and stay put, and check again for next time.
                 if let Some(Err(e)) = self.reach.get(&target).and_then(|r| r.last.clone()) {
-                    self.set_status(
-                        format!("{} is {e}; probing again… (:connect logs in)", pin.name),
-                        true,
-                    );
-                    self.probe(target);
-                    return;
+                    return self.stay_put(&pin.name, target, &e);
                 }
                 self.navigate(target, None);
             }

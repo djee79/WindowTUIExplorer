@@ -80,14 +80,26 @@ impl App {
     /// From a failed listing of the cwd: ask for credentials when the share refused the
     /// login, once per server until something changes.
     pub(super) fn maybe_ask_credentials(&mut self, loc: &Loc, err: &ListError) {
-        let code = match err {
-            ListError::AccessDenied => 5,
-            ListError::LogonFailure(code) => *code,
-            _ => return,
-        };
         if loc != &self.cwd || self.mode != Mode::Normal || self.cred.is_some() {
             return;
         }
+        let code = match err {
+            ListError::AccessDenied => 5,
+            ListError::LogonFailure(code) => *code,
+            // Some servers (NAS boxes) stall or drop an unknown login instead of refusing
+            // it: if the server answers on port 445, it's up, so offer the login.
+            ListError::TimedOut | ListError::Unreachable(_) => {
+                if let Some(t) = auth::connect_target(loc)
+                    && !self
+                        .cred_asked
+                        .contains(&auth::server_of(&t).to_lowercase())
+                {
+                    self.check_smb(loc.display());
+                }
+                return;
+            }
+            _ => return,
+        };
         let Some(target) = auth::connect_target(loc) else {
             return;
         };
@@ -104,6 +116,53 @@ impl App {
     }
 
     /// `:connect`: the prompt for the cwd's share, whatever happened before.
+    /// Asks the worker whether the server of `open` answers; `on_smb_answer` decides.
+    pub(super) fn check_smb(&mut self, open: String) {
+        self.smb_check = Some((open.clone(), self.cwd.clone()));
+        self.worker.smb_answers(open);
+    }
+
+    /// The server answered (or not) after its share wouldn't open. Up: it's the login,
+    /// so the login screen opens (once per server, until a connection works), and the
+    /// folder opens after. Down: say so plainly. Nothing happens if the user moved on.
+    pub(super) fn on_smb_answer(&mut self, open: String, up: bool) {
+        let Some((asked, from)) = self.smb_check.take() else {
+            return;
+        };
+        if asked != open || from != self.cwd {
+            return;
+        }
+        let Some(target) = Loc::parse(&open)
+            .ok()
+            .and_then(|l| auth::connect_target(&l))
+        else {
+            return;
+        };
+        let server = auth::server_of(&target).to_string();
+        if !up {
+            return self.set_status(
+                format!("{server} doesn't answer on SMB (port 445): asleep, off, or a wrong name"),
+                true,
+            );
+        }
+        if self.mode != Mode::Normal
+            || self.cred.is_some()
+            || !self.cred_asked.insert(server.to_lowercase())
+        {
+            return;
+        }
+        self.open_credentials(
+            target,
+            format!("{server} answers but didn't let you in: log in?"),
+        );
+        // Not there yet (a pin from Locations): go there once connected.
+        if self.cwd.display() != open
+            && let Some(p) = self.cred.as_mut()
+        {
+            p.open = Some(open);
+        }
+    }
+
     /// `:connect [path]`. With a path, or on a share / pin / mapped drive under the cursor
     /// (Locations, a server node), it logs in there and opens it once connected;
     /// otherwise it logs in to the share the cwd is on.

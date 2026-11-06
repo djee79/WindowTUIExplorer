@@ -578,6 +578,22 @@ impl Worker {
         });
     }
 
+    /// Does the server of `open` (a `\\server\share…` path) answer on port 445? When a
+    /// share won't list, an answer means the server is up and the login is the problem.
+    /// Sends one `SmbAnswer`.
+    pub fn smb_answers(&self, open: String) {
+        let tx = self.tx.clone();
+        let server = crate::auth::server_of(&open).to_string();
+        self.rt.spawn(async move {
+            let call = tokio::task::spawn_blocking(move || port_445(&server));
+            let up = matches!(
+                tokio::time::timeout(MACHINE_PROBE_TIMEOUT, call).await,
+                Ok(Ok(Ok(_)))
+            );
+            let _ = tx.send(AppEvent::SmbAnswer { open, up });
+        });
+    }
+
     /// Who uses `host`: `NetWkstaUserEnum` (needs admin rights), and the profile folders
     /// of `\\host\C$\Users` (newest first) as the fallback and the choice for `u`.
     /// Sends one `MachineUsers`.

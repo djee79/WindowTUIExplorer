@@ -240,6 +240,9 @@ pub struct App {
     /// connection works), and the connections sentier made (`:net drop-all`).
     pub cred: Option<auth::CredPrompt>,
     cred_asked: HashSet<String>,
+    /// A share that wouldn't open, waiting for its server's port-445 answer, and the cwd
+    /// when asked (the answer is dropped if the user moved on).
+    smb_check: Option<(String, Loc)>,
     connections_made: HashSet<String>,
     /// Machines: what's known per host (lowercase), the recent ones (and whether the file
     /// was read), and the host `u` is picking a user for.
@@ -364,6 +367,7 @@ impl App {
             config: crate::config::Config::default(),
             cred: None,
             cred_asked: HashSet::new(),
+            smb_check: None,
             connections_made: HashSet::new(),
             machines: HashMap::new(),
             recent_machines: Vec::new(),
@@ -551,6 +555,32 @@ impl App {
         }
     }
 
+    /// Enter on something known to be unreachable: say so, probe again for next time, and
+    /// on a share ask whether its server answers (if it does, the login screen opens).
+    pub(super) fn stay_put(&mut self, name: &str, target: Loc, e: &ListError) {
+        let share = crate::auth::connect_target(&target);
+        match share {
+            Some(t)
+                if !self
+                    .cred_asked
+                    .contains(&crate::auth::server_of(&t).to_lowercase()) =>
+            {
+                let server = crate::auth::server_of(&t).to_string();
+                self.set_status(
+                    format!("{name} is {e}; checking whether {server} answers…"),
+                    true,
+                );
+                self.check_smb(target.display());
+            }
+            Some(_) => self.set_status(
+                format!("{name} is {e}; probing again… (:connect logs in)"),
+                true,
+            ),
+            None => self.set_status(format!("{name} is {e}; probing again…"), true),
+        }
+        self.probe(target);
+    }
+
     fn open_selected(&mut self) {
         let Some(entry) = self.selected() else { return };
         let (name, container) = (entry.name.clone(), entry.is_container());
@@ -563,9 +593,7 @@ impl App {
             && let Ok(target) = self.cwd.join(&name)
             && let Some(Err(e)) = self.reach.get(&target).and_then(|r| r.last.clone())
         {
-            self.set_status(format!("{name} is {e}; probing again…"), true);
-            self.probe(target);
-            return;
+            return self.stay_put(&name, target, &e);
         }
         match self.cwd.join(&name) {
             Ok(target) if container => self.navigate(target, None),
@@ -980,6 +1008,7 @@ impl App {
             AppEvent::AvevaChecked { token, hits } => self.on_aveva_checked(token, hits),
             AppEvent::SyncPreviewed { token, result } => self.on_sync_previewed(token, result),
             AppEvent::SevenZip(path) => self.seven_zip = path,
+            AppEvent::SmbAnswer { open, up } => self.on_smb_answer(open, up),
             AppEvent::PresetRuns(runs) => {
                 // A run recorded before the file was read is newer: keep it.
                 for (k, v) in runs {
@@ -1753,6 +1782,97 @@ mod tests {
     fn loc(s: &str) -> Loc {
         let Ok(l) = Loc::parse(s) else { panic!("{s}") };
         l
+    }
+
+    /// A share that won't open: if its server answers on port 445, the login screen opens
+    /// by itself (once per server); if not, it says the server is down. No `:connect`.
+    #[test]
+    fn unreachable_share_offers_the_login_when_the_server_answers() {
+        let at = |app: &App, name: &str| {
+            let Some(l) = &app.view_listing else { panic!() };
+            app.view
+                .iter()
+                .position(|&i| l.entries[i].name == name)
+                .unwrap_or_else(|| panic!("{name}"))
+        };
+        let nas = r"\\nas02\archive";
+        let text = |app: &App| {
+            app.status
+                .as_ref()
+                .map(|s| s.text.clone())
+                .unwrap_or_default()
+        };
+
+        // Down: a plain message, no login screen.
+        let (mut app, _rt) = root_fixture();
+        app.set_cursor(at(&app, nas));
+        press(&mut app, "<CR>");
+        assert!(
+            text(&app).contains("checking whether nas02 answers"),
+            "{}",
+            text(&app)
+        );
+        app.handle(AppEvent::SmbAnswer {
+            open: nas.into(),
+            up: false,
+        });
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(
+            text(&app).contains("doesn't answer on SMB"),
+            "{}",
+            text(&app)
+        );
+
+        // Up: the login screen, and the share opens once connected.
+        press(&mut app, "<CR>");
+        app.handle(AppEvent::SmbAnswer {
+            open: nas.into(),
+            up: true,
+        });
+        assert_eq!(app.mode, Mode::Credentials);
+        assert!(
+            app.cred
+                .as_ref()
+                .is_some_and(|c| c.reason.contains("answers but didn't let you in"))
+        );
+        // Esc: not asked again for that server; the message says how instead.
+        press(&mut app, "<Esc>");
+        press(&mut app, "<CR>");
+        assert!(text(&app).contains(":connect logs in"), "{}", text(&app));
+        assert!(app.smb_check.is_none());
+
+        // An answer that comes after the user moved on is dropped.
+        let (mut app, _rt) = root_fixture();
+        app.set_cursor(at(&app, nas));
+        press(&mut app, "<CR>");
+        press(&mut app, "gd");
+        app.handle(AppEvent::SmbAnswer {
+            open: nas.into(),
+            up: true,
+        });
+        assert_ne!(app.mode, Mode::Credentials);
+
+        // Inside a share whose listing timed out: same check, prompt with no `open`.
+        let (mut app, _rt) = fixture();
+        let target = loc(r"\\nas03\photos");
+        app.navigate(target.clone(), None);
+        let Some(id) = app.pending.get(&target).map(|r| r.id) else {
+            panic!()
+        };
+        app.handle(AppEvent::Listed {
+            id,
+            loc: target,
+            result: Err(ListError::TimedOut),
+        });
+        assert!(app.smb_check.is_some());
+        app.handle(AppEvent::SmbAnswer {
+            open: r"\\nas03\photos".into(),
+            up: true,
+        });
+        assert_eq!(
+            app.cred.as_ref().map(|c| c.target.as_str()),
+            Some(r"\\nas03\photos")
+        );
     }
 
     /// `:connect` in Locations logs in to the share (or mapped drive) under the cursor,
