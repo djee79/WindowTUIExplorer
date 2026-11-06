@@ -18,6 +18,7 @@ mod pins;
 mod platform;
 mod preview;
 mod prompt;
+mod rename;
 mod search;
 mod ui;
 
