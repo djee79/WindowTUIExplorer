@@ -1109,6 +1109,37 @@ impl Worker {
         });
     }
 
+    /// What Windows has for `ext` (no dot): its default app's name and the recommended
+    /// apps. COM, so on a thread of its own (an STA). One `Registered`.
+    pub fn assoc_lookup(&self, ext: String) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let dotted = format!(".{ext}");
+            let apps = crate::platform::assoc_handlers(&dotted)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|h| (h.name, h.ui_name))
+                .collect();
+            let registered = crate::open::Registered {
+                default_app: crate::platform::default_app_name(&dotted),
+                apps,
+            };
+            let _ = tx.send(AppEvent::Registered { ext, registered });
+        });
+    }
+
+    /// Opens `paths` with the app Windows registered as `name` for `ext` (no dot).
+    pub fn assoc_invoke(&self, what: String, ext: String, name: String, paths: Vec<String>) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let dotted = format!(".{ext}");
+            let result = paths.iter().try_for_each(|p| {
+                crate::platform::assoc_invoke(&dotted, &name, p).map_err(|e| e.to_string())
+            });
+            let _ = tx.send(AppEvent::Ran { what, result });
+        });
+    }
+
     pub fn save_open_last(&self, last: crate::open::run::LastUsed) {
         self.rt
             .spawn_blocking(move || crate::open::run::save_last(&last));

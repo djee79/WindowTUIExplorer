@@ -288,6 +288,8 @@ pub struct App {
     pub open_resolved: std::collections::BTreeMap<String, Option<String>>,
     pub open_last: crate::open::run::LastUsed,
     pub open_menu: Option<OpenMenu>,
+    /// What Windows has per extension (asked once per session).
+    pub open_registered: HashMap<String, crate::open::Registered>,
     sync_token: u64,
     /// File operations: the open rename / delete prompt's subject, how many are running,
     /// the name to put the cursor on when the listing comes back, and a program to run
@@ -407,6 +409,7 @@ impl App {
             open_resolved: Default::default(),
             open_last: Default::default(),
             open_menu: None,
+            open_registered: HashMap::new(),
             sync_token: 0,
             op_draft: None,
             ops_running: 0,
@@ -1037,6 +1040,7 @@ impl App {
                 last,
             } => self.on_open_config(*cfg, problems, resolved, last),
             AppEvent::Ran { what, result } => self.on_ran(what, result),
+            AppEvent::Registered { ext, registered } => self.on_registered(ext, registered),
             AppEvent::SmbAnswer { open, up } => self.on_smb_answer(open, up),
             AppEvent::PresetRuns(runs) => {
                 // A run recorded before the file was read is newer: keep it.
@@ -4629,6 +4633,14 @@ mod job_tests {
         assert!(problems.is_empty(), "{problems:?}");
         l.app.open_cfg = cfg;
         l.app.open_resolved.insert("gone".into(), None);
+        // What Windows has for .txt, known already (no lookup racing the test).
+        l.app.open_registered.insert(
+            "txt".into(),
+            crate::open::Registered {
+                default_app: Some("Notepad".into()),
+                apps: vec![("np".into(), "Notepad".into())],
+            },
+        );
         let a = dir.join("src").join("a.txt").display().to_string();
         let b = dir.join("src").join("b.txt").display().to_string();
 
@@ -4667,6 +4679,7 @@ mod job_tests {
                 "gone",
                 "default",
                 "copy-path",
+                "assoc:np",
                 "openwith",
                 "properties"
             ]
@@ -4675,6 +4688,26 @@ mod job_tests {
         assert!(screen.contains("Open a.txt with"), "{screen}");
         assert!(screen.contains("configured (*.txt)"), "{screen}");
         assert!(screen.contains("not found"), "{screen}");
+        assert!(
+            screen.contains("Windows suggests (registered for .txt)"),
+            "{screen}"
+        );
+        assert!(screen.contains("Notepad"), "{screen}");
+        // A later answer from Windows updates the open menu; the cursor stays on its item.
+        press(&mut l.app, "<Down><Down>");
+        l.app.handle(AppEvent::Registered {
+            ext: "txt".into(),
+            registered: crate::open::Registered {
+                default_app: Some("Notepad".into()),
+                apps: vec![
+                    ("np".into(), "Notepad".into()),
+                    ("code".into(), "VS Code".into()),
+                ],
+            },
+        });
+        assert_eq!(ids(&l.app)[5], "assoc:code");
+        assert_eq!(l.app.open_menu.as_ref().map(|m| m.cursor), Some(2));
+        press(&mut l.app, "<Up><Up>");
         // The missing one can't run: the menu stays.
         press(&mut l.app, "2");
         assert_eq!(l.app.mode, Mode::OpenWith);
@@ -4683,7 +4716,7 @@ mod job_tests {
         type_text(&mut l.app, "ech");
         assert_eq!(l.app.open_menu.as_ref().map(|m| m.shown().len()), Some(1));
         press(&mut l.app, "<Esc>");
-        assert_eq!(l.app.open_menu.as_ref().map(|m| m.shown().len()), Some(6));
+        assert_eq!(l.app.open_menu.as_ref().map(|m| m.shown().len()), Some(8));
         // 1 picks Echo, and it's remembered for .txt.
         press(&mut l.app, "1");
         assert_eq!(l.app.mode, Mode::Normal);

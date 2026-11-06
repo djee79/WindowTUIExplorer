@@ -804,9 +804,154 @@ pub fn reveal(path: &str) -> io::Result<()> {
         .map(|_| ())
 }
 
+// ------------------------------------------------------------------ Windows' handlers
+
+/// An app Windows has registered for an extension (Explorer's "Open with" list).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssocHandler {
+    /// What identifies it (usually its exe's path), to find it again for `Invoke`.
+    pub name: String,
+    /// What Explorer shows: `Foxit PDF Reader`.
+    pub ui_name: String,
+}
+
+/// A CoTaskMem string from a shell call, copied, then freed.
+fn take_co_string(p: windows::core::PWSTR) -> String {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    if p.is_null() {
+        return String::new();
+    }
+    // SAFETY: the shell returned a valid NUL-terminated string allocated with CoTaskMem;
+    // it is read once, then freed exactly once.
+    let s = unsafe { p.to_string() }.unwrap_or_default();
+    unsafe { CoTaskMemFree(Some(p.0 as *const _)) };
+    s
+}
+
+fn assoc_enum(ext: &str) -> io::Result<Vec<windows::Win32::UI::Shell::IAssocHandler>> {
+    use windows::Win32::UI::Shell::{ASSOC_FILTER_RECOMMENDED, SHAssocEnumHandlers};
+    // SAFETY: no reserved pointer; flags are valid COINIT values.
+    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+    let ext = HSTRING::from(ext);
+    // SAFETY: the extension string outlives the call.
+    let list =
+        unsafe { SHAssocEnumHandlers(&ext, ASSOC_FILTER_RECOMMENDED) }.map_err(io::Error::other)?;
+    let mut out = Vec::new();
+    loop {
+        let mut one = [None];
+        let mut fetched = 0u32;
+        // SAFETY: a one-element output slice and a live counter.
+        let r = unsafe { list.Next(&mut one, Some(&mut fetched)) };
+        match (r, one[0].take()) {
+            (Ok(()), Some(h)) if fetched == 1 => out.push(h),
+            _ => break,
+        }
+        if out.len() >= 32 {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// The recommended handlers for `ext` (`.pdf`), as Explorer lists them. COM objects stay
+/// on this thread: only their names come back.
+pub fn assoc_handlers(ext: &str) -> io::Result<Vec<AssocHandler>> {
+    let mut out: Vec<AssocHandler> = Vec::new();
+    for h in assoc_enum(ext)? {
+        // SAFETY: valid handler from the enumerator; the strings are taken and freed.
+        let name = unsafe { h.GetName() }
+            .map(take_co_string)
+            .unwrap_or_default();
+        let ui_name = unsafe { h.GetUIName() }
+            .map(take_co_string)
+            .unwrap_or_default();
+        if ui_name.is_empty() || out.iter().any(|o| o.ui_name == ui_name) {
+            continue;
+        }
+        out.push(AssocHandler { name, ui_name });
+    }
+    Ok(out)
+}
+
+/// Opens `path` with the handler of `ext` whose name is `name` (found again here, on
+/// this thread): `IAssocHandler::Invoke` on the file's data object.
+pub fn assoc_invoke(ext: &str, name: &str, path: &str) -> io::Result<()> {
+    use windows::Win32::System::Com::IDataObject;
+    use windows::Win32::UI::Shell::{BHID_DataObject, IShellItem, SHCreateItemFromParsingName};
+    let handler = assoc_enum(ext)?
+        .into_iter()
+        // SAFETY: valid handlers; the name string is taken and freed.
+        .find(|h| {
+            unsafe { h.GetName() }
+                .map(take_co_string)
+                .is_ok_and(|n| n == name)
+        })
+        .ok_or_else(|| io::Error::other("that app isn't registered for this file type any more"))?;
+    let p = HSTRING::from(path);
+    // SAFETY: the path outlives the call; no bind context.
+    let item: IShellItem =
+        unsafe { SHCreateItemFromParsingName(&p, None) }.map_err(io::Error::other)?;
+    // SAFETY: a valid shell item; BHID_DataObject is a static GUID.
+    let data: IDataObject =
+        unsafe { item.BindToHandler(None, &BHID_DataObject) }.map_err(io::Error::other)?;
+    // SAFETY: handler and data object are live COM objects on this thread.
+    unsafe { handler.Invoke(&data) }.map_err(io::Error::other)
+}
+
+/// The default app's friendly name for `ext` (`Adobe Acrobat`), if Windows knows one.
+pub fn default_app_name(ext: &str) -> Option<String> {
+    use windows::Win32::UI::Shell::{
+        ASSOCF_INIT_IGNOREUNKNOWN, ASSOCSTR_FRIENDLYAPPNAME, AssocQueryStringW,
+    };
+    let ext = HSTRING::from(ext);
+    let verb = HSTRING::from("open");
+    let mut buf = vec![0u16; 512];
+    let mut len = buf.len() as u32;
+    // SAFETY: strings outlive the call; buf holds `len` characters.
+    let hr = unsafe {
+        AssocQueryStringW(
+            ASSOCF_INIT_IGNOREUNKNOWN,
+            ASSOCSTR_FRIENDLYAPPNAME,
+            &ext,
+            &verb,
+            Some(PWSTR(buf.as_mut_ptr())),
+            &mut len,
+        )
+    };
+    if hr.is_err() {
+        return None;
+    }
+    let n = (len as usize).saturating_sub(1).min(buf.len());
+    let s = String::from_utf16_lossy(&buf[..n])
+        .trim_end_matches('\0')
+        .to_string();
+    (!s.is_empty()).then_some(s)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Real Windows: .txt always has Notepad registered and a default app.
+    #[test]
+    fn txt_handlers_and_default_app() {
+        let hs = assoc_handlers(".txt").unwrap_or_default();
+        eprintln!("{hs:?} default {:?}", default_app_name(".txt"));
+        assert!(!hs.is_empty(), "no handlers for .txt");
+        assert!(
+            hs.iter()
+                .all(|h| !h.ui_name.is_empty() && !h.name.is_empty())
+        );
+        assert!(default_app_name(".txt").is_some());
+        assert_eq!(default_app_name(".no-such-ext-xyz"), None);
+        assert!(
+            assoc_handlers(".no-such-ext-xyz")
+                .unwrap_or_default()
+                .is_empty()
+        );
+        let r = assoc_invoke(".txt", "no-such-handler", r"C:\Windows\win.ini");
+        assert!(r.is_err_and(|e| e.to_string().contains("isn't registered")));
+    }
 
     /// A valid PDF with blank pages of the given sizes in points (1/72 inch), with a
     /// correct cross-reference table.

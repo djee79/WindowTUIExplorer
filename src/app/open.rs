@@ -39,7 +39,7 @@ pub struct OpenMenu {
     /// Index into the filtered rows.
     pub cursor: usize,
     targets: Vec<OpenTarget>,
-    ext: String,
+    pub ext: String,
 }
 
 impl OpenMenu {
@@ -92,6 +92,49 @@ impl App {
         self.run_opener(&id, targets, false);
     }
 
+    fn menu_items(&self, name: &str, is_dir: bool, ext: &str) -> Vec<MenuItem> {
+        open_menu::build_menu(
+            &self.open_cfg,
+            name,
+            is_dir,
+            self.open_last.get(ext).map(String::as_str),
+            &self.open_resolved,
+            self.open_registered.get(ext),
+        )
+    }
+
+    /// Windows answered for `ext`: kept for the session, and the open menu (if it's for
+    /// that extension) gets its "Windows suggests" rows, the cursor staying put.
+    pub(super) fn on_registered(&mut self, ext: String, registered: open_menu::Registered) {
+        self.open_registered.insert(ext.clone(), registered);
+        let Some(m) = self.open_menu.as_ref() else {
+            return;
+        };
+        if m.ext != ext {
+            return;
+        }
+        let Some(first) = m.targets.first().cloned() else {
+            return;
+        };
+        let at = m
+            .shown()
+            .get(m.cursor)
+            .and_then(|&i| m.items.get(i))
+            .map(|i| i.id.clone());
+        let items = self.menu_items(&first.name, first.is_dir, &ext);
+        if let Some(m) = self.open_menu.as_mut() {
+            m.items = items;
+            if let Some(id) = at {
+                let shown = m.shown();
+                m.cursor = shown
+                    .iter()
+                    .position(|&i| m.items[i].id == id)
+                    .unwrap_or(m.cursor);
+            }
+        }
+        self.dirty = true;
+    }
+
     /// `O`: the menu for the cursor item (and the selection).
     pub(super) fn open_menu(&mut self) {
         let targets = self.open_targets();
@@ -99,13 +142,12 @@ impl App {
             return self.set_status("O opens files and folders".into(), false);
         };
         let ext = rules::ext_of(&first.name, first.is_dir);
-        let items = open_menu::build_menu(
-            &self.open_cfg,
-            &first.name,
-            first.is_dir,
-            self.open_last.get(&ext).map(String::as_str),
-            &self.open_resolved,
-        );
+        // What Windows has for this extension: asked once per session, filled in when
+        // it arrives (the menu shows a "looking up" row until then).
+        if !ext.is_empty() && !self.open_registered.contains_key(&ext) {
+            self.worker.assoc_lookup(ext.clone());
+        }
+        let items = self.menu_items(&first.name, first.is_dir, &ext);
         let title = match targets.len() {
             1 => first.name.clone(),
             n => format!("{n} items"),
@@ -253,6 +295,20 @@ impl App {
             "openwith" => self.worker.open_with_dialog(first.path.clone()),
             "properties" => self.worker.properties(first.path.clone()),
             pin if pin.starts_with("pin:") => self.run_pin_opener(&pin[4..], &targets),
+            assoc if assoc.starts_with("assoc:") => {
+                let ext = rules::ext_of(&first.name, false);
+                let app = self
+                    .open_registered
+                    .get(&ext)
+                    .and_then(|r| r.apps.iter().find(|(n, _)| n == &assoc[6..]))
+                    .map_or_else(|| "the app".to_string(), |(_, ui)| ui.clone());
+                self.worker.assoc_invoke(
+                    format!("{} with {app}", many("opened")),
+                    ext,
+                    assoc[6..].to_string(),
+                    paths,
+                );
+            }
             name => self.run_configured(name, &targets),
         }
     }

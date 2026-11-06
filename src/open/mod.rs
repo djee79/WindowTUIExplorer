@@ -12,8 +12,18 @@ use std::collections::BTreeMap;
 pub enum Section {
     /// From the rule (open.toml or the defaults).
     Configured,
+    /// The apps Windows has registered for the extension (Explorer's "Open with").
+    Windows,
     /// Always there: the Windows "Open with" dialog, Properties.
     System,
+}
+
+/// What Windows has for an extension: its default app's name, and the recommended apps
+/// (id, name shown), as Explorer's "Open with" lists them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Registered {
+    pub default_app: Option<String>,
+    pub apps: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +69,7 @@ pub fn build_menu(
     is_dir: bool,
     last: Option<&str>,
     resolved: &BTreeMap<String, Option<String>>,
+    registered: Option<&Registered>,
 ) -> Vec<MenuItem> {
     let o_runs = first_opener(cfg, name, is_dir, last);
     let item = |id: &str, section: Section| {
@@ -120,6 +131,36 @@ pub fn build_menu(
         let m = items.remove(i);
         items.insert(0, m);
     }
+    if let Some(d) = items.iter_mut().find(|m| m.id == "default")
+        && let Some(app) = registered.and_then(|r| r.default_app.clone())
+    {
+        d.detail = app;
+    }
+    if !is_dir && !rules::ext_of(name, is_dir).is_empty() {
+        match registered {
+            None => items.push(MenuItem {
+                id: "assoc-loading".into(),
+                label: "…".into(),
+                detail: "looking up the apps Windows has for it".into(),
+                hint: String::new(),
+                missing: true,
+                last: false,
+                section: Section::Windows,
+            }),
+            Some(r) => items.extend(r.apps.iter().map(|(id, ui)| {
+                let id = format!("assoc:{id}");
+                MenuItem {
+                    last: last == Some(id.as_str()),
+                    id,
+                    label: ui.clone(),
+                    detail: String::new(),
+                    hint: String::new(),
+                    missing: false,
+                    section: Section::Windows,
+                }
+            })),
+        }
+    }
     if !is_dir {
         items.push(item("openwith", Section::System));
     }
@@ -170,9 +211,16 @@ mod tests {
         let mut resolved = BTreeMap::new();
         resolved.insert("revu".to_string(), None);
         resolved.insert("nvim".to_string(), Some("nvim.exe".to_string()));
-        let m = build_menu(&c, "B-1001.pdf", false, Some("revu"), &resolved);
+        let reg = Registered {
+            default_app: Some("Adobe Acrobat".into()),
+            apps: vec![
+                (r"C:\x\msedge.exe".into(), "Microsoft Edge".into()),
+                ("foxit".into(), "Foxit PDF Reader".into()),
+            ],
+        };
+        let m = build_menu(&c, "B-1001.pdf", false, Some("revu"), &resolved, Some(&reg));
         let ids: Vec<&str> = m.iter().map(|i| i.id.as_str()).collect();
-        // The last-used one first (remember), the system ones at the end.
+        // The last-used one first (remember), Windows' apps, the system ones at the end.
         assert_eq!(
             ids,
             [
@@ -180,24 +228,37 @@ mod tests {
                 "default",
                 "reveal",
                 "copy-unc",
+                r"assoc:C:\x\msedge.exe",
+                "assoc:foxit",
                 "openwith",
                 "properties"
             ]
         );
         assert!(m[0].last && m[0].missing && m[0].detail.contains("not found"));
         assert_eq!(m[1].hint, "o", "o still runs the rule's first");
+        assert_eq!(m[1].detail, "Adobe Acrobat", "the default app's name");
         assert_eq!(m[2].hint, "gR");
-        assert_eq!(m[5].section, Section::System);
+        assert_eq!(
+            (m[4].section, m[4].label.as_str()),
+            (Section::Windows, "Microsoft Edge")
+        );
+        assert_eq!(m[7].section, Section::System);
         assert_eq!(filter(&m, "REV"), [0, 2]);
-        assert_eq!(filter(&m, "").len(), 6);
+        assert_eq!(filter(&m, "foxit"), [5]);
+        assert_eq!(filter(&m, "").len(), 8);
 
-        let m = build_menu(&c, "notes.txt", false, None, &resolved);
+        // Still looking: one greyed row in the Windows section.
+        let m = build_menu(&c, "notes.txt", false, None, &resolved, None);
         assert_eq!(m[0].detail, "this terminal (inline)");
         assert_eq!(m[0].hint, "o");
-        // Folders: no Open with… dialog.
-        let m = build_menu(&c, "HIT", true, None, &resolved);
+        assert!(m.iter().any(|i| i.id == "assoc-loading" && i.missing));
+        // Folders: no Open with… dialog, no Windows apps.
+        let m = build_menu(&c, "HIT", true, None, &resolved, None);
         assert_eq!(m[0].id, "enter");
-        assert!(!m.iter().any(|i| i.id == "openwith"));
+        assert!(
+            !m.iter()
+                .any(|i| i.id == "openwith" || i.section == Section::Windows)
+        );
     }
 
     #[test]

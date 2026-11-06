@@ -18,7 +18,7 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
     };
     let shown = m.shown();
     let w = 68.min(body.width);
-    let sections = 2;
+    let sections = 4;
     let h =
         (shown.len() as u16 + 4 + sections + u16::from(!m.filter.is_empty())).clamp(6, body.height);
     let area = Rect {
@@ -69,6 +69,12 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
                     .as_deref()
                     .map_or_else(|| "configured".to_string(), |p| format!("configured ({p})"));
                 lines.push(Line::from(Span::styled(format!("  {from}"), theme::dim())));
+            }
+            if item.section == Section::Windows {
+                lines.push(Line::from(Span::styled(
+                    format!("  Windows suggests (registered for .{})", m.ext),
+                    theme::dim(),
+                )));
             }
             section = Some(item.section);
         }

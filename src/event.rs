@@ -84,6 +84,11 @@ pub enum AppEvent {
         resolved: std::collections::BTreeMap<String, Option<String>>,
         last: crate::open::run::LastUsed,
     },
+    /// What Windows has registered for an extension (no dot).
+    Registered {
+        ext: String,
+        registered: crate::open::Registered,
+    },
     /// Something was started, shown or copied (`what`), or why not.
     Ran {
         what: String,

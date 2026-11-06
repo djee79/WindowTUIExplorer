@@ -809,8 +809,7 @@ Manual checklist:
   path / name; M6's path utilities, pulled forward), `gx` Explorer here, `gw` WezTerm tab
   here. New crate: `arboard` (stack table), no default features.
 
-Not yet (slice 2): "Windows suggests" (`SHAssocEnumHandlers` + `IAssocHandler::Invoke`),
-the default app's name next to "Default app".
+Slice 2 below adds "Windows suggests" and the default app's name.
 
 Manual checklist:
 - [ ] `Alt-Enter` on a file and on a folder: the Properties sheet appears and stays open.
@@ -819,3 +818,26 @@ Manual checklist:
 - [ ] An `inline` nvim opener: Neovim in this terminal, sentier back intact after `:q`.
 - [ ] `yP` on a mapped drive file pastes `\server\share\…` into Teams.
 - [ ] `gw` inside WezTerm: a new tab in this folder.
+
+## M5 open-with, slice 2: Windows suggests (code complete 2026-11-06, manual check pending)
+
+- The `O` menu has a **"Windows suggests (registered for .pdf)"** section: the apps
+  `SHAssocEnumHandlers(ext, ASSOC_FILTER_RECOMMENDED)` returns, the same list as
+  Explorer's Open with submenu, so installed apps appear with no config. Picking one runs
+  `IAssocHandler::Invoke` on each selected file's data object (`IShellItem` →
+  `BHID_DataObject`).
+- COM objects never cross threads: the lookup runs on its own STA thread and sends back
+  only (name, display name); invoking finds the handler again by name on a fresh thread.
+- Asked once per extension per session; until it answers, the menu shows a greyed
+  "looking up…" row, then fills in with the cursor kept on its item.
+- "Default app" shows the app's name (`AssocQueryStringW`, `ASSOCSTR_FRIENDLYAPPNAME`).
+  On this French Windows: `.txt` → "Bloc-notes", plus Visual Studio Code (checked by a
+  test against the real registry).
+- A Windows app can be remembered as `★ last` like any opener.
+
+M5's open-with part (section 13) is code complete. Next: the launcher (section 6).
+
+Manual checklist:
+- [ ] `O` on a PDF: the Windows section lists the same apps as Explorer's Open with; picking
+      one opens the file in it (also a file on a share).
+- [ ] With 3 PDFs selected, a Windows app opens all three.
