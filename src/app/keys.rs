@@ -52,8 +52,44 @@ pub enum PromptKind {
     /// `a` / `A`: a new file / folder's name.
     NewFile,
     NewDir,
+    /// One field of a sync / backup preset (`:sync new`, `:backup new`, `^e`).
+    Preset(PresetField),
     /// `D`: type `yes` to delete permanently.
     TypeYes,
+}
+
+/// The fields a preset prompt asks for, between the name and the tags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresetField {
+    Source,
+    /// A sync's local copy.
+    Dest,
+    Mode,
+    /// Where a backup's zips go.
+    DestDir,
+    Keep,
+    Engine,
+}
+
+impl PresetField {
+    pub fn prefix(self) -> &'static str {
+        match self {
+            PresetField::Source => "source: ",
+            PresetField::Dest => "local copy (dest): ",
+            PresetField::Mode => "mode (update | mirror): ",
+            PresetField::DestDir => "zips go to: ",
+            PresetField::Keep => "keep newest (0 = all): ",
+            PresetField::Engine => "zip engine (builtin | 7zip): ",
+        }
+    }
+
+    /// Fields that take a folder (Tab completes them).
+    pub fn is_path(self) -> bool {
+        matches!(
+            self,
+            PresetField::Source | PresetField::Dest | PresetField::DestDir
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +127,7 @@ impl Prompt {
             PromptKind::NewFile => "new file: ",
             PromptKind::NewDir => "new folder: ",
             PromptKind::TypeYes => "",
+            PromptKind::Preset(f) => f.prefix(),
         }
     }
 }
@@ -118,7 +155,7 @@ fn home() -> Result<String, String> {
 }
 
 /// `~` and `~\rest` → the home directory (input sugar for `:cd` and bindings).
-fn expand_home(text: &str) -> Result<String, String> {
+pub(super) fn expand_home(text: &str) -> Result<String, String> {
     let text = text.trim();
     match text.strip_prefix('~') {
         Some("") => home(),
@@ -489,7 +526,9 @@ impl App {
         };
         match kind {
             PromptKind::ConfirmUnpin | PromptKind::Confirm => p.note = self.pin_prompt_note(kind),
-            PromptKind::PinTags | PromptKind::MachineUser => self.prompt_changed(&mut p),
+            PromptKind::PinTags | PromptKind::MachineUser | PromptKind::Preset(_) => {
+                self.prompt_changed(&mut p)
+            }
             _ => {}
         }
         self.prompt = Some(p);
@@ -525,6 +564,11 @@ impl App {
                     };
                     p.editor = LineEditor::new(&choices[next]);
                 }
+                self.prompt = Some(p);
+                return;
+            }
+            (PromptKind::Preset(f), KeyCode::Tab | KeyCode::BackTab) if f.is_path() => {
+                self.complete(&mut p, ev.code == KeyCode::Tab);
                 self.prompt = Some(p);
                 return;
             }
@@ -645,6 +689,7 @@ impl App {
             PromptKind::NewFile => p.note = r"end in \ for a folder; sub\name makes sub too".into(),
             PromptKind::NewDir => p.note = r"sub\name makes both".into(),
             PromptKind::TypeYes => {}
+            PromptKind::Preset(f) => p.note = self.preset_note(f, &text),
             PromptKind::MachineUser => {
                 let choices = self.machine_user_choices();
                 p.note = if choices.is_empty() {
@@ -696,7 +741,8 @@ impl App {
             | PromptKind::Confirm
             | PromptKind::ViewName
             | PromptKind::ViewKey
-            | PromptKind::TagRename => {
+            | PromptKind::TagRename
+            | PromptKind::Preset(_) => {
                 if let Err(note) = self.pin_submit(p.kind, &text) {
                     // Stay in the prompt and say what's wrong.
                     let mut p = p;
@@ -740,7 +786,8 @@ impl App {
             | PromptKind::Confirm
             | PromptKind::ViewName
             | PromptKind::ViewKey
-            | PromptKind::TagRename => self.pin_cancel(p.kind),
+            | PromptKind::TagRename
+            | PromptKind::Preset(_) => self.pin_cancel(p.kind),
             PromptKind::GotoPage => {}
             PromptKind::MachineUser => self.machine_user_host = None,
             PromptKind::Rename | PromptKind::NewFile | PromptKind::NewDir | PromptKind::TypeYes => {
@@ -766,14 +813,20 @@ impl App {
             apply_completion(p);
             return;
         }
-        let Some((cmd, arg)) = line.split_once(' ') else {
-            p.note = "Tab completes the path after :cd and :e".to_string();
-            return;
+        // A preset's folder field is all path; the command line has `cd ` first.
+        let arg = if matches!(p.kind, PromptKind::Preset(_)) {
+            line.as_str()
+        } else {
+            let Some((cmd, arg)) = line.split_once(' ') else {
+                p.note = "Tab completes the path after :cd and :e".to_string();
+                return;
+            };
+            if !matches!(cmd, "cd" | "e" | "edit") {
+                p.note = "Tab completes the path after :cd and :e".to_string();
+                return;
+            }
+            arg
         };
-        if !matches!(cmd, "cd" | "e" | "edit") {
-            p.note = "Tab completes the path after :cd and :e".to_string();
-            return;
-        }
         let arg = arg.trim_start();
         let head = line[..line.len() - arg.len()].to_string();
         let (dir_text, prefix) = split_for_completion(arg);

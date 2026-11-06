@@ -74,6 +74,59 @@ impl Compression {
     }
 }
 
+impl Compression {
+    /// 7-Zip's `-mx` level.
+    fn mx(self) -> u8 {
+        match self {
+            Compression::Store => 0,
+            Compression::Fast => 1,
+            Compression::Default => 5,
+            Compression::Best => 9,
+        }
+    }
+}
+
+/// What writes the zip. The built-in writer is the default and always works; 7-Zip is
+/// faster (multi-threaded) when it's installed, and falls back to built-in when not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Engine {
+    Builtin,
+    SevenZip,
+}
+
+impl Engine {
+    pub fn parse(s: &str) -> Result<Engine, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "builtin" | "built-in" | "" => Ok(Engine::Builtin),
+            "7zip" | "7-zip" | "7z" => Ok(Engine::SevenZip),
+            other => Err(format!("engine {other:?}: builtin or 7zip")),
+        }
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Engine::Builtin => "builtin",
+            Engine::SevenZip => "7zip",
+        }
+    }
+}
+
+/// `7z.exe` on PATH, else in Program Files. Blocking (file checks): worker only.
+pub fn find_7z() -> Option<PathBuf> {
+    let on_path = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let installed = ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(|d| PathBuf::from(d).join("7-Zip"));
+    on_path
+        .into_iter()
+        .chain(installed)
+        .map(|d| d.join("7z.exe"))
+        .find(|p| p.is_file())
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackupPreset {
     pub name: String,
@@ -84,6 +137,7 @@ pub struct BackupPreset {
     /// Keep the newest N zips of this preset; 0 keeps all.
     pub keep: u32,
     pub compression: Compression,
+    pub engine: Engine,
 }
 
 fn fs_path(field: &str, text: &str) -> Result<FsPath, String> {
@@ -124,6 +178,7 @@ impl BackupPreset {
             None => Compression::Default,
             Some(c) => Compression::parse(c)?,
         };
+        let engine = Engine::parse(get("engine").unwrap_or("builtin"))?;
         let file_name = get("file_name").unwrap_or(DEFAULT_FILE_NAME).to_string();
         let preset = BackupPreset {
             name: pin.name.clone(),
@@ -132,6 +187,7 @@ impl BackupPreset {
             file_name,
             keep,
             compression,
+            engine,
         };
         // A bad template is refused now, not at 2 a.m.
         preset.zip_name(chrono::Local::now())?;
@@ -385,6 +441,7 @@ pub struct BackupSpec {
     pub pattern: String,
     pub keep: u32,
     pub compression: Compression,
+    pub engine: Engine,
     /// robocopy `/MT:n` for staging.
     pub threads: u32,
     pub log: String,
@@ -547,15 +604,28 @@ fn pipeline(
     send(JobEvent::Stage(BackupStep::Zipping));
     let found = walk(&long(&root), cancel).map_err(|e| format!("can't read {root}: {e}"))?;
     let total: u64 = found.iter().map(|f| f.size).sum();
-    let entries = found.len() as u64;
-    write_zip(spec, partial, &found, total, cancel, send)?;
+    let files = found.iter().filter(|f| !f.rel.ends_with('/')).count() as u64;
+    let seven = match spec.engine {
+        Engine::SevenZip => {
+            let exe = find_7z();
+            if exe.is_none() {
+                log_line(&spec.log, "7-Zip not found: using the built-in zip writer");
+            }
+            exe
+        }
+        Engine::Builtin => None,
+    };
+    match &seven {
+        Some(exe) => zip_7z(exe, spec, partial, &root, total, cancel, send)?,
+        None => write_zip(spec, partial, &found, total, cancel, send)?,
+    }
     if let Some(e) = stop() {
         return Err(e);
     }
 
     // 3. Verifying, then the final name.
     send(JobEvent::Stage(BackupStep::Verifying));
-    verify(partial, entries, total, cancel, send)?;
+    let entries = verify(partial, files, total, cancel, send)?;
     if let Some(e) = stop() {
         return Err(e);
     }
@@ -817,21 +887,137 @@ fn write_zip(
     Ok(())
 }
 
-/// Every entry read back in full: the zip crate checks each CRC as it reaches the end.
-fn verify(
+/// The zip written by 7-Zip (`7z a -tzip -mx=N -mmt=on`, run in `root` so names are
+/// relative). Its `NN%` progress becomes `StageProgress`; its other output goes to the
+/// job log. Any warning (a file it couldn't read) fails the backup: an incomplete zip
+/// is no backup.
+fn zip_7z(
+    exe: &Path,
+    spec: &BackupSpec,
     partial: &Path,
-    entries: u64,
+    root: &str,
     total: u64,
     cancel: &CancelToken,
     send: &dyn Fn(JobEvent),
 ) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let args = [
+        "a".to_string(),
+        "-tzip".into(),
+        format!("-mx={}", spec.compression.mx()),
+        "-mmt=on".into(),
+        "-bsp1".into(),
+        "-bso1".into(),
+        "-bse1".into(),
+        "-y".into(),
+        partial.display().to_string(),
+        "*".into(),
+    ];
+    log_line(
+        &spec.log,
+        &format!("7-Zip: {} {} (in {root})", exe.display(), args.join(" ")),
+    );
+    let mut child = Command::new(exe)
+        .args(&args)
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|e| format!("7-Zip didn't start: {e}"))?;
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let mut stdout = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Some(out) = stdout.as_mut() {
+            match out.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    let mut p = Progress {
+        send,
+        total,
+        done: 0,
+        last: Instant::now(),
+    };
+    let mut text = String::new();
+    let mut killed = false;
+    loop {
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(bytes) => {
+                text.push_str(&crate::platform::oem_to_string(&bytes));
+                // Lines end in \r, \n or runs of backspaces (progress redraws).
+                while let Some(i) = text.find(['\r', '\n', '\u{8}']) {
+                    let line: String = text.drain(..=i).collect();
+                    let line = line.trim_matches(|c: char| c.is_whitespace() || c == '\u{8}');
+                    if let Some(pct) = percent(line) {
+                        p.done = total * pct / 100;
+                        p.tick(line, false);
+                    } else if !line.is_empty() {
+                        log_line(&spec.log, &format!("7-Zip: {line}"));
+                    }
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        if cancel.is_cancelled() && !killed {
+            let _ = child.kill();
+            killed = true;
+        }
+    }
+    let _ = reader.join();
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if killed {
+        return Err("cancelled".into());
+    }
+    match status.code() {
+        Some(0) => {
+            p.done = total;
+            p.tick("", true);
+            Ok(())
+        }
+        Some(1) => {
+            Err("7-Zip couldn't read some files (warnings in the log): no zip was made".into())
+        }
+        Some(c) => Err(format!("7-Zip failed (exit {c}, see the log)")),
+        None => Err("7-Zip didn't exit normally".into()),
+    }
+}
+
+/// `45% 12 + hitmac\x.pmlmac` → 45.
+fn percent(line: &str) -> Option<u64> {
+    let (n, _) = line.split_once('%')?;
+    n.trim().parse::<u64>().ok().filter(|n| *n <= 100)
+}
+
+/// Every entry read back in full: the zip crate checks each CRC as it reaches the end.
+/// The zip must hold exactly `files` files. Returns its entry count (files + folders).
+fn verify(
+    partial: &Path,
+    files: u64,
+    total: u64,
+    cancel: &CancelToken,
+    send: &dyn Fn(JobEvent),
+) -> Result<u64, String> {
     let bad = |e: &dyn std::fmt::Display| format!("verify failed: {e}");
     let file = std::fs::File::open(long(&partial.display().to_string())).map_err(|e| bad(&e))?;
     let mut za = ::zip::ZipArchive::new(std::io::BufReader::new(file)).map_err(|e| bad(&e))?;
-    if za.len() as u64 != entries {
+    let in_zip = (0..za.len())
+        .filter(|&i| za.by_index_raw(i).is_ok_and(|f| !f.is_dir()))
+        .count() as u64;
+    if in_zip != files {
         return Err(format!(
-            "verify failed: the zip has {} entries, {entries} were written",
-            za.len()
+            "verify failed: the zip has {in_zip} files, the source {files}"
         ));
     }
     let mut p = Progress {
@@ -862,7 +1048,7 @@ fn verify(
             }
         }
     }
-    Ok(())
+    Ok(za.len() as u64)
 }
 
 #[cfg(test)]
@@ -1084,6 +1270,7 @@ mod tests {
             pattern: "HIT_*.zip".into(),
             keep: 2,
             compression: Compression::Default,
+            engine: Engine::Builtin,
             threads: 0,
             log: dir.join("job.log").display().to_string(),
         };
@@ -1138,6 +1325,7 @@ mod tests {
             pattern: "t*.zip".into(),
             keep: 0,
             compression: Compression::Store,
+            engine: Engine::Builtin,
             threads: 0,
             log: dir.join("job.log").display().to_string(),
         };
@@ -1151,11 +1339,11 @@ mod tests {
         assert_eq!(ok, Ok(()));
         assert_eq!(
             verify(&zip, 1, total, &CancelToken::default(), &|_| {}),
-            Ok(())
+            Ok(1)
         );
         assert!(
             verify(&zip, 2, total, &CancelToken::default(), &|_| {})
-                .is_err_and(|e| e.contains("1 entries, 2 were written"))
+                .is_err_and(|e| e.contains("the zip has 1 files, the source 2"))
         );
         // Flip one byte of the stored data: the CRC no longer matches.
         let mut bytes = std::fs::read(&zip).unwrap_or_default();
@@ -1174,6 +1362,65 @@ mod tests {
     }
 
     #[test]
+    fn engines_and_7zip_progress() {
+        assert_eq!(Engine::parse("7-Zip"), Ok(Engine::SevenZip));
+        assert_eq!(Engine::parse("builtin"), Ok(Engine::Builtin));
+        assert!(Engine::parse("rar").is_err_and(|e| e.contains("builtin or 7zip")));
+        let r = BackupPreset::from_pin(&pin(
+            "kind='backup'\nname='x'\nsource='C:\\a'\ndest_dir='D:\\z'\nengine='7zip'",
+        ));
+        assert_eq!(r.map(|p| p.engine), Ok(Engine::SevenZip));
+        assert_eq!(percent("45% 12 + hitmac\\x.pmlmac"), Some(45));
+        assert_eq!(percent("  0%"), Some(0));
+        assert_eq!(percent("Everything is Ok"), None);
+        assert_eq!(percent("250% nope"), None);
+        assert_eq!((Compression::Store.mx(), Compression::Best.mx()), (0, 9));
+    }
+
+    /// The same pipeline through 7-Zip, when it's installed (skipped otherwise).
+    #[test]
+    fn backup_through_7zip_when_installed() {
+        if find_7z().is_none() {
+            eprintln!("7-Zip not installed: skipped");
+            return;
+        }
+        let dir = temp("7z");
+        let src = dir.join("HIT");
+        let _ = std::fs::create_dir_all(src.join("hitmac").join("empty"));
+        let _ = std::fs::write(src.join("evars.bat"), "set x=1");
+        let _ = std::fs::write(src.join("hitmac").join("é.pmlmac"), "é".repeat(5000));
+        let dest = dir.join("zips");
+        let spec = BackupSpec {
+            title: "HIT backup".into(),
+            source: src.display().to_string(),
+            staging: None,
+            dest_dir: dest.display().to_string(),
+            zip_name: "HIT_7z.zip".into(),
+            pattern: "HIT_*.zip".into(),
+            keep: 0,
+            compression: Compression::Best,
+            engine: Engine::SevenZip,
+            threads: 0,
+            log: dir.join("job.log").display().to_string(),
+        };
+        let job = drive(&spec);
+        assert_eq!(job.phase, Phase::Done, "{:?}", job.error);
+        let mut names = read_zip(&dest.join("HIT_7z.zip").display().to_string());
+        names.sort();
+        let files: Vec<&String> = names.iter().filter(|n| !n.ends_with('/')).collect();
+        assert_eq!(files, ["evars.bat", "hitmac/é.pmlmac"], "{names:?}");
+        assert!(
+            names
+                .iter()
+                .any(|n| n.trim_end_matches('/') == "hitmac/empty"),
+            "{names:?}"
+        );
+        let log = std::fs::read_to_string(dir.join("job.log")).unwrap_or_default();
+        assert!(log.contains("7-Zip:"), "{log}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_missing_source_fails_and_leaves_nothing() {
         let dir = temp("missing");
         let dest = dir.join("zips");
@@ -1186,6 +1433,7 @@ mod tests {
             pattern: "t*.zip".into(),
             keep: 1,
             compression: Compression::Store,
+            engine: Engine::Builtin,
             threads: 0,
             log: dir.join("job.log").display().to_string(),
         };

@@ -10,7 +10,7 @@ use super::App;
 use super::keys::PromptKind;
 use super::tags::Confirm;
 use crate::jobs::robocopy::Overwrite;
-use crate::jobs::zip::{BackupPreset, BackupSpec, BackupState, BackupStep};
+use crate::jobs::zip::{BackupPreset, BackupSpec, BackupState, BackupStep, Engine};
 use crate::jobs::{self, Backend, Job, Op, Plan};
 use crate::pins::PinKind;
 
@@ -43,11 +43,20 @@ impl App {
             0 => "keeps every zip".to_string(),
             n => format!("keeps the newest {n}"),
         };
-        let how = if direct {
-            "zipped directly: it's a sync preset's local copy"
+        let mut how = if direct {
+            "zipped directly: it's a sync preset's local copy".to_string()
         } else {
-            "staged locally first"
+            "staged locally first".to_string()
         };
+        match (preset.engine, &self.seven_zip) {
+            (Engine::SevenZip, Some(_)) => how.push_str(", 7-Zip"),
+            (Engine::SevenZip, None) => how.push_str(", built-in zip (7-Zip isn't installed)"),
+            // The offer: 7-Zip is there and this preset doesn't use it.
+            (Engine::Builtin, Some(_)) => {
+                how.push_str(", built-in zip; 7-Zip is installed, ^e → engine 7zip is faster")
+            }
+            (Engine::Builtin, None) => {}
+        }
         let why = format!(
             "Back up {} to {}\\{zip}? ({how}; {keep})",
             preset.source.display(),
@@ -111,6 +120,7 @@ impl App {
             pattern,
             keep: preset.keep,
             compression: preset.compression,
+            engine: preset.engine,
             threads: self.config.jobs.robocopy_threads.unwrap_or(0),
             log,
         };

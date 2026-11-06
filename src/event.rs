@@ -76,6 +76,8 @@ pub enum AppEvent {
         token: u64,
         result: Result<(Box<crate::jobs::robocopy::Tracker>, i32), String>,
     },
+    /// Where 7-Zip is installed (None: it isn't).
+    SevenZip(Option<String>),
     /// The presets' last runs, from `presets.json`.
     PresetRuns(crate::jobs::preset::Runs),
     /// Which pasted folders look like AVEVA projects.

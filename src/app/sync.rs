@@ -327,6 +327,9 @@ impl App {
         if name.is_empty() {
             return self.open_pin_picker(&format!("is:{word} "));
         }
+        if name.eq_ignore_ascii_case("new") {
+            return self.new_preset(kind);
+        }
         let syncs: Vec<usize> = (0..self.pins.pins.len())
             .filter(|&i| self.pins.pins[i].kind == kind)
             .collect();

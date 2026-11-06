@@ -250,6 +250,7 @@ fn prepare_backup(
         pattern,
         keep: preset.keep,
         compression: preset.compression,
+        engine: preset.engine,
         threads: args.threads,
         log,
     };

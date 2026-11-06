@@ -273,6 +273,8 @@ pub struct App {
     /// Sync presets (M4b): the open dry-run preview and the last runs from presets.json.
     pub sync_preview: Option<SyncPreviewState>,
     pub preset_runs: crate::jobs::preset::Runs,
+    /// Where 7-Zip is installed, if it is (found once at startup).
+    pub seven_zip: Option<String>,
     sync_token: u64,
     /// File operations: the open rename / delete prompt's subject, how many are running,
     /// the name to put the cursor on when the listing comes back, and a program to run
@@ -386,6 +388,7 @@ impl App {
             last_paste: None,
             sync_preview: None,
             preset_runs: Default::default(),
+            seven_zip: None,
             sync_token: 0,
             op_draft: None,
             ops_running: 0,
@@ -413,6 +416,7 @@ impl App {
         app.worker.load_keymap();
         app.worker.load_job_reports();
         app.worker.load_preset_runs();
+        app.worker.find_7z();
         app.set_cwd(start, None);
         app
     }
@@ -975,6 +979,7 @@ impl App {
             AppEvent::JobReports(reports) => self.on_job_reports(reports),
             AppEvent::AvevaChecked { token, hits } => self.on_aveva_checked(token, hits),
             AppEvent::SyncPreviewed { token, result } => self.on_sync_previewed(token, result),
+            AppEvent::SevenZip(path) => self.seven_zip = path,
             AppEvent::PresetRuns(runs) => {
                 // A run recorded before the file was read is newer: keep it.
                 for (k, v) in runs {
@@ -4236,6 +4241,145 @@ mod job_tests {
         assert!(l.app.confirm_note().contains("zipped directly"));
         press(&mut l.app, "n");
         assert_eq!(l.app.jobs.len(), 1, "n runs nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Types `text` into whatever has the keyboard, one character at a time.
+    fn type_text(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.handle(AppEvent::Term(Event::Key(KeyEvent::new(
+                crossterm_char(c),
+                ratatui::crossterm::event::KeyModifiers::NONE,
+            ))));
+        }
+    }
+
+    fn line_now(app: &App) -> String {
+        app.prompt
+            .as_ref()
+            .map(|p| p.editor.text())
+            .unwrap_or_default()
+    }
+
+    fn prompt_note(app: &App) -> String {
+        app.prompt
+            .as_ref()
+            .map(|p| p.note.clone())
+            .unwrap_or_default()
+    }
+
+    /// `:sync new` / `:backup new` and `^e` build presets in the app: every field is
+    /// checked as it's typed, and what's saved loads as a preset.
+    #[test]
+    fn presets_are_made_and_edited_in_the_app() {
+        use crate::jobs::preset::{SyncMode, SyncPreset};
+        use crate::jobs::zip::{BackupPreset, Engine};
+        let dir = temp_tree();
+        let mut l = Live::new(&dir);
+        l.until(|a| a.pins_loaded);
+        l.app.pins = crate::pins::PinStore::default();
+        l.cd(&dir.join("src"));
+
+        // A sync from here.
+        press(&mut l.app, ":sync new<CR>");
+        assert_eq!(line_now(&l.app), "src → local");
+        press(&mut l.app, "<CR>");
+        assert_eq!(line_now(&l.app), dir.join("src").display().to_string());
+        press(&mut l.app, "<CR>");
+        // dest inside the source: refused, the prompt stays.
+        type_text(&mut l.app, r"proj");
+        press(&mut l.app, "<CR>");
+        assert!(
+            prompt_note(&l.app).contains("dest is inside source"),
+            "{}",
+            prompt_note(&l.app)
+        );
+        // Tab completes folders.
+        press(&mut l.app, "<C-u>");
+        type_text(&mut l.app, &format!(r"{}\d", dir.display()));
+        press(&mut l.app, "<Tab>");
+        l.until(|a| line_now(a).ends_with(r"dst\"));
+        press(&mut l.app, "<CR>");
+        assert_eq!(line_now(&l.app), "update");
+        press(&mut l.app, "<C-u>");
+        type_text(&mut l.app, "mirror");
+        assert!(prompt_note(&l.app).contains("DELETED"));
+        press(&mut l.app, "<CR>");
+        type_text(&mut l.app, "aveva");
+        press(&mut l.app, "<CR>");
+        type_text(&mut l.app, "z");
+        press(&mut l.app, "<CR>");
+        assert_eq!(l.app.mode, Mode::Normal);
+        assert_eq!(l.app.pins.pins.len(), 1);
+        let pin = l.app.pins.pins[0].clone();
+        let Ok(p) = SyncPreset::from_pin(&pin) else {
+            panic!("{pin:?}")
+        };
+        assert_eq!(
+            (p.mode, p.dest.name()),
+            (SyncMode::Mirror, "dst".to_string())
+        );
+        assert_eq!(
+            (pin.key_char(), pin.tags.clone()),
+            (Some('z'), vec!["aveva".to_string()])
+        );
+
+        // ^e walks the same fields, prefilled.
+        l.app.edit_pin(0, false, None);
+        press(&mut l.app, "<CR><CR><CR>");
+        assert_eq!(line_now(&l.app), "mirror");
+        press(&mut l.app, "<C-u>");
+        type_text(&mut l.app, "u");
+        press(&mut l.app, "<CR><CR><CR>");
+        assert_eq!(l.app.mode, Mode::Normal);
+        let p = SyncPreset::from_pin(&l.app.pins.pins[0]).map(|p| p.mode);
+        assert_eq!(p, Ok(SyncMode::Update));
+        assert_eq!(l.app.pins.pins[0].key_char(), Some('z'), "key kept");
+
+        // A backup, with the engine offered because 7-Zip is "installed".
+        l.app.seven_zip = Some(r"C:\Program Files\7-Zip\7z.exe".into());
+        press(&mut l.app, ":backup new<CR>");
+        assert_eq!(line_now(&l.app), "src backup");
+        press(&mut l.app, "<CR><CR>");
+        type_text(&mut l.app, "zips");
+        press(&mut l.app, "<CR>");
+        assert!(
+            prompt_note(&l.app).contains("zips can't go into"),
+            "{}",
+            prompt_note(&l.app)
+        );
+        press(&mut l.app, "<C-u>");
+        type_text(&mut l.app, &dir.join("zips").display().to_string());
+        press(&mut l.app, "<CR>");
+        assert_eq!(line_now(&l.app), "10");
+        press(&mut l.app, "<C-u>");
+        type_text(&mut l.app, "x");
+        press(&mut l.app, "<CR>");
+        assert!(prompt_note(&l.app).contains("a number"));
+        press(&mut l.app, "<C-u>");
+        type_text(&mut l.app, "3");
+        press(&mut l.app, "<CR>");
+        assert_eq!(line_now(&l.app), "builtin");
+        assert!(prompt_note(&l.app).contains("7zip: faster"));
+        press(&mut l.app, "<C-u>");
+        type_text(&mut l.app, "7zip");
+        press(&mut l.app, "<CR><CR><CR>");
+        assert_eq!(l.app.pins.pins.len(), 2);
+        let Ok(b) = BackupPreset::from_pin(&l.app.pins.pins[1]) else {
+            panic!("{:?}", l.app.pins.pins[1])
+        };
+        assert_eq!((b.keep, b.engine), (3, Engine::SevenZip));
+
+        // Esc at any step saves nothing; Locations isn't a folder to sync.
+        press(&mut l.app, ":sync new<CR><CR><Esc><Esc>");
+        assert_eq!(l.app.pins.pins.len(), 2);
+        press(&mut l.app, "gl");
+        press(&mut l.app, ":sync new<CR>");
+        assert!(
+            status(&l.app).contains("go to the folder"),
+            "{}",
+            status(&l.app)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

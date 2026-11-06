@@ -394,6 +394,17 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
             if let Some(m) = extra("mode") {
                 lines.push(info_line("Mode", m));
             }
+            if pin.kind == PinKind::Backup {
+                let keep = match pin.extra.get("keep").and_then(|v| v.as_integer()) {
+                    None | Some(0) => "all zips".to_string(),
+                    Some(n) => format!("newest {n}"),
+                };
+                lines.push(info_line("Keep", keep));
+                lines.push(info_line(
+                    "Engine",
+                    extra("engine").unwrap_or_else(|| "builtin".into()),
+                ));
+            }
             if matches!(pin.kind, PinKind::Sync | PinKind::Backup) {
                 let last = app.last_run_line(pin).unwrap_or_else(|| "never".into());
                 lines.push(info_line("Last run", truncate(&last, vw)));

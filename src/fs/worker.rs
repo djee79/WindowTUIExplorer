@@ -1000,6 +1000,15 @@ impl Worker {
         cancel
     }
 
+    /// Looks for 7-Zip once: one `SevenZip`.
+    pub fn find_7z(&self) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let found = crate::jobs::zip::find_7z().map(|p| p.display().to_string());
+            let _ = tx.send(AppEvent::SevenZip(found));
+        });
+    }
+
     /// The presets' last runs: one `PresetRuns`.
     pub fn load_preset_runs(&self) {
         let tx = self.tx.clone();

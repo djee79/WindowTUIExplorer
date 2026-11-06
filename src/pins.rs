@@ -89,7 +89,7 @@ pub struct Pin {
 }
 
 impl Pin {
-    fn blank(kind: PinKind, name: &str) -> Pin {
+    pub(crate) fn blank(kind: PinKind, name: &str) -> Pin {
         Pin {
             kind,
             name: name.to_string(),
@@ -584,6 +584,14 @@ pub fn serialize(store: &PinStore) -> Result<String, String> {
 
 /// `%APPDATA%\sentier\pins.toml`, or None when APPDATA isn't set.
 pub fn store_path() -> Option<PathBuf> {
+    // Tests never read or write the user's own file.
+    if cfg!(test) {
+        return Some(
+            std::env::temp_dir()
+                .join(format!("sentier-test-store-{}", std::process::id()))
+                .join(FILE_NAME),
+        );
+    }
     let base = std::env::var_os("APPDATA")?;
     Some(PathBuf::from(base).join("sentier").join(FILE_NAME))
 }

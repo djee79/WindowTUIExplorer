@@ -743,3 +743,39 @@ Manual checklist:
 - [ ] The task above runs at 2 a.m.; Task Scheduler's "Last Run Result" is 0x1.
 - [ ] A broken share: the task's result is 8 or more, and the report shows in `J` next day.
 - [ ] `sentier run "HIT → local"` on a mirror preset doesn't delete local extras.
+
+## M4b finished: presets made in the app, 7-Zip engine (code complete 2026-11-06)
+
+**M4b is code complete.** Nothing in section 9 is left to build (the in-use check was
+dropped on purpose; the per-share index is a stretch goal of M2a).
+
+- **Presets are made and edited in sentier**, no TOML by hand:
+  - `:sync new` / `:backup new` in the folder to copy from. Prompts: name (`HIT → local`,
+    `HIT backup`) → source (prefilled) → for a sync: local copy, then mode (`update` |
+    `mirror`, the note spells out what mirror deletes); for a backup: zips folder, keep
+    (default 10), and the engine when 7-Zip is installed → tags → key.
+  - Path fields take any path form, `~`, or a path relative to the cwd, and **Tab
+    completes folders** like `:cd`.
+  - Each field is checked as it's entered (dest inside the source, zips inside the
+    source, keep not a number…): the prompt stays open with the reason. The whole preset
+    is then checked as the loader and `sentier run` see it. `Esc` at any step saves nothing.
+  - `^e` on a preset in a picker walks the same fields, prefilled.
+- **7-Zip engine** (`engine = "7zip"` on a backup preset; default `builtin`):
+  `7z a -tzip -mx=<0|1|5|9> -mmt=on`, run in the source folder, progress from its `NN%`
+  output, everything else into the job log, cancel kills it. Exit 1 (a file it couldn't
+  read) fails the backup. 7-Zip missing → built-in writer, with a note in the log.
+  Found on PATH or in Program Files, once, on the worker at startup.
+  - The "offer": when 7-Zip is installed and a preset uses the built-in writer, the backup
+    question says so; the wizard asks for the engine only when 7-Zip is there.
+- Verification now checks the **file** count (folder entries differ between writers) and
+  still reads every entry back with its CRC.
+- Picker preview of a backup pin: keep, engine, last run.
+- Tests can no longer read or write the real `pins.toml` / `shares.toml`: `store_path()`
+  points at a temp folder under `cargo test`.
+
+Manual checklist:
+- [ ] `:sync new` in `\srv01\project\HIT`, Tab to `D:\aveva\local\HIT`, mirror: the pin
+      appears in `<leader>p` with its fields; Enter previews.
+- [ ] `:backup new` with 7-Zip installed: engine 7zip; a big project zips noticeably faster
+      than builtin; the zip opens in Explorer.
+- [ ] `^e` on that backup: change keep; `pins.toml` shows the new value.

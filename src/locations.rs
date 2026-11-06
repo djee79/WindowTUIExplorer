@@ -17,6 +17,14 @@ const HEADER: &str = "# sentier saved shares: one \\\\server\\share per line.\n\
 
 /// `%APPDATA%\sentier\shares.txt`, or None when APPDATA isn't set.
 pub fn store_path() -> Option<PathBuf> {
+    // Tests never read or write the user's own file.
+    if cfg!(test) {
+        return Some(
+            std::env::temp_dir()
+                .join(format!("sentier-test-store-{}", std::process::id()))
+                .join(FILE_NAME),
+        );
+    }
     let base = std::env::var_os("APPDATA")?;
     Some(PathBuf::from(base).join("sentier").join(FILE_NAME))
 }

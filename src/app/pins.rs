@@ -5,7 +5,7 @@
 //! which already has one). The draft lives in [`PinDraft`] until the last step, so `Esc`
 //! at any step pins nothing. Every change saves the whole store through the worker.
 
-use super::keys::PromptKind;
+use super::keys::{PresetField, PromptKind};
 use super::picker::Reopen;
 use super::{App, Loc};
 use crate::fs::{Entry, EntryKind};
@@ -24,6 +24,8 @@ pub struct PinDraft {
     single: bool,
     /// Started from a picker: reopen it when done.
     reopen: Option<Reopen>,
+    /// A sync / backup preset's fields still to ask, between the name and the tags.
+    fields: Vec<PresetField>,
 }
 
 impl PinDraft {
@@ -35,6 +37,7 @@ impl PinDraft {
             ask_key,
             single: false,
             reopen: None,
+            fields: Vec::new(),
         }
     }
 }
@@ -320,6 +323,7 @@ impl App {
         let pin = self.pins.pins.get(idx)?.clone();
         Some(PinDraft {
             key: pin.key_char(),
+            fields: self.preset_fields(&pin),
             pin,
             editing: Some(idx),
             ask_key: true,
@@ -415,7 +419,30 @@ impl App {
                     return Err("a pin needs a name".to_string());
                 }
                 d.pin.name = name.to_string();
-                Some(PromptKind::PinTags)
+                Some(
+                    d.fields
+                        .first()
+                        .map_or(PromptKind::PinTags, |f| PromptKind::Preset(*f)),
+                )
+            }
+            PromptKind::Preset(f) => {
+                if let Err(e) = self.set_preset_field(&mut d.pin, f, text) {
+                    self.pin_draft = Some(d);
+                    return Err(e);
+                }
+                d.fields.retain(|x| *x != f);
+                match d.fields.first() {
+                    Some(next) => Some(PromptKind::Preset(*next)),
+                    None => {
+                        // The whole preset, as `sentier run` and the loader will see it.
+                        if let Err(e) = check_preset(&d.pin) {
+                            d.fields.insert(0, f);
+                            self.pin_draft = Some(d);
+                            return Err(e);
+                        }
+                        Some(PromptKind::PinTags)
+                    }
+                }
             }
             PromptKind::PinTags => match pins::parse_tags(text) {
                 Ok(tags) => {
@@ -454,6 +481,7 @@ impl App {
                 let prefill = match next {
                     PromptKind::PinTags => d.pin.tags.join(" "),
                     PromptKind::PinKey => d.key.map(String::from).unwrap_or_default(),
+                    PromptKind::Preset(f) => preset_value(&d.pin, f),
                     _ => String::new(),
                 };
                 self.pin_draft = Some(d);
@@ -551,6 +579,180 @@ impl App {
         let (best, _) = self.tag_candidates(text).into_iter().next()?;
         let head = &text[..text.len() - last_word(text).len()];
         Some(format!("{head}{best} "))
+    }
+}
+
+// ------------------------------------------------------------------ presets
+
+impl App {
+    /// The preset fields a pin's prompts ask for. The 7-Zip engine is only offered when
+    /// 7-Zip is installed (or the pin already names an engine).
+    fn preset_fields(&self, pin: &Pin) -> Vec<PresetField> {
+        use PresetField::*;
+        match pin.kind {
+            PinKind::Sync => vec![Source, Dest, Mode],
+            PinKind::Backup => {
+                let mut v = vec![Source, DestDir, Keep];
+                if self.seven_zip.is_some() || pin.extra.contains_key("engine") {
+                    v.push(Engine);
+                }
+                v
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// `:sync new` / `:backup new`: a preset whose source is the current folder, through
+    /// prompts: name → source → dest (mode | zips folder, keep, engine) → tags → key.
+    pub(super) fn new_preset(&mut self, kind: PinKind) {
+        if !self.pins_ready() {
+            return;
+        }
+        let Some(src) = self.cwd.real().as_fs().cloned() else {
+            return self.set_status(format!("go to the folder to {} first", kind.label()), true);
+        };
+        let name = match kind {
+            PinKind::Sync => format!("{} → local", src.name()),
+            _ => format!("{} backup", src.name()),
+        };
+        let mut pin = Pin::blank(kind, &name);
+        pin.extra
+            .insert("source".into(), toml::Value::String(src.display()));
+        match kind {
+            PinKind::Sync => {
+                pin.extra
+                    .insert("mode".into(), toml::Value::String("update".into()));
+            }
+            _ => {
+                pin.extra.insert("keep".into(), toml::Value::Integer(10));
+            }
+        }
+        let mut d = PinDraft::new(pin, None, true);
+        d.fields = self.preset_fields(&d.pin);
+        self.start_draft(d);
+    }
+
+    /// A folder typed in a preset field: `~`, relative to the cwd, any path form.
+    fn preset_path(&self, text: &str) -> Result<crate::fs::path::FsPath, String> {
+        let t = super::keys::expand_home(text)?;
+        if t.trim().is_empty() {
+            return Err("a folder path, please (Tab completes)".into());
+        }
+        match Loc::resolve(&self.cwd, t.trim()) {
+            Ok(Loc::Fs(p)) => Ok(p),
+            Ok(_) => Err("a real folder (C:\\…, \\\\server\\share\\…), not a virtual one".into()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Checks one field and writes it into the pin. Err keeps the prompt open.
+    fn set_preset_field(&self, pin: &mut Pin, f: PresetField, text: &str) -> Result<(), String> {
+        use crate::jobs::preset::check_paths;
+        let source = || {
+            pin.extra
+                .get("source")
+                .and_then(|v| v.as_str())
+                .and_then(|s| self.preset_path(s).ok())
+        };
+        let (key, value) = match f {
+            PresetField::Source => (
+                "source",
+                toml::Value::String(self.preset_path(text)?.display()),
+            ),
+            PresetField::Dest => {
+                let dest = self.preset_path(text)?;
+                if let Some(src) = source() {
+                    check_paths(&src, &dest)?;
+                }
+                ("dest", toml::Value::String(dest.display()))
+            }
+            PresetField::DestDir => {
+                let dir = self.preset_path(text)?;
+                if let Some(src) = source()
+                    && let Err(e) = check_paths(&src, &dir)
+                    && !e.contains("source is inside dest")
+                {
+                    return Err(format!(
+                        "{} (zips can't go into the folder they back up)",
+                        e.replace("dest", "the zips folder")
+                    ));
+                }
+                ("dest_dir", toml::Value::String(dir.display()))
+            }
+            PresetField::Mode => {
+                let m = match text.trim().to_ascii_lowercase().as_str() {
+                    "u" | "update" | "" => "update",
+                    "m" | "mirror" => "mirror",
+                    other => return Err(format!("{other:?}: update or mirror")),
+                };
+                ("mode", toml::Value::String(m.into()))
+            }
+            PresetField::Keep => match text.trim().parse::<i64>() {
+                Ok(n) if (0..=10_000).contains(&n) => ("keep", toml::Value::Integer(n)),
+                _ => return Err("a number: how many zips to keep (0 keeps all)".into()),
+            },
+            PresetField::Engine => {
+                let e = crate::jobs::zip::Engine::parse(text)?;
+                ("engine", toml::Value::String(e.word().into()))
+            }
+        };
+        pin.extra.insert(key.into(), value);
+        Ok(())
+    }
+
+    /// The line under a preset field: what it's for.
+    pub(super) fn preset_note(&self, f: PresetField, text: &str) -> String {
+        match f {
+            PresetField::Source => "the folder to copy from · Tab completes".into(),
+            PresetField::Dest => "the local working copy; never inside the source · Tab completes".into(),
+            PresetField::Mode if text.trim().to_ascii_lowercase().starts_with('m') => {
+                "mirror: the local copy becomes exact; local files not on the server are DELETED (always previewed)".into()
+            }
+            PresetField::Mode => "update: copies new and changed files, never deletes · mirror: exact copy".into(),
+            PresetField::DestDir => "folder for the zips, local or \\\\server\\share · Tab completes".into(),
+            PresetField::Keep => "older zips of this preset beyond that are deleted after a good backup".into(),
+            PresetField::Engine => match &self.seven_zip {
+                Some(p) => format!("7zip: faster, multi-threaded ({p}) · builtin: always works"),
+                None => "7-Zip isn't installed here: builtin is used either way".into(),
+            },
+        }
+    }
+}
+
+/// A preset field's current value, to prefill its prompt.
+fn preset_value(pin: &Pin, f: PresetField) -> String {
+    let get = |k: &str| pin.extra.get(k);
+    let s = |k: &str| {
+        get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    match f {
+        PresetField::Source => s("source"),
+        PresetField::Dest => s("dest"),
+        PresetField::DestDir => s("dest_dir"),
+        PresetField::Mode => get("mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("update")
+            .into(),
+        PresetField::Keep => get("keep")
+            .and_then(|v| v.as_integer())
+            .unwrap_or(0)
+            .to_string(),
+        PresetField::Engine => get("engine")
+            .and_then(|v| v.as_str())
+            .unwrap_or("builtin")
+            .into(),
+    }
+}
+
+/// The whole preset, checked as the loader and `sentier run` will.
+fn check_preset(pin: &Pin) -> Result<(), String> {
+    match pin.kind {
+        PinKind::Sync => crate::jobs::preset::SyncPreset::from_pin(pin).map(|_| ()),
+        PinKind::Backup => crate::jobs::zip::BackupPreset::from_pin(pin).map(|_| ()),
+        _ => Ok(()),
     }
 }
 
