@@ -17,6 +17,7 @@ use super::{Entry, EntryKind, Listing, natural_cmp, sort_entries};
 use crate::event::{AppEvent, EventTx};
 use crate::keymap;
 use crate::locations;
+use crate::pins::{self, PinStore};
 use crate::platform::{self, DriveKind};
 use crate::search::SearchMatcher;
 use crate::search::content::MatchPreview;
@@ -132,6 +133,7 @@ pub struct Worker {
     tx: EventTx,
     timeouts: Timeouts,
     next_id: AtomicU64,
+    pins_save: mpsc::UnboundedSender<PinStore>,
 }
 
 enum Batch {
@@ -142,11 +144,14 @@ enum Batch {
 
 impl Worker {
     pub fn new(rt: Handle, tx: EventTx, timeouts: Timeouts) -> Self {
+        let (pins_save, pins_rx) = mpsc::unbounded_channel();
+        rt.spawn(pins_writer(pins_rx, tx.clone()));
         Worker {
             rt,
             tx,
             timeouts,
             next_id: AtomicU64::new(1),
+            pins_save,
         }
     }
 
@@ -160,21 +165,22 @@ impl Worker {
     /// Lists `loc`. Sends `ListProgress` events while reading and one `Listed` at the end.
     /// For the Locations root use [`Worker::list_root`], which also needs the saved shares.
     pub fn list(&self, loc: Loc) -> Request {
-        self.spawn_list(loc, Vec::new())
+        self.spawn_list(loc, Vec::new(), Vec::new())
     }
 
-    /// Lists the Locations root: drives (with labels and mapped targets), then `shares`.
-    pub fn list_root(&self, shares: Vec<FsPath>) -> Request {
-        self.spawn_list(Loc::Root, shares)
+    /// Lists the Locations root: `pins` (pinned-folder entries, as given), drives (with
+    /// labels and mapped targets), then `shares`.
+    pub fn list_root(&self, shares: Vec<FsPath>, pins: Vec<Entry>) -> Request {
+        self.spawn_list(Loc::Root, shares, pins)
     }
 
-    fn spawn_list(&self, loc: Loc, shares: Vec<FsPath>) -> Request {
+    fn spawn_list(&self, loc: Loc, shares: Vec<FsPath>, pins: Vec<Entry>) -> Request {
         let req = self.new_request();
         let (id, cancel, tx, timeouts) =
             (req.id, req.cancel.clone(), self.tx.clone(), self.timeouts);
         self.rt.spawn(async move {
             let result = match &loc {
-                Loc::Root => list_root(timeouts, shares).await,
+                Loc::Root => list_root(timeouts, shares, pins).await,
                 Loc::Server(server) => list_server(server.clone(), timeouts.network).await,
                 Loc::Fs(p) => {
                     let timeout = timeout_for(&loc, timeouts).await;
@@ -298,6 +304,29 @@ impl Worker {
         });
     }
 
+    /// Loads pins.toml. Sends one `PinsLoaded` (network timeout: APPDATA may be on a
+    /// share).
+    pub fn load_pins(&self) {
+        let (tx, timeout) = (self.tx.clone(), self.timeouts.network);
+        self.rt.spawn(async move {
+            let call = tokio::task::spawn_blocking(|| match pins::store_path() {
+                Some(path) => pins::load(&path),
+                None => Ok((PinStore::default(), Vec::new())),
+            });
+            let result = match tokio::time::timeout(timeout, call).await {
+                Ok(r) => r.unwrap_or_else(|e| Err(e.to_string())),
+                Err(_) => Err("pins.toml: timed out reading %APPDATA%".to_string()),
+            };
+            let _ = tx.send(AppEvent::PinsLoaded(result));
+        });
+    }
+
+    /// Saves pins.toml. Reports only failures, as `PinsSaveFailed`. Saves go through one
+    /// writer task, in order, so a later save always lands last.
+    pub fn save_pins(&self, store: PinStore) {
+        let _ = self.pins_save.send(store);
+    }
+
     /// Starts a recursive name search under `root`. Hits stream in as `SearchProgress`.
     pub fn search(&self, id: u64, root: &FsPath, matcher: Arc<SearchMatcher>) -> CancelToken {
         let cancel = CancelToken::default();
@@ -396,9 +425,14 @@ async fn timeout_for(loc: &Loc, t: Timeouts) -> Duration {
     t.local
 }
 
-/// Drives first (in letter order), then saved shares (in natural order). Not sorted with
-/// `sort_entries`: the Locations screen shows these as two sections.
-async fn list_root(t: Timeouts, shares: Vec<FsPath>) -> Result<Vec<Entry>, ListError> {
+/// Pinned folders first (in pin order), drives (in letter order), then saved shares (in
+/// natural order). Not sorted with
+/// `sort_entries`: the Locations screen shows these as sections.
+async fn list_root(
+    t: Timeouts,
+    shares: Vec<FsPath>,
+    pins: Vec<Entry>,
+) -> Result<Vec<Entry>, ListError> {
     let call = tokio::task::spawn_blocking(|| {
         platform::drives()
             .into_iter()
@@ -418,7 +452,7 @@ async fn list_root(t: Timeouts, shares: Vec<FsPath>) -> Result<Vec<Entry>, ListE
             })
             .collect::<Vec<_>>()
     });
-    let mut entries = match tokio::time::timeout(t.network, call).await {
+    let drives = match tokio::time::timeout(t.network, call).await {
         Ok(Ok(d)) => d,
         Ok(Err(e)) => return Err(ListError::Other(e.to_string())),
         Err(_) => return Err(ListError::TimedOut),
@@ -428,10 +462,28 @@ async fn list_root(t: Timeouts, shares: Vec<FsPath>) -> Result<Vec<Entry>, ListE
         .map(|p| Entry::virtual_entry(p.display(), EntryKind::Share, String::new()))
         .collect();
     saved.sort_by(|a, b| natural_cmp(&a.name, &b.name));
+    let mut entries = pins;
+    entries.extend(drives);
     entries.extend(saved);
     Ok(entries)
 }
 
+/// The pins.toml writer: saves in the order asked, skipping to the newest store when
+/// several are queued (each one is the whole store).
+async fn pins_writer(mut rx: mpsc::UnboundedReceiver<PinStore>, tx: EventTx) {
+    while let Some(mut store) = rx.recv().await {
+        while let Ok(newer) = rx.try_recv() {
+            store = newer;
+        }
+        let call = tokio::task::spawn_blocking(move || match pins::store_path() {
+            Some(path) => pins::save(&path, &store),
+            None => Err("APPDATA is not set".to_string()),
+        });
+        if let Err(e) = call.await.unwrap_or_else(|e| Err(e.to_string())) {
+            let _ = tx.send(AppEvent::PinsSaveFailed(e));
+        }
+    }
+}
 /// A server node: its browsable disk shares through `NetShareEnum`.
 async fn list_server(server: String, timeout: Duration) -> Result<Vec<Entry>, ListError> {
     let call = tokio::task::spawn_blocking(move || platform::shares(&server));

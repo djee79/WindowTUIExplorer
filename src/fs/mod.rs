@@ -16,6 +16,9 @@ pub enum EntryKind {
     /// A share: in a server node's listing (named `share`), or a saved share in the
     /// Locations root (named `\\server\share`).
     Share,
+    /// A pinned folder in the Locations root, named by its full path; `detail` holds the
+    /// pin's name.
+    Pin,
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +110,19 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
             }
         }
     }
+}
+
+/// Writes `contents` to `path` atomically: a temp file next to it, then a rename over
+/// it, so a crash mid-write never leaves a truncated file. Creates the parent dir.
+/// Blocking; only worker tasks call it.
+pub fn write_atomic(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    std::fs::write(&tmp, contents)?;
+    std::fs::rename(&tmp, path)
 }
 
 #[cfg(test)]

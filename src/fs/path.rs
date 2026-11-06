@@ -262,16 +262,19 @@ impl Loc {
 
     /// The child named `name` as it appears in this location's listing.
     ///
-    /// The Locations root lists drives by letter (`C:`) and saved shares by their full
-    /// root (`\\server\share`), so both join back to the location they name.
+    /// The Locations root lists drives by letter (`C:`), and saved shares and pinned
+    /// folders by their full path (`\\server\share`, `D:\aveva\local\HIT`), so each joins
+    /// back to the location it names.
     pub fn join(&self, name: &str) -> Result<Loc, PathError> {
         match self {
             Loc::Root => match split_drive(name) {
                 Some((letter, tail)) if tail.is_empty() || tail == "\\" => build_drive(letter, ""),
-                _ if name.starts_with(r"\\") => match Loc::parse(name)? {
-                    Loc::Fs(p) if p.is_network() && p.is_volume_root() => Ok(Loc::Fs(p)),
-                    _ => Err(PathError::Invalid(format!("not a share root: {name}"))),
-                },
+                _ if name.starts_with(r"\\") || split_drive(name).is_some() => {
+                    match Loc::parse(name)? {
+                        loc @ (Loc::Fs(_) | Loc::Server(_)) => Ok(loc),
+                        _ => Err(PathError::Invalid(format!("not a location: {name}"))),
+                    }
+                }
                 _ => Err(PathError::Invalid(format!("not a location: {name}"))),
             },
             Loc::Server(server) => {
@@ -636,6 +639,15 @@ mod tests {
             assert!(c.join(bad).is_err(), "{bad}");
         }
         assert!(Loc::Root.join("nope").is_err());
+        // Pinned folders are listed by their full path.
+        for full in [r"C:\work\HIT", r"\\srv\STD$\cat", r"\\srv\share", r"\\srv"] {
+            assert_eq!(
+                Loc::Root.join(full).map(|l| l.display()).as_deref(),
+                Ok(full),
+                "{full}"
+            );
+        }
+        assert!(Loc::Root.join(r"\dir").is_err());
         assert_eq!(
             Loc::Root.join("d:").map(|l| l.display()),
             Ok(r"D:\".to_string())
@@ -732,8 +744,8 @@ mod tests {
                 Ok(*want)
             );
         }
-        // Only share roots: not a server node, not a path below a share.
-        for bad in [r"\\srv", r"\\srv\share\dir", r"\\"] {
+        // Full paths (pinned folders) join too; relative names and garbage don't.
+        for bad in [r"\\", "dir", r"\dir", r"C:dir"] {
             assert!(Loc::Root.join(bad).is_err(), "{bad}");
         }
     }

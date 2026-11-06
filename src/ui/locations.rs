@@ -1,5 +1,5 @@
 //! The Locations root as its own screen (docs/screens/02-locations.txt): a sectioned list
-//! (DRIVES, SHARES; PINNED FOLDERS joins in M3) with reachability dots, and a detail panel.
+//! (PINNED FOLDERS, DRIVES, SHARES) with reachability dots, and a detail panel.
 
 use super::columns::{draw_state, fmt_second, info_line, panel, scrolled_offset};
 use super::theme::{self, DIM, ERR, FG, NET, OK, SEL_BG};
@@ -20,6 +20,7 @@ const NAME_W: usize = 19;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
+    Pinned,
     Drives,
     Shares,
 }
@@ -28,11 +29,13 @@ impl Section {
     fn of(e: &Entry) -> Section {
         match e.kind {
             EntryKind::Share => Section::Shares,
+            EntryKind::Pin => Section::Pinned,
             _ => Section::Drives,
         }
     }
     fn title(self) -> &'static str {
         match self {
+            Section::Pinned => "PINNED FOLDERS",
             Section::Drives => "DRIVES",
             Section::Shares => "SHARES",
         }
@@ -67,6 +70,14 @@ fn draw_list(f: &mut Frame, area: Rect, app: &mut App) {
     let mut lines: Vec<Line> = vec![Line::default()];
     let mut cursor_line = 0;
     let mut current: Option<Section> = None;
+    if app.filter.is_empty() && !listing.entries.iter().any(|e| e.kind == EntryKind::Pin) {
+        lines.push(header(Section::Pinned));
+        lines.push(Line::from(Span::styled(
+            "  none yet: in a folder, m{key} pins it ('{key} jumps back); M pins the item under the cursor",
+            theme::dim(),
+        )));
+        lines.push(Line::default());
+    }
     for (row, &i) in app.view.iter().enumerate() {
         let e = &listing.entries[i];
         let section = Section::of(e);
@@ -163,6 +174,14 @@ fn row_line(app: &App, e: &Entry, w: usize, is_cursor: bool) -> Line<'static> {
             (e.name.clone(), "→".to_string(), e.detail.clone(), NET)
         }
         EntryKind::Drive(_) => (e.name.clone(), e.detail.clone(), String::new(), FG),
+        EntryKind::Pin => {
+            let key = app
+                .pin_of(e)
+                .and_then(|p| p.key_char())
+                .map(|c| format!("'{c}"))
+                .unwrap_or_default();
+            (key, e.detail.clone(), e.name.clone(), FG)
+        }
         _ => (String::new(), String::new(), e.name.clone(), NET),
     };
     let right = match (&reach.as_ref().and_then(|r| r.last.clone()), e.kind) {
@@ -233,6 +252,30 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
                 lines.push(info_line("Label", e.detail.clone()));
             }
         }
+        EntryKind::Pin => {
+            let pin = app.pin_of(e);
+            let tags = pin
+                .map(|p| {
+                    p.tags
+                        .iter()
+                        .map(|t| format!("#{t}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default();
+            lines.push(info_line("Kind", "folder pin".to_string()));
+            lines.push(info_line("Path", truncate_left(&e.name, vw)));
+            let key = pin.and_then(|p| p.key_char());
+            lines.push(info_line(
+                "Key",
+                key.map_or("none (m{key} in the folder sets one)".to_string(), |c| {
+                    format!("'{c}")
+                }),
+            ));
+            if !tags.is_empty() {
+                lines.push(info_line("Tags", truncate(&tags, vw)));
+            }
+        }
         _ => {
             lines.push(info_line("Kind", "saved share".to_string()));
             lines.push(info_line("Path", truncate_left(&e.name, vw)));
@@ -260,6 +303,16 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
         hints.push(Span::styled(" remove from list", theme::dim()));
     }
     lines.push(Line::from(hints));
+    if e.kind == EntryKind::Pin {
+        lines.push(Line::from(vec![
+            Span::styled(" r", theme::bold(FG)),
+            Span::styled(" rename    ", theme::dim()),
+            Span::styled("T", theme::bold(FG)),
+            Span::styled(" tags           ", theme::dim()),
+            Span::styled("dd", theme::bold(FG)),
+            Span::styled(" unpin", theme::dim()),
+        ]));
+    }
     f.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -320,14 +373,11 @@ pub fn summary(app: &App) -> String {
     let Some(listing) = app.view_listing.as_ref() else {
         return String::new();
     };
-    let shares = listing
-        .entries
-        .iter()
-        .filter(|e| e.kind == EntryKind::Share)
-        .count();
-    let drives = listing.entries.len() - shares;
+    let count = |k: EntryKind| listing.entries.iter().filter(|e| e.kind == k).count();
+    let (shares, pins) = (count(EntryKind::Share), count(EntryKind::Pin));
+    let drives = listing.entries.len() - shares - pins;
     format!(
-        "{} locations  ·  {drives} drives  ·  {shares} shares",
+        "{} locations  ·  {pins} pinned folders  ·  {drives} drives  ·  {shares} shares",
         listing.entries.len()
     )
 }

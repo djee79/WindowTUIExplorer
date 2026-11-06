@@ -92,6 +92,7 @@ impl Key {
             KeyCode::PageDown => "PageDown".to_string(),
             KeyCode::Insert => "Insert".to_string(),
             KeyCode::F(n) => format!("F{n}"),
+            KeyCode::Null => "char".to_string(),
             other => format!("{other:?}"),
         };
         let mods = format!(
@@ -105,6 +106,39 @@ impl Key {
             name
         } else {
             format!("<{mods}{name}>")
+        }
+    }
+}
+
+/// `<char>` in a binding: any plain character (no Ctrl/Alt), handed to the action.
+pub const ANY_CHAR: Key = Key::plain(KeyCode::Null);
+
+impl Key {
+    /// The character a `<char>` slot takes: a plain printable key.
+    pub fn plain_char(&self) -> Option<char> {
+        match self.code {
+            KeyCode::Char(c) if !self.ctrl && !self.alt && c != ' ' => Some(c),
+            _ => None,
+        }
+    }
+}
+
+/// Binding keys against pressed keys, `<char>` matching any plain character.
+fn keys_match(binding: &[Key], pressed: &[Key]) -> bool {
+    binding.len() == pressed.len()
+        && binding
+            .iter()
+            .zip(pressed)
+            .all(|(b, p)| b == p || (*b == ANY_CHAR && p.plain_char().is_some()))
+}
+
+impl Action {
+    /// Fills a `<char>` action's character from the key that completed it.
+    pub fn with_char(self, last: &Key) -> Action {
+        match (self, last.plain_char()) {
+            (Action::SetMark(_), Some(c)) => Action::SetMark(c),
+            (Action::JumpMark(_), Some(c)) => Action::JumpMark(c),
+            (other, _) => other,
         }
     }
 }
@@ -169,6 +203,8 @@ fn parse_special(inner: &str, leader: Key) -> Result<Key, String> {
         "pageup" => KeyCode::PageUp,
         "pagedown" => KeyCode::PageDown,
         "insert" => KeyCode::Insert,
+        // `m<char>`: any plain character, passed to the action (vim's `m{a-zA-Z}`).
+        "char" => KeyCode::Null,
         f if f.len() > 1 && f.starts_with('f') && f[1..].parse::<u8>().is_ok() => {
             KeyCode::F(f[1..].parse().unwrap_or(1))
         }
@@ -248,6 +284,15 @@ pub enum Action {
     Refresh,
     Delete,
     CommandLine,
+    /// `m<char>`: pin the current folder under that key (a vim mark).
+    SetMark(char),
+    /// `'<char>`: jump to / open the pin with that key.
+    JumpMark(char),
+    /// `M`: pin the item under the cursor.
+    PinItem,
+    /// `T` on a pin in Locations: edit its tags. `r` there renames it.
+    EditPinTags,
+    RenamePin,
     /// `g<Space>`: the `:cd ` prompt, ready for a path (Yazi's `g<Space>`).
     GotoPath,
     Help,
@@ -306,6 +351,11 @@ const NAMED: &[(&str, Action)] = &[
     ("refresh", Action::Refresh),
     ("delete", Action::Delete),
     ("command-line", Action::CommandLine),
+    ("set-mark", Action::SetMark('\0')),
+    ("jump-mark", Action::JumpMark('\0')),
+    ("pin-item", Action::PinItem),
+    ("edit-pin-tags", Action::EditPinTags),
+    ("rename-pin", Action::RenamePin),
     ("goto-path", Action::GotoPath),
     ("help", Action::Help),
     ("quit", Action::Quit),
@@ -467,6 +517,11 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("<C-o>", Back, ""),
         ("L", Forward, "forward in history"),
         ("''", PreviousDir, "previous directory"),
+        ("'<char>", JumpMark('\0'), "jump to a pin"),
+        ("m<char>", SetMark('\0'), "pin this folder under a key"),
+        ("M", PinItem, "pin the item under the cursor"),
+        ("T", EditPinTags, "edit a pin's tags (Locations)"),
+        ("r", RenamePin, "rename (Locations: a pin)"),
         ("~", Cd("~".to_string()), "home"),
         ("gl", Locations, "Locations"),
         ("gd", Downloads, "Downloads"),
@@ -494,7 +549,8 @@ fn group_label(prefix: &[Key], leader: Key) -> &'static str {
             KeyCode::Char('z') => "scroll",
             KeyCode::Char('d') => "delete",
             KeyCode::Char('Z') => "quit",
-            KeyCode::Char('\'') => "jump",
+            KeyCode::Char('\'') => "jump to a pin",
+            KeyCode::Char('m') => "pin this folder as",
             KeyCode::Char(',') => "results",
             _ => "more",
         },
@@ -529,33 +585,53 @@ fn build_defaults(leader: Key) -> Vec<Binding> {
 
 impl Keymap {
     pub fn lookup(&self, pressed: &[Key]) -> Lookup<'_> {
-        let mut exact = None;
+        // An exact binding beats a `<char>` one: `''` wins over `'<char>`.
+        let (mut exact, mut wild) = (None, None);
         let mut longer = false;
         for b in &self.normal {
-            if b.keys.len() < pressed.len() || b.keys[..pressed.len()] != *pressed {
+            if b.keys.len() < pressed.len() || !keys_match(&b.keys[..pressed.len()], pressed) {
                 continue;
             }
-            if b.keys.len() == pressed.len() {
-                exact.get_or_insert(&b.action);
-            } else {
+            if b.keys.len() > pressed.len() {
                 longer = true;
+            } else if b.keys.contains(&ANY_CHAR) {
+                wild.get_or_insert(&b.action);
+            } else {
+                exact.get_or_insert(&b.action);
             }
         }
-        match (exact, longer) {
+        match (exact.or(wild), longer) {
             (Some(action), longer) => Lookup::Exact { action, longer },
             (None, true) => Lookup::Prefix,
             (None, false) => Lookup::None,
         }
     }
 
+    /// The action a `<char>` binding would run after `pressed` (`'` → jump-mark), for
+    /// the which-key popup to list what the character can be.
+    pub fn char_action(&self, pressed: &[Key]) -> Option<&Action> {
+        self.normal
+            .iter()
+            .find(|b| {
+                b.keys.len() == pressed.len() + 1
+                    && b.keys[pressed.len()] == ANY_CHAR
+                    && keys_match(&b.keys[..pressed.len()], pressed)
+            })
+            .map(|b| &b.action)
+    }
+
     /// The which-key rows after `pressed`, in table order, one per next key.
     pub fn continuations(&self, pressed: &[Key]) -> Vec<Continuation> {
         let mut out: Vec<Continuation> = Vec::new();
         for b in &self.normal {
-            if b.keys.len() <= pressed.len() || b.keys[..pressed.len()] != *pressed {
+            if b.keys.len() <= pressed.len() || !keys_match(&b.keys[..pressed.len()], pressed) {
                 continue;
             }
             let key = b.keys[pressed.len()];
+            // `<char>` continuations are listed by the popup from app state (pins).
+            if key == ANY_CHAR {
+                continue;
+            }
             let group = b.keys.len() > pressed.len() + 1;
             if let Some(existing) = out.iter_mut().find(|c| c.key == key) {
                 // A direct binding beats "+group"; a described one beats an alias.
@@ -968,6 +1044,34 @@ mod tests {
             map.normal.len(),
             Keymap::default().normal.len(),
             "defaults kept"
+        );
+    }
+
+    #[test]
+    fn char_bindings_take_any_plain_character() {
+        let map = Keymap::default();
+        let run = |keys: &str| match map.lookup(&k(keys)) {
+            Lookup::Exact { action, .. } => {
+                let last = k(keys).last().copied().unwrap_or(ANY_CHAR);
+                Some(action.clone().with_char(&last))
+            }
+            _ => None,
+        };
+        assert_eq!(run("'a"), Some(Action::JumpMark('a')));
+        assert_eq!(run("'7"), Some(Action::JumpMark('7')));
+        assert_eq!(run("mZ"), Some(Action::SetMark('Z')));
+        assert_eq!(run("''"), Some(Action::PreviousDir), "exact beats <char>");
+        assert_eq!(run("m<C-a>"), None, "ctrl keys aren't characters");
+        assert_eq!(run("m<Space>"), None);
+        assert_eq!(map.lookup(&k("m")), Lookup::Prefix);
+        assert_eq!(map.char_action(&k("'")), Some(&Action::JumpMark('\0')));
+        assert!(
+            map.continuations(&k("'")).iter().all(|c| c.key != ANY_CHAR),
+            "the popup lists pins itself"
+        );
+        assert_eq!(
+            parse_keys("m<char>", SPACE).map(|v| fmt_keys(&v, SPACE)),
+            Ok("m<char>".into())
         );
     }
 }

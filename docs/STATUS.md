@@ -205,3 +205,34 @@ open-with": rules/openers, the `O` menu, `gR`, SHAssocEnumHandlers, inline Neovi
 Not yet (their milestones): `O` / `gR` open-with (M5), `m`/`M`/`'{key}` pins, `Tab v V` selection, `yy x p P`, `y*`
 path copies, `]p [p zp`, pickers and `<leader>` entries other than `l`,
 counts on operators.
+
+## M3 pins, slice 1: store, marks, Locations (code complete 2026-11-06, manual check pending)
+
+- `src/pins.rs`: `%APPDATA%\sentier\pins.toml`, all six kinds. Lenient load: a broken
+  `[[pin]]` is reported and written back unchanged (never dropped); unknown fields,
+  `[[view]]` and `[tags.*]` round-trip; bad tags/keys are dropped with a message.
+  Comments in a hand-edited file are lost on save (the `toml` crate drops them).
+  Atomic save through one writer task (newest store wins). Nothing is saved until the
+  file has been read, so a failed read never gets overwritten.
+- Keys: `m{key}` pins the current folder (or just moves the key if the folder is
+  already pinned, like a vim mark), `'{key}` jumps (folder) / opens (file), `''` back,
+  `M` pins the item under the cursor (dir → folder, .exe/.bat/.cmd/.lnk → app, else
+  file). Prompts: name → tags (Tab completes, most used first) → key. `Esc` pins nothing.
+- Keymap notation `<char>`: any plain character (`m<char>`, `'<char>`); an exact binding
+  (`''`) beats it. which-key after `'` lists every pin with its key; after `m`, the
+  keys already taken.
+- Locations: PINNED FOLDERS section first (dot, `'a`, name, path), probed like shares;
+  a known-unreachable pin stays put and re-probes. Detail panel shows key + tags.
+  On a pin: `r` rename, `T` tags, `dd` unpin (asks, `y` confirms).
+- App/web/sync/backup pins load and keep their `'` key, but run in M5/M4b.
+
+Manual checklist:
+- [ ] `g<Space>\homenas\Media<CR>`, `mm`, name + tags, then `gl`: pin listed with ●.
+- [ ] `'m` from anywhere jumps there; `''` comes back.
+- [ ] `'` and wait: which-key lists the pins.
+- [ ] Quit and restart: pins are still there (`%APPDATA%\sentier\pins.toml`).
+- [ ] Hand-edit pins.toml with a typo'd pin: startup says so, the pin survives a save.
+- [ ] Pin `\10.255.255.1\x` (edit the file): × after ~2 s, `'key` stays put.
+
+Next M3 slices: the generic nucleo picker + pin picker (`<leader>p`) with the tag
+query syntax (`#tag`, `is:`, `on:`), then `:tags` / `:tag rename|delete`, saved views.

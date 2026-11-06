@@ -5,6 +5,7 @@
 //! to the [`AppEvent`]s that come back.
 
 mod keys;
+mod pins;
 mod search;
 
 pub use keys::{Prompt, PromptKind};
@@ -169,6 +170,12 @@ pub struct App {
     pub shares: Vec<FsPath>,
     /// False until the store has been read; shares browsed before that are merged in.
     shares_loaded: bool,
+    /// The pin store (pins.toml), and whether it has been read: nothing is saved before
+    /// that, so a slow or failed read never gets overwritten.
+    pub pins: crate::pins::PinStore,
+    pins_loaded: bool,
+    /// A pin being made or edited through prompts.
+    pin_draft: Option<pins::PinDraft>,
     /// Reachability of Locations entries, keyed by the location each one opens.
     pub reach: HashMap<Loc, Reach>,
     last_probe_round: Option<Instant>,
@@ -219,6 +226,9 @@ impl App {
             grep_preview: None,
             shares: Vec::new(),
             shares_loaded: false,
+            pins: crate::pins::PinStore::default(),
+            pins_loaded: false,
+            pin_draft: None,
             reach: HashMap::new(),
             last_probe_round: None,
             status: None,
@@ -231,6 +241,7 @@ impl App {
             last_spin_frame: 0,
         };
         app.worker.load_shares();
+        app.worker.load_pins();
         app.worker.load_keymap();
         app.set_cwd(start, None);
         app
@@ -410,7 +421,9 @@ impl App {
             count: 0,
         });
         let req = match loc {
-            Loc::Root => self.worker.list_root(self.shares.clone()),
+            Loc::Root => self
+                .worker
+                .list_root(self.shares.clone(), self.pin_entries()),
             _ => self.worker.list(loc.clone()),
         };
         self.pending.insert(loc, req);
@@ -701,6 +714,11 @@ impl App {
                 tracing::warn!(error = %e, "couldn't save shares");
                 self.set_status(format!("couldn't save the shares list: {e}"), true);
             }
+            AppEvent::PinsLoaded(result) => self.on_pins_loaded(result),
+            AppEvent::PinsSaveFailed(e) => {
+                tracing::warn!(error = %e, "couldn't save pins");
+                self.set_status(format!("couldn't save pins: {e}"), true);
+            }
             AppEvent::KeymapLoaded(result) => self.on_keymap_loaded(result),
             AppEvent::SearchProgress {
                 id,
@@ -918,7 +936,7 @@ mod tests {
         })
     }
 
-    fn render(app: &mut App, w: u16, h: u16) -> String {
+    pub(super) fn render(app: &mut App, w: u16, h: u16) -> String {
         // TestBackend can't fail: its error type is Infallible.
         let Ok(mut term) = Terminal::new(TestBackend::new(w, h));
         let Ok(_) = term.draw(|f| ui::draw(f, app));
@@ -936,7 +954,7 @@ mod tests {
     }
 
     /// Builds an app at `C:\work` with canned listings (no real I/O).
-    fn fixture() -> (App, tokio::runtime::Runtime) {
+    pub(super) fn fixture() -> (App, tokio::runtime::Runtime) {
         let Ok(rt) = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
@@ -1016,7 +1034,7 @@ mod tests {
     }
 
     /// Types keys in vim notation (`gg`, `<Esc>`, `<CR>`, `<C-d>`, `<Space>`).
-    fn press(app: &mut App, keys: &str) {
+    pub(super) fn press(app: &mut App, keys: &str) {
         let space = crate::keymap::Key::plain(KeyCode::Char(' '));
         let Ok(keys) = crate::keymap::parse_keys(keys, space) else {
             panic!("keys {keys}")
@@ -1432,7 +1450,7 @@ mod tests {
         v.iter().filter_map(|s| loc(s).as_fs().cloned()).collect()
     }
 
-    fn listing_unsorted(entries: Vec<Entry>) -> Arc<Listing> {
+    pub(super) fn listing_unsorted(entries: Vec<Entry>) -> Arc<Listing> {
         Arc::new(Listing {
             entries,
             loaded_at: Instant::now(),
@@ -1464,7 +1482,7 @@ mod tests {
         );
         assert!(screen.contains("1 of 2 reachable"), "top bar summary");
         assert!(
-            screen.contains("4 locations  ·  2 drives  ·  2 shares"),
+            screen.contains("4 locations  ·  0 pinned folders  ·  2 drives  ·  2 shares"),
             "status line"
         );
         assert!(screen.contains("re-probed every 60 s"), "legend");
@@ -1560,5 +1578,176 @@ mod tests {
         });
         assert_eq!(app.view.len(), before);
         assert!(app.dir(&app.cwd).is_some_and(|s| s.error.is_none()));
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    //! The test runtime is never driven, so the worker's pins.toml load and save tasks
+    //! never run: these tests can't touch the real %APPDATA%.
+    use super::tests::{fixture, listing_unsorted, press, render};
+    use super::*;
+    use crate::pins::{PinKind, PinStore};
+
+    fn status(app: &App) -> String {
+        app.status
+            .as_ref()
+            .map(|s| s.text.clone())
+            .unwrap_or_default()
+    }
+
+    fn prompt_text(app: &App) -> Option<String> {
+        app.prompt.as_ref().map(|p| p.editor.text())
+    }
+
+    fn loaded() -> (App, tokio::runtime::Runtime) {
+        let (mut app, rt) = fixture();
+        app.on_pins_loaded(Ok((PinStore::default(), Vec::new())));
+        (app, rt)
+    }
+
+    #[test]
+    fn mark_names_tags_then_jumps_back() {
+        let (mut app, _rt) = loaded();
+        press(&mut app, "ma");
+        assert_eq!(prompt_text(&app).as_deref(), Some("work"), "name prefilled");
+        press(&mut app, "<C-u>Work dir<CR>");
+        assert_eq!(prompt_text(&app).as_deref(), Some(""), "tags step");
+        press(&mut app, "aveva #ACME<CR>");
+        assert!(app.prompt.is_none(), "m{{key}} has its key: no key step");
+        let pin = &app.pins.pins[0];
+        assert_eq!(
+            (pin.name.as_str(), pin.kind, pin.key_char()),
+            ("Work dir", PinKind::Folder, Some('a'))
+        );
+        assert_eq!(pin.tags, ["aveva", "acme"]);
+        assert_eq!(pin.path.as_deref(), Some(r"C:\work"));
+        assert_eq!(status(&app), "'a → Work dir");
+
+        press(&mut app, ":cd HIT<CR>");
+        assert_eq!(app.cwd.display(), r"C:\work\HIT");
+        press(&mut app, "'a");
+        assert_eq!(app.cwd.display(), r"C:\work", "jumped");
+        press(&mut app, "''");
+        assert_eq!(app.cwd.display(), r"C:\work\HIT", "'' still goes back");
+
+        // The same folder again: only the key moves, no prompts.
+        press(&mut app, "'amb");
+        assert!(app.prompt.is_none());
+        assert_eq!(app.pins.pins.len(), 1);
+        assert_eq!(app.pins.pins[0].key_char(), Some('b'));
+        press(&mut app, "'z");
+        assert!(status(&app).contains("no pin on 'z"));
+    }
+
+    #[test]
+    fn pin_item_asks_for_a_key_and_validates_it() {
+        let (mut app, _rt) = loaded();
+        press(&mut app, "j"); // notes.txt
+        press(&mut app, "M");
+        assert_eq!(prompt_text(&app).as_deref(), Some("notes.txt"));
+        press(&mut app, "<CR><CR>");
+        assert_eq!(prompt_text(&app).as_deref(), Some(""), "key step");
+        press(&mut app, "x!<CR>");
+        assert!(
+            app.prompt
+                .as_ref()
+                .is_some_and(|p| p.note.contains("letter or digit")),
+            "stays open with a note"
+        );
+        press(&mut app, "<C-u>n<CR>");
+        assert!(app.prompt.is_none());
+        let pin = &app.pins.pins[0];
+        assert_eq!((pin.kind, pin.key_char()), (PinKind::File, Some('n')));
+        assert_eq!(pin.path.as_deref(), Some(r"C:\work\notes.txt"));
+
+        press(&mut app, "M");
+        assert!(status(&app).contains("already pinned"), "{}", status(&app));
+    }
+
+    #[test]
+    fn esc_pins_nothing_and_nothing_changes_before_load() {
+        let (mut app, _rt) = loaded();
+        press(&mut app, "mc<Esc><Esc>");
+        assert!(app.prompt.is_none());
+        assert!(app.pins.pins.is_empty());
+        assert_eq!(status(&app), "not pinned");
+
+        let (mut app, _rt) = fixture();
+        press(&mut app, "ma");
+        assert!(app.prompt.is_none(), "store not read yet: no prompt");
+        assert!(app.status.as_ref().is_some_and(|s| s.is_error));
+        press(&mut app, "m!");
+        assert!(status(&app).contains("letters or digits"));
+    }
+
+    #[test]
+    fn tag_completion_most_used_first() {
+        let (mut app, _rt) = loaded();
+        press(&mut app, "ma<CR>aveva servers<CR>");
+        press(&mut app, ":cd HIT<CR>mh<CR>");
+        assert!(
+            app.prompt
+                .as_ref()
+                .is_some_and(|p| p.note.contains("#aveva 1")),
+            "candidates shown when the tags step opens"
+        );
+        press(&mut app, "se<Tab>");
+        assert_eq!(prompt_text(&app).as_deref(), Some("servers "));
+        press(&mut app, "<CR>");
+        assert_eq!(app.pins.pins[1].tags, ["servers"]);
+    }
+
+    #[test]
+    fn locations_lists_pins_and_dd_asks_first() {
+        let (mut app, _rt) = loaded();
+        press(&mut app, "ma<CR>aveva<CR>");
+        let entries = app.pin_entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            (entries[0].name.as_str(), entries[0].detail.as_str()),
+            (r"C:\work", "work")
+        );
+        app.dirs.insert(
+            Loc::Root,
+            DirState {
+                listing: Some(listing_unsorted(entries)),
+                ..DirState::default()
+            },
+        );
+        app.set_cwd(Loc::Root, None);
+        app.pending.clear();
+        let screen = render(&mut app, 160, 24);
+        assert!(screen.contains("PINNED FOLDERS"), "{screen}");
+        assert!(
+            screen.contains("'a") && screen.contains(r"C:\work"),
+            "{screen}"
+        );
+        assert!(screen.contains("#aveva"), "detail panel tags: {screen}");
+
+        press(&mut app, "ddn");
+        assert_eq!(app.pins.pins.len(), 1, "anything but y keeps it");
+        assert!(status(&app).starts_with("kept"));
+        press(&mut app, "T");
+        assert_eq!(prompt_text(&app).as_deref(), Some("aveva"));
+        press(&mut app, "<C-u>acme<CR>");
+        assert_eq!(app.pins.pins[0].tags, ["acme"]);
+        press(&mut app, "r<C-u>Work<CR>");
+        assert_eq!(app.pins.pins[0].name, "Work");
+        press(&mut app, "ddy");
+        assert!(app.pins.pins.is_empty());
+        assert!(status(&app).starts_with("unpinned"));
+    }
+
+    #[test]
+    fn which_key_after_quote_lists_pins() {
+        let (mut app, _rt) = loaded();
+        press(&mut app, "ma<C-u>Projects<CR><CR>");
+        press(&mut app, "'");
+        app.tick(Instant::now() + app.keymap.timeout + Duration::from_millis(1));
+        let screen = render(&mut app, 120, 20);
+        assert!(screen.contains("Projects"), "{screen}");
+        press(&mut app, "<Esc>");
+        assert!(!app.which_key_visible());
     }
 }

@@ -5,6 +5,7 @@ mod event;
 mod fs;
 mod keymap;
 mod locations;
+mod pins;
 mod platform;
 mod prompt;
 mod search;

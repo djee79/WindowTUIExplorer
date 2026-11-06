@@ -4,8 +4,9 @@
 use super::theme::{self, ACCENT, BORDER, PANEL_BG};
 use super::{truncate, width};
 use crate::app::App;
-use crate::keymap::fmt_keys;
+use crate::keymap::{Action, Continuation, Key, fmt_keys};
 use ratatui::Frame;
+use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -14,8 +15,49 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 const KEY_W: usize = 8;
 const COL_W: usize = 48;
 
+/// After `'`: every pin with its key, so the popup doubles as a quick pin menu. After
+/// `m`: the keys already taken (pressing one moves it here, like a vim mark).
+fn char_rows(app: &App) -> Vec<Continuation> {
+    let action = app.keymap.char_action(&app.keys_pending);
+    let mut keyed: Vec<_> = app
+        .pins
+        .pins
+        .iter()
+        .filter_map(|p| Some((p.key_char()?, p)))
+        .collect();
+    keyed.sort_by_key(|(c, _)| *c);
+    let row = |c: char, desc: String| Continuation {
+        key: Key::plain(KeyCode::Char(c)),
+        desc,
+        group: false,
+    };
+    match action {
+        Some(Action::JumpMark(_)) => keyed
+            .into_iter()
+            .map(|(c, p)| row(c, format!("{}  {}", p.name, p.detail())))
+            .collect(),
+        Some(Action::SetMark(_)) => keyed
+            .into_iter()
+            .map(|(c, p)| row(c, format!("taken: {}", p.name)))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 pub fn draw(f: &mut Frame, body: Rect, app: &App) {
-    let rows = app.keymap.continuations(&app.keys_pending);
+    let mut rows = app.keymap.continuations(&app.keys_pending);
+    rows.extend(char_rows(app));
+    if rows.is_empty() {
+        let hint = match app.keymap.char_action(&app.keys_pending) {
+            Some(Action::JumpMark(_)) => "no pins with a key yet (m{key} in a folder)",
+            _ => "any letter or digit",
+        };
+        rows.push(Continuation {
+            key: crate::keymap::ANY_CHAR,
+            desc: hint.to_string(),
+            group: false,
+        });
+    }
     let inner_w = (body.width as usize).saturating_sub(2);
     let cols = (inner_w / COL_W).clamp(1, rows.len().max(1));
     let per_col = rows.len().div_ceil(cols).max(1);

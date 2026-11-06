@@ -63,12 +63,7 @@ pub fn load(path: &Path) -> io::Result<Vec<FsPath>> {
 /// Writes the store atomically: a temp file next to it, then a rename over it, so a
 /// crash mid-write never leaves a truncated list.
 pub fn save(path: &Path, shares: &[FsPath]) -> io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("txt.tmp");
-    std::fs::write(&tmp, serialize(shares))?;
-    std::fs::rename(&tmp, path)
+    crate::fs::write_atomic(path, &serialize(shares))
 }
 
 #[cfg(test)]

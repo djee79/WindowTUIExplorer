@@ -316,7 +316,7 @@ fn draw_simple_rows(
 /// `name\` for directories, `name →` for links, truncated to `max` cells.
 fn display_name(e: &Entry, max: usize) -> String {
     let suffix = match (e.kind, e.is_link) {
-        (EntryKind::Dir, false) | (EntryKind::Share, _) => "\\",
+        (EntryKind::Dir, false) | (EntryKind::Share | EntryKind::Pin, _) => "\\",
         (EntryKind::Dir, true) => "\\ →",
         (_, true) => " →",
         _ => "",
@@ -329,7 +329,7 @@ fn entry_style(e: &Entry) -> Style {
     let color: Color = match e.kind {
         _ if e.is_hidden() => DIMMED,
         EntryKind::Drive(_) => theme::ACCENT,
-        EntryKind::Share => NET,
+        EntryKind::Share | EntryKind::Pin => NET,
         EntryKind::Dir if e.is_link => NET,
         EntryKind::Dir => DIR,
         EntryKind::File if e.is_link => NET,
@@ -479,6 +479,7 @@ impl Cols {
                 EntryKind::File => human_size(e.size),
                 EntryKind::Drive(kind) => truncate(kind.label(), SIZE_W),
                 EntryKind::Share => "share".to_string(),
+                EntryKind::Pin => "pin".to_string(),
                 EntryKind::Dir => String::new(),
             };
             spans.push(Span::styled(format!("{size:>SIZE_W$}"), meta_style));
@@ -486,7 +487,7 @@ impl Cols {
         if self.date {
             // Virtual entries have no dates; a share's remark goes there instead.
             let date = match e.kind {
-                EntryKind::Share => truncate(&e.detail, DATE_W),
+                EntryKind::Share | EntryKind::Pin => truncate(&e.detail, DATE_W),
                 _ if self.results && self.scored => format!("{:>5}", e.detail),
                 _ => e.modified.map(fmt_minute).unwrap_or_default(),
             };

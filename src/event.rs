@@ -4,6 +4,7 @@ use crate::fs::Listing;
 use crate::fs::path::{FsPath, Loc};
 use crate::fs::worker::{ListError, Probe};
 use crate::keymap::Keymap;
+use crate::pins::PinStore;
 use crate::platform::DiskSpace;
 use crate::search::content::MatchPreview;
 use crate::search::walk::Hit;
@@ -50,6 +51,10 @@ pub enum AppEvent {
     SharesLoaded(Result<Vec<FsPath>, String>),
     /// Writing the saved shares failed.
     SharesSaveFailed(String),
+    /// pins.toml was read: the store plus problems to report, or why it couldn't be.
+    PinsLoaded(Result<(PinStore, Vec<String>), String>),
+    /// Writing pins.toml failed.
+    PinsSaveFailed(String),
     /// keymap.toml was read: the built keymap plus any problems to report, or a read error.
     KeymapLoaded(Result<(Keymap, Vec<String>), String>),
     /// A batch of search hits (possibly empty: then it's only progress).

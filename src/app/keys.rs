@@ -9,6 +9,7 @@
 //! what the prompt does with each change.
 
 use super::{App, Mode, Quit, Search};
+use crate::fs::EntryKind;
 use crate::fs::path::{Loc, split_for_completion};
 use crate::keymap::{Action, Key, Lookup};
 use crate::prompt::{Edit, LineEditor};
@@ -29,6 +30,12 @@ pub enum PromptKind {
     NameSearch,
     /// `S`: recursive content search (runs on Enter).
     ContentSearch,
+    /// Pin prompts (`m`, `M`, `r`/`T`/`dd` on a pin): name → tags → key.
+    PinName,
+    PinTags,
+    PinKey,
+    /// `y` unpins, any other key keeps the pin.
+    ConfirmUnpin,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +60,10 @@ impl Prompt {
             PromptKind::Filter => "filter: ",
             PromptKind::NameSearch => "search: ",
             PromptKind::ContentSearch => "grep: ",
+            PromptKind::PinName => "pin name: ",
+            PromptKind::PinTags => "tags: ",
+            PromptKind::PinKey => "key (empty = none): ",
+            PromptKind::ConfirmUnpin => "",
         }
     }
 }
@@ -156,7 +167,7 @@ impl App {
                 self.keys_since.get_or_insert_with(Instant::now);
             }
             Some(Some(action)) => {
-                let count = self.count.take();
+                let (action, count) = (action.with_char(&key), self.count.take());
                 self.clear_keys();
                 self.run(action, count);
             }
@@ -178,7 +189,12 @@ impl App {
             return;
         }
         if let Lookup::Exact { action, .. } = self.keymap.lookup(&self.keys_pending) {
-            let (action, count) = (action.clone(), self.count.take());
+            let last = self
+                .keys_pending
+                .last()
+                .copied()
+                .unwrap_or(crate::keymap::ANY_CHAR);
+            let (action, count) = (action.clone().with_char(&last), self.count.take());
             self.clear_keys();
             self.run(action, count);
         } else {
@@ -245,18 +261,23 @@ impl App {
                 self.set_status(format!("hidden/system files {state}"), false);
             }
             Action::Refresh => self.refresh(),
+            Action::Delete
+                if self.at_root() && self.selected().is_some_and(|e| e.kind == EntryKind::Pin) =>
+            {
+                self.unpin_selected()
+            }
             Action::Delete if self.at_root() => self.forget_selected_share(),
             Action::Delete => self.set_status(
                 "dd (to the Recycle Bin) arrives with file operations (M6)".into(),
                 false,
             ),
             Action::CommandLine => self.open_prompt(PromptKind::Command),
-            Action::GotoPath => {
-                self.open_prompt(PromptKind::Command);
-                if let Some(p) = self.prompt.as_mut() {
-                    p.editor = LineEditor::new("cd ");
-                }
-            }
+            Action::GotoPath => self.open_prompt_with(PromptKind::Command, "cd "),
+            Action::SetMark(c) => self.set_mark(c),
+            Action::JumpMark(c) => self.jump_mark(c),
+            Action::PinItem => self.pin_item(),
+            Action::EditPinTags => self.edit_pin_tags(),
+            Action::RenamePin => self.rename_pin(),
             Action::Help => self.mode = Mode::Help,
             Action::Quit | Action::QuitNoWrite => self.quit = Some(Quit::Plain),
             Action::QuitWriteCwd => self.quit = Some(Quit::WithCwd),
@@ -374,14 +395,25 @@ impl App {
             PromptKind::ContentSearch => self.current_search_query(true).unwrap_or_default(),
             _ => String::new(),
         };
-        self.prompt = Some(Prompt {
+        self.open_prompt_with(kind, &text);
+    }
+
+    /// Opens a prompt with `text` typed in, the cursor at its end.
+    pub(super) fn open_prompt_with(&mut self, kind: PromptKind, text: &str) {
+        let mut p = Prompt {
             kind,
-            editor: LineEditor::new(&text),
+            editor: LineEditor::new(text),
             note: String::new(),
             origin: self.cursor,
             saved_search: self.search.clone(),
             completion: None,
-        });
+        };
+        match kind {
+            PromptKind::ConfirmUnpin => p.note = self.pin_prompt_note(kind),
+            PromptKind::PinTags => self.prompt_changed(&mut p),
+            _ => {}
+        }
+        self.prompt = Some(p);
         self.mode = Mode::Prompt;
     }
 
@@ -390,7 +422,25 @@ impl App {
             self.mode = Mode::Normal;
             return;
         };
+        // A yes/no question: `y` confirms, any other key is a no.
+        if p.kind == PromptKind::ConfirmUnpin {
+            self.mode = Mode::Normal;
+            if ev.code == KeyCode::Char('y') && !ev.modifiers.contains(KeyModifiers::CONTROL) {
+                self.prompt_submit(p);
+            } else {
+                self.prompt_cancel(p);
+            }
+            return;
+        }
         match (p.kind, ev.code) {
+            (PromptKind::PinTags, KeyCode::Tab) => {
+                if let Some(text) = self.complete_tag(&p.editor.text()) {
+                    p.editor = LineEditor::new(&text);
+                    self.prompt_changed(&mut p);
+                }
+                self.prompt = Some(p);
+                return;
+            }
             (PromptKind::Command, KeyCode::Tab) => {
                 self.complete(&mut p, true);
                 self.prompt = Some(p);
@@ -474,6 +524,21 @@ impl App {
                     Err(e) => e,
                 };
             }
+            // Completion candidates for the word being typed, most used first.
+            PromptKind::PinTags => {
+                let shown: Vec<String> = self
+                    .tag_candidates(&text)
+                    .into_iter()
+                    .take(6)
+                    .map(|(t, n)| format!("#{t} {n}"))
+                    .collect();
+                p.note = match (shown.is_empty(), crate::pins::parse_tags(&text)) {
+                    (_, Err(e)) => e,
+                    (true, Ok(_)) => "space-separated, Enter for none".to_string(),
+                    (false, Ok(_)) => format!("Tab: {}", shown.join(" · ")),
+                };
+            }
+            PromptKind::PinName | PromptKind::PinKey | PromptKind::ConfirmUnpin => p.note.clear(),
         }
     }
 
@@ -510,6 +575,18 @@ impl App {
                 false,
             ),
             PromptKind::ContentSearch => self.start_search(&text, true),
+            PromptKind::PinName
+            | PromptKind::PinTags
+            | PromptKind::PinKey
+            | PromptKind::ConfirmUnpin => {
+                if let Err(note) = self.pin_submit(p.kind, &text) {
+                    // Stay in the prompt and say what's wrong.
+                    let mut p = p;
+                    p.note = note;
+                    self.prompt = Some(p);
+                    self.mode = Mode::Prompt;
+                }
+            }
         }
     }
 
@@ -524,6 +601,10 @@ impl App {
                 self.set_cursor(p.origin);
             }
             PromptKind::Command | PromptKind::NameSearch | PromptKind::ContentSearch => {}
+            PromptKind::PinName
+            | PromptKind::PinTags
+            | PromptKind::PinKey
+            | PromptKind::ConfirmUnpin => self.pin_cancel(p.kind),
         }
     }
 
