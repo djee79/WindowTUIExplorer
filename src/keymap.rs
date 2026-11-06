@@ -301,6 +301,10 @@ pub enum Action {
     DeletePermanent,
     /// `:rename`: the bulk rename panel; `:rename-edit`: the names in `$EDITOR`.
     RenamePanel,
+    /// `u` / `:undo-rename [n]`: rename the n newest bulk-rename batches back (asks).
+    UndoRename(usize),
+    /// `u`: the newest bulk rename in this folder (or below it), back (asks).
+    UndoRenameHere,
     BulkRename,
     /// `<leader>p`: the pin picker.
     PinPicker,
@@ -447,6 +451,8 @@ const NAMED: &[(&str, Action)] = &[
     ("new-dir", Action::NewDir),
     ("delete-permanent", Action::DeletePermanent),
     ("rename", Action::RenamePanel),
+    ("undo-rename", Action::UndoRename(1)),
+    ("undo-rename-here", Action::UndoRenameHere),
     ("rename-edit", Action::BulkRename),
     ("bulk-rename", Action::BulkRename),
     ("pin-picker", Action::PinPicker),
@@ -560,6 +566,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "",
         "bulk rename the names in $EDITOR (Neovim)",
     ),
+    (
+        "undo-rename",
+        "[n]",
+        "rename the last n bulk renames back (also u)",
+    ),
     ("machines", "", "user PCs (also gm)"),
     ("set", "rnu nornu nu nonu", "line numbers"),
     ("q", "", "quit (wq: and cd the shell here)"),
@@ -604,6 +615,11 @@ impl Action {
             })),
             "net" => Ok(Action::Net(arg.to_string())),
             "connect" => Ok(Action::Connect(arg.to_string())),
+            "undo-rename" if arg.is_empty() => Ok(Action::UndoRename(1)),
+            "undo-rename" => match arg.parse::<usize>() {
+                Ok(n) if n > 0 => Ok(Action::UndoRename(n)),
+                _ => Err("undo-rename [n]: how many batches back".to_string()),
+            },
             "picker" => match arg {
                 "files" => Ok(Action::FilesPicker),
                 "dirs" | "recent" => Ok(Action::DirsPicker),
@@ -770,6 +786,7 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("T", EditPinTags, "edit a pin's tags (Locations)"),
         ("r", Rename, "rename (Locations: a pin)"),
         ("cw", Rename, "rename"),
+        ("u", UndoRenameHere, "undo the last bulk rename here"),
         ("a", NewFile, "new file (end in \\ for a folder)"),
         ("A", NewDir, "new folder"),
         ("D", DeletePermanent, "delete permanently (type yes)"),
@@ -1292,6 +1309,7 @@ mod tests {
                 "<path>" => format!("{c} C:\\"),
                 "<old> <new>" => format!("{c} a b"),
                 "rnu nornu nu nonu" => format!("{c} rnu"),
+                "[n]" => format!("{c} 2"),
                 _ => format!("{c} x"),
             };
             assert!(Action::parse(&line).is_ok(), "{line}");

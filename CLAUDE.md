@@ -982,10 +982,10 @@ Toggled in panel normal mode (`Esc` from a field):
   go through. Admin-share rules from section 14 apply (confirmation names the machine, audit
   log).
 - **Real undo:** every batch is written to a journal
-  (`%LOCALAPPDATA%\sentier\rename-journal\`). `u` in the file view right after a rename, or
-  `:undo-rename [n]` later, reverts whole batches, newest first, after a preview, as long as
-  the renamed files still exist. This goes beyond PowerRename, which relies on Explorer's
-  single Undo.
+  (`%LOCALAPPDATA%\sentier\rename-journal\`). `u` in the file view (the newest batch in
+  that folder or below), or `:undo-rename [n]` (the n newest anywhere), reverts whole
+  batches, newest first, after a preview, as long as the renamed files still exist. This
+  goes beyond PowerRename, which relies on Explorer's single Undo.
 - **Presets:** `Ctrl-s` saves the current search, replace and all toggles under a name
   (`[[rename.preset]]` in `rename.toml`), e.g. "ISO rev bump" or "photos by date taken".
   `Ctrl-o` opens the preset picker. The last-used options are restored when the panel opens
@@ -1027,7 +1027,7 @@ filters) · `dialog` (confirmations, sync preview).
 | `x` `p` `P` | cut · paste · paste overwrite |
 | `dd` `D` | Recycle Bin · permanent delete (both confirm) |
 | `r` / `cw` · `a` · `A` | rename (with a selection: the bulk rename panel, section 16) · new file · new dir |
-| `u` | undo the last rename batch (section 16) |
+| `u` | undo the last bulk rename in this folder (section 16) |
 | `.` | repeat last paste/operation here |
 | `J` | toggle the job panel |
 | `g.` | toggle hidden/system files |

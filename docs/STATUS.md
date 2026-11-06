@@ -979,7 +979,7 @@ milestone at the office (the checklists above) and the few items marked "not yet
 - Tests can no longer read or write the user's config.toml, keymap.toml or machines.tsv
   either (temp paths under `cargo test`).
 
-## Design drop adopted; M4c bulk rename, slices 1–2 (code complete 2026-11-06)
+## Design drop adopted; M4c bulk rename, slices 1–3 (code complete 2026-11-06, manual check pending)
 
 Design drop (docs/sentier-screens/, gitignored): section 16 + screen 12 adopted into
 CLAUDE.md with placeholder names. Decisions: the panel opens with `r` / `cw` on a selection
@@ -1000,7 +1000,30 @@ or visual range, or `:rename` (`R` stays retry / refresh); the Neovim flow is
   admin-share confirmation and audit as for any change. Options are remembered for the
   next time (PowerRename restores its flags).
 
-Not yet (slice 3): `s` subfolders (the toggle shows, the walk isn't wired), the rename
-journal with `u` / `:undo-rename`, presets (`^s` / `^o`, rename.toml) and field history
-(`^p` / `^n`), EXIF and PDF-title values (the tokens exist; the files aren't read for them
-yet), EXIF "date taken" as date source.
+- Slice 3 (`rename/apply.rs`, `presets.rs`, `meta.rs`):
+  - **Undo.** Every batch (panel or `:rename-edit`) is journaled in
+    `%LOCALAPPDATA%\sentier\rename-journal\` (one JSON file per batch: where each item is
+    now and its old name; newest 100 kept). `u` undoes the newest batch in the current
+    folder or below; `:undo-rename [n]` the n newest anywhere. Both read the journal,
+    then ask ("Undo the last bulk rename (5 items, today 10:42)?", listing `new → old`,
+    noting items no longer there). What couldn't be reverted stays journaled.
+  - **Apply order.** Deepest first, each level two-phase, so a folder and its contents
+    rename in one batch (and undo the same way).
+  - **Subfolders.** `s` walks into the selected folders off-thread (links not followed,
+    hidden items only when shown, 20 000-item cap); each folder's contents are listed
+    right after it, with the collision check per folder.
+  - **Presets and history.** `^s` saves search + replace + options under a name
+    (`[[rename.preset]]` in `%APPDATA%\sentier\rename.toml`, hand-editable; same name
+    replaces). `^o` lists them (Enter loads, `x` twice deletes). `^p` / `^n` in a field
+    step through its last 50 values. Options and history persist in
+    `%LOCALAPPDATA%\sentier\rename-state.toml`.
+  - **Values from the files.** Once the Replace text uses a photo token or `${pdf_title}`,
+    or the date source is "EXIF date taken", the files are read off-thread (8 at a time,
+    results stream in): EXIF via `kamadak-exif` (camera, lens, ISO, aperture `f2.8`,
+    shutter `1-250`, focal, flash, bias, orientation, colour space, size, author,
+    copyright, GPS as decimal degrees, date taken), PDF title from XMP `dc:title` or the
+    Info dictionary (first and last 512 KB only; titles inside compressed object streams
+    aren't found). Values are made filename-safe.
+
+Manual check: rename photos with `$DATE_TAKEN_YYYY-$DATE_TAKEN_MM-$DATE_TAKEN_DD_${padding=3}`
+(enumerate on), a folder of PDFs with `${pdf_title}`, a folder tree with `s`, then `u`.

@@ -109,6 +109,33 @@ pub enum AppEvent {
     PinsChanged(crate::pins::PinStore),
     /// Month and weekday names in the Windows user's language (rename tokens).
     LocaleNames(Box<crate::rename::tokens::Names>),
+    /// The bulk rename's saved presets (or why rename.toml won't load) and its memory.
+    RenameStore {
+        presets: Result<Vec<crate::rename::presets::Preset>, String>,
+        state: Box<crate::rename::presets::State>,
+    },
+    /// Photo / PDF values read for the panel opened as `gen` (a batch; more may follow).
+    RenameMeta {
+        generation: u64,
+        metas: Vec<(String, crate::rename::meta::Meta)>,
+        done: bool,
+    },
+    /// The subfolders' contents for the panel `gen`, in order, with what each folder
+    /// already holds; `capped`: stopped at the limit.
+    RenameWalk {
+        generation: u64,
+        items: Vec<crate::rename::plan::Source>,
+        existing: crate::rename::plan::Existing,
+        capped: bool,
+    },
+    /// The newest journaled rename batches (up to `want`), each item marked present or
+    /// gone, for `u` / `:undo-rename`.
+    RenameJournal {
+        want: usize,
+        /// Only batches under the current folder were asked for (`u`).
+        here: bool,
+        batches: Vec<(crate::rename::apply::Entry, Vec<bool>)>,
+    },
     /// The frecency store, read at startup.
     UsageLoaded(crate::frecency::Usage),
     /// Something was started, shown or copied (`what`), or why not.

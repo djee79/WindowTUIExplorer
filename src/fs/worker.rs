@@ -1135,6 +1135,140 @@ impl Worker {
         });
     }
 
+    /// rename.toml and the panel's memory: one `RenameStore`.
+    pub fn load_rename_store(&self) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            use crate::rename::presets;
+            let presets = presets::presets_path()
+                .map(|p| presets::load_presets(&p))
+                .unwrap_or(Ok(Vec::new()));
+            let state = presets::state_path()
+                .map(|p| presets::load_state(&p))
+                .unwrap_or_default();
+            let _ = tx.send(AppEvent::RenameStore {
+                presets,
+                state: Box::new(state),
+            });
+        });
+    }
+
+    pub fn save_rename_presets(&self, list: Vec<crate::rename::presets::Preset>) {
+        self.rt.spawn_blocking(move || {
+            use crate::rename::presets;
+            if let Some(p) = presets::presets_path()
+                && let Err(e) = presets::save_presets(&p, &list)
+            {
+                tracing::warn!(error = %e, "saving rename.toml");
+            }
+        });
+    }
+
+    pub fn save_rename_state(&self, state: crate::rename::presets::State) {
+        self.rt.spawn_blocking(move || {
+            use crate::rename::presets;
+            if let Some(p) = presets::state_path()
+                && let Err(e) = presets::save_state(&p, &state)
+            {
+                tracing::warn!(error = %e, "saving rename-state.toml");
+            }
+        });
+    }
+
+    /// Photo / PDF values of the files that have some: `RenameMeta` batches, the last
+    /// with `done`. Files are read on a few threads (it's latency on a share).
+    pub fn rename_meta(&self, generation: u64, paths: Vec<String>) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let wanted: Vec<String> = paths
+                .into_iter()
+                .filter(|p| crate::rename::meta::wanted(p))
+                .collect();
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            std::thread::scope(|s| {
+                for _ in 0..8.min(wanted.len()) {
+                    let (tx, wanted, next) = (tx.clone(), &wanted, &next);
+                    s.spawn(move || {
+                        let mut batch = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(p) = wanted.get(i) else { break };
+                            if let Some(m) = crate::rename::meta::read(std::path::Path::new(p)) {
+                                batch.push((p.clone(), m));
+                            }
+                            if batch.len() >= 32 {
+                                let _ = tx.send(AppEvent::RenameMeta {
+                                    generation,
+                                    metas: std::mem::take(&mut batch),
+                                    done: false,
+                                });
+                            }
+                        }
+                        if !batch.is_empty() {
+                            let _ = tx.send(AppEvent::RenameMeta {
+                                generation,
+                                metas: batch,
+                                done: false,
+                            });
+                        }
+                    });
+                }
+            });
+            let _ = tx.send(AppEvent::RenameMeta {
+                generation,
+                metas: Vec::new(),
+                done: true,
+            });
+        });
+    }
+
+    /// The contents of `dirs` (selected folders), all the way down, for the panel's
+    /// subfolders toggle: one `RenameWalk`. Links aren't followed; hidden items are left
+    /// out unless shown. Stops at 20 000 items.
+    pub fn rename_walk(&self, generation: u64, dirs: Vec<String>, hidden: bool) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let (items, existing, capped) = rename_walk(&dirs, hidden, 20_000);
+            let _ = tx.send(AppEvent::RenameWalk {
+                generation,
+                items,
+                existing,
+                capped,
+            });
+        });
+    }
+
+    /// The `want` newest rename batches (only those under `under`, if given), with which
+    /// of their items are still there: one
+    /// `RenameJournal`.
+    pub fn rename_journal(&self, want: usize, under: Option<String>) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            use crate::rename::apply;
+            let batches = apply::journal_dir()
+                .map(|d| apply::load(&d))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|e| under.as_deref().is_none_or(|u| e.batch.touches(u)))
+                .take(want)
+                .map(|e| {
+                    let here = e
+                        .batch
+                        .items
+                        .iter()
+                        .map(|it| std::path::Path::new(&it.now).exists())
+                        .collect();
+                    (e, here)
+                })
+                .collect();
+            let _ = tx.send(AppEvent::RenameJournal {
+                want,
+                here: under.is_some(),
+                batches,
+            });
+        });
+    }
+
     /// The frecency store: one `UsageLoaded`.
     pub fn load_usage(&self) {
         let tx = self.tx.clone();
@@ -1707,6 +1841,71 @@ fn make_entry(de: &std::fs::DirEntry) -> Option<Entry> {
         attrs,
         detail: String::new(),
     })
+}
+
+/// The bulk rename's subfolder walk: every item under `dirs`, each folder's contents
+/// right after it (sorted as in the view), and the names each folder already holds.
+fn rename_walk(
+    dirs: &[String],
+    hidden: bool,
+    limit: usize,
+) -> (
+    Vec<crate::rename::plan::Source>,
+    crate::rename::plan::Existing,
+    bool,
+) {
+    use crate::rename::plan::Source;
+    fn walk(
+        dir: &str,
+        hidden: bool,
+        limit: usize,
+        items: &mut Vec<Source>,
+        existing: &mut crate::rename::plan::Existing,
+    ) -> bool {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        let mut entries: Vec<Entry> = rd.flatten().filter_map(|de| make_entry(&de)).collect();
+        sort_entries(&mut entries);
+        existing.insert(
+            dir.to_lowercase(),
+            entries.iter().map(|e| e.name.to_lowercase()).collect(),
+        );
+        for e in entries {
+            if e.is_link || (!hidden && e.is_hidden()) {
+                continue;
+            }
+            if items.len() >= limit {
+                return true;
+            }
+            let is_dir = e.kind == EntryKind::Dir;
+            items.push(Source {
+                dir: dir.to_string(),
+                name: e.name.clone(),
+                is_dir,
+                created: e.created,
+                modified: e.modified,
+                ..Source::default()
+            });
+            if is_dir {
+                let sub = format!("{}\\{}", dir.trim_end_matches('\\'), e.name);
+                if walk(&sub, hidden, limit, items, existing) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    let mut items = Vec::new();
+    let mut existing = crate::rename::plan::Existing::new();
+    let mut capped = false;
+    for d in dirs {
+        if walk(d, hidden, limit, &mut items, &mut existing) {
+            capped = true;
+            break;
+        }
+    }
+    (items, existing, capped)
 }
 
 #[cfg(test)]

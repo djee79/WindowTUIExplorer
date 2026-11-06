@@ -311,12 +311,12 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         let (b, text) = if p.normal {
             (
                 badge(" OPTIONS ", ACCENT),
-                "  letters toggle options  ·  jk move  ·  Space include/exclude  ·  i/Tab type  ·  Enter apply  ·  q close",
+                "  letters toggle options  ·  jk move  ·  Space include/exclude  ·  i/Tab type  ·  ^s save preset  ·  ^o presets  ·  Enter apply  ·  q close",
             )
         } else {
             (
                 badge(" INSERT ", OK),
-                "  preview updates as you type  ·  Tab next field  ·  Esc options  ·  Enter apply",
+                "  preview updates as you type  ·  Tab next field  ·  ^p/^n history  ·  ^s/^o presets  ·  Esc options  ·  Enter apply",
             )
         };
         left.push(b);

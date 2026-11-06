@@ -275,12 +275,18 @@ impl App {
                                 .iter()
                                 .map(|(a, b)| format!("{} → {}", name(a), name(b))),
                         ),
+                        FileOp::UndoRename(u) => items.extend(u.iter().flat_map(|u| {
+                            u.pairs
+                                .iter()
+                                .map(|(a, b)| format!("{} → {}", name(a), name(b)))
+                        })),
                         FileOp::Mkdir(s) | FileOp::NewFile(s) => items.push(name(s)),
                     }
                     match op {
                         FileOp::Trash(_) => ("Move to the Recycle Bin".to_string(), false),
                         FileOp::Delete(_) => ("Delete permanently".to_string(), true),
                         FileOp::Rename { .. } | FileOp::BulkRename(_) => ("Rename".into(), false),
+                        FileOp::UndoRename(_) => ("Undo rename".into(), false),
                         FileOp::Mkdir(_) | FileOp::NewFile(_) => ("Create".to_string(), false),
                     }
                 }

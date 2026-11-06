@@ -17,6 +17,11 @@ const FOOTER: usize = 8;
 
 pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
     let (number, relative) = (app.number, app.relative_number);
+    let presets: Vec<(String, String)> = app
+        .rename_presets
+        .iter()
+        .map(|p| (p.name.clone(), format!("{}  →  {}", p.search, p.replace)))
+        .collect();
     let Some(p) = app.rename_panel.as_mut() else {
         return;
     };
@@ -62,7 +67,7 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
             "Search for",
             p.search.text(),
             typing && p.field == RenameField::Search,
-            "Tab switches field",
+            "Tab switches field · ^p/^n history",
         ),
         Line::default(),
         field(
@@ -102,7 +107,15 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
     };
     lines.push(Line::from(Span::styled(truncate(&opts1, w), opt_style)));
     lines.push(Line::from(Span::styled(truncate(&opts2, w), opt_style)));
-    lines.push(Line::default());
+    match &p.naming {
+        Some(ed) => lines.push(Line::from(vec![
+            Span::styled("  Save preset as  ", theme::bold(ACCENT)),
+            Span::styled(ed.text(), theme::fg(FG)),
+            Span::styled("▏", theme::fg(ACCENT)),
+            Span::styled("   Enter saves (same name replaces) · Esc", theme::dim()),
+        ])),
+        None => lines.push(Line::default()),
+    }
     lines.push(Line::from(Span::styled(
         format!("  {}", "─".repeat(w.saturating_sub(4))),
         theme::fg(BORDER),
@@ -204,6 +217,13 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
         }
         Err(_) => "  fix the search to see the preview".to_string(),
     };
+    let mut counts = counts;
+    if p.walking {
+        counts.push_str("  ·  walking the subfolders…");
+    }
+    if p.meta_reading {
+        counts.push_str("  ·  reading photo / PDF info…");
+    }
     let blocked = p.plan.as_ref().is_ok_and(|pl| pl.blocked > 0);
     lines.push(Line::from(Span::styled(
         counts,
@@ -215,7 +235,7 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
     )));
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
-        "  Two-phase apply (temporary names first) handles swaps and case-only renames.",
+        "  Two-phase apply handles swaps and case-only renames · u undoes it afterwards · ^s save preset · ^o presets",
         theme::dim(),
     )));
     lines.push(Line::default());
@@ -228,4 +248,67 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
         theme::dim(),
     )));
     f.render_widget(Paragraph::new(lines), inner);
+
+    // `^o`: the preset list over the table.
+    if let Some(l) = &p.presets {
+        let h = (presets.len() as u16 + 2)
+            .min(inner.height.saturating_sub(4))
+            .max(3);
+        let pw = (inner.width.saturating_sub(8)).min(90);
+        let area = Rect {
+            x: inner.x + (inner.width.saturating_sub(pw)) / 2,
+            y: inner.y + (inner.height.saturating_sub(h)) / 2,
+            width: pw,
+            height: h,
+        };
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(theme::fg(ACCENT))
+            .style(Style::new().bg(PANEL_BG).fg(FG))
+            .title(Span::styled(" Rename presets ", theme::bold(ACCENT)))
+            .title_bottom(Span::styled(
+                if l.delete_armed {
+                    " x again deletes it · any other key keeps it "
+                } else {
+                    " j/k · Enter load · x delete · Esc "
+                },
+                if l.delete_armed {
+                    theme::fg(ERR)
+                } else {
+                    theme::dim()
+                },
+            ));
+        let pin = block.inner(area);
+        let rows = pin.height as usize;
+        let first = l.cursor.saturating_sub(rows.saturating_sub(1));
+        let nw = presets
+            .iter()
+            .map(|(n, _)| width(n))
+            .max()
+            .unwrap_or(0)
+            .min(30);
+        let items: Vec<Line> = presets
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(rows)
+            .map(|(i, (name, what))| {
+                let line = Line::from(vec![
+                    Span::styled(format!(" {:<nw$}  ", truncate(name, nw)), theme::fg(FG)),
+                    Span::styled(
+                        truncate(what, (pin.width as usize).saturating_sub(nw + 4)),
+                        theme::dim(),
+                    ),
+                ]);
+                if i == l.cursor {
+                    line.style(Style::new().bg(SEL_BG))
+                } else {
+                    line
+                }
+            })
+            .collect();
+        f.render_widget(Clear, area);
+        f.render_widget(block, area);
+        f.render_widget(Paragraph::new(items), pin);
+    }
 }

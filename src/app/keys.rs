@@ -390,6 +390,8 @@ impl App {
             Action::NewDir => self.start_new(true),
             Action::BulkRename => self.start_bulk_rename(),
             Action::RenamePanel => self.open_rename_panel(),
+            Action::UndoRename(n) => self.undo_rename(n, false),
+            Action::UndoRenameHere => self.undo_rename(1, true),
             Action::CommandLine => self.open_prompt(PromptKind::Command),
             Action::GotoPath => self.open_prompt_with(PromptKind::Command, "cd "),
             Action::SetMark(c) => self.set_mark(c),

@@ -20,8 +20,20 @@ pub enum FileOp {
     Mkdir(String),
     /// `a`. Missing parent folders (`sub\new.txt`) are made too.
     NewFile(String),
-    /// `:rename`: (old, new) full paths, applied through temporary names so swaps work.
+    /// `:rename`: (old, new) full paths, applied through temporary names so swaps work,
+    /// deepest first, and written to the rename journal.
     BulkRename(Vec<(String, String)>),
+    /// `u` / `:undo-rename [n]`: journaled batches renamed back, newest first.
+    UndoRename(Vec<Undo>),
+}
+
+/// One journaled batch to revert: its journal id, the batch, and the pairs that still
+/// can be (their renamed file is still there).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Undo {
+    pub id: String,
+    pub batch: crate::rename::apply::Batch,
+    pub pairs: Vec<(String, String)>,
 }
 
 /// How it went: what to say, and the name to put the cursor on.
@@ -57,6 +69,10 @@ impl FileOp {
             FileOp::Mkdir(p) => format!("create folder {}", name_of(p)),
             FileOp::NewFile(p) => format!("create file {}", name_of(p)),
             FileOp::BulkRename(pairs) => format!("rename {}", count(pairs.len())),
+            FileOp::UndoRename(u) => format!(
+                "undo the rename of {}",
+                count(u.iter().map(|u| u.pairs.len()).sum())
+            ),
         }
     }
 
@@ -67,6 +83,10 @@ impl FileOp {
             FileOp::Rename { from, to } => vec![format!("{from} -> {to}")],
             FileOp::Mkdir(p) | FileOp::NewFile(p) => vec![p.clone()],
             FileOp::BulkRename(pairs) => pairs.iter().map(|(a, b)| format!("{a} -> {b}")).collect(),
+            FileOp::UndoRename(u) => u
+                .iter()
+                .flat_map(|u| u.pairs.iter().map(|(a, b)| format!("{a} -> {b}")))
+                .collect(),
         }
     }
 
@@ -140,6 +160,7 @@ impl FileOp {
                 })
             }
             FileOp::BulkRename(pairs) => bulk_rename(pairs),
+            FileOp::UndoRename(batches) => undo_rename(batches),
         }
     }
 }
@@ -212,46 +233,65 @@ pub fn os_message(e: &io::Error) -> String {
 /// Two passes through temporary names, so `a → b, b → a` works. Stops at the first
 /// failure and puts that pass's renames back.
 fn bulk_rename(pairs: &[(String, String)]) -> Result<Done, String> {
-    let stamp = std::process::id();
-    let tmp: Vec<String> = pairs
-        .iter()
-        .enumerate()
-        .map(|(i, (from, _))| format!("{from}.sentier-{stamp}-{i}.tmp"))
-        .collect();
-    for (i, (from, _)) in pairs.iter().enumerate() {
-        if let Err(e) = std::fs::rename(from, &tmp[i]) {
-            for j in 0..i {
-                let _ = std::fs::rename(&tmp[j], &pairs[j].0);
-            }
-            return Err(format!("{}: {}", name_of(from), os_message(&e)));
+    use crate::rename::apply;
+    let r = apply::apply(pairs);
+    if !r.done.is_empty()
+        && let Some(dir) = apply::journal_dir()
+    {
+        let batch = apply::Batch::from_done(&r.done, crate::frecency::now_secs());
+        if let Err(e) = apply::record(&dir, &batch) {
+            tracing::warn!(error = %e, "writing the rename journal");
         }
     }
-    let mut done = 0;
-    let mut failed = Vec::new();
-    for (i, (from, to)) in pairs.iter().enumerate() {
-        let target_taken = Path::new(to).exists();
-        let r = if target_taken {
-            Err(format!("{} already exists", name_of(to)))
-        } else {
-            std::fs::rename(&tmp[i], to).map_err(|e| os_message(&e))
-        };
-        match r {
-            Ok(()) => done += 1,
-            Err(e) => {
-                // Put it back under its old name.
-                let _ = std::fs::rename(&tmp[i], from);
-                failed.push(format!("{}: {e}", name_of(from)));
-            }
-        }
-    }
-    if failed.is_empty() {
+    let done = r.done.len();
+    if r.failed.is_empty() {
         Ok(Done {
-            message: format!("renamed {}", count(done)),
+            message: format!("renamed {}  (u undoes it)", count(done)),
             select: pairs.first().map(|(_, to)| name_of(to).to_string()),
         })
     } else {
         Err(format!(
             "renamed {done}, {} kept their names: {}",
+            r.failed.len(),
+            r.failed.join("; ")
+        ))
+    }
+}
+
+/// Reverts journaled batches, newest first; what couldn't be reverted stays journaled
+/// (not what's gone: a file deleted since can't be renamed back).
+fn undo_rename(batches: &[Undo]) -> Result<Done, String> {
+    use crate::rename::apply;
+    let dir = apply::journal_dir();
+    let mut done = 0;
+    let mut failed = Vec::new();
+    let mut select = None;
+    for u in batches {
+        let r = apply::apply(&u.pairs);
+        done += r.done.len();
+        if select.is_none() {
+            select = r.done.first().map(|(_, to)| name_of(to).to_string());
+        }
+        let left: Vec<String> = u
+            .pairs
+            .iter()
+            .filter(|(from, _)| !r.done.iter().any(|(f, _)| f == from))
+            .filter(|(from, _)| Path::new(from).exists())
+            .map(|(from, _)| from.clone())
+            .collect();
+        if let Some(dir) = &dir {
+            apply::keep_only(dir, &u.id, &u.batch, &left);
+        }
+        failed.extend(r.failed);
+    }
+    if failed.is_empty() {
+        Ok(Done {
+            message: format!("{} back to their old names", count(done)),
+            select,
+        })
+    } else {
+        Err(format!(
+            "{done} back, {} not: {}",
             failed.len(),
             failed.join("; ")
         ))

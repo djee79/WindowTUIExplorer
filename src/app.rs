@@ -309,7 +309,10 @@ pub struct App {
     pub open_menu: Option<OpenMenu>,
     /// The bulk rename panel (M4c), its options as last used, and month / day names.
     pub rename_panel: Option<RenamePanel>,
-    pub rename_options: crate::rename::engine::Options,
+    pub rename_state: crate::rename::presets::State,
+    pub rename_presets: Vec<crate::rename::presets::Preset>,
+    /// Bumped each time the panel opens: walk / metadata results for an older one drop.
+    pub rename_gen: u64,
     pub rename_names: crate::rename::tokens::Names,
     /// What Windows has per extension (asked once per session).
     pub open_registered: HashMap<String, crate::open::Registered>,
@@ -450,7 +453,9 @@ impl App {
             open_last: Default::default(),
             open_menu: None,
             rename_panel: None,
-            rename_options: Default::default(),
+            rename_state: Default::default(),
+            rename_presets: Vec::new(),
+            rename_gen: 0,
             rename_names: Default::default(),
             open_registered: HashMap::new(),
             usage: Default::default(),
@@ -495,6 +500,7 @@ impl App {
         app.worker.load_open_config();
         app.worker.load_usage();
         app.worker.locale_names();
+        app.worker.load_rename_store();
         app.worker.wtm_offer_check();
         app.set_cwd(start, None);
         app
@@ -1107,6 +1113,23 @@ impl App {
             // Launches recorded before the file was read stay.
             AppEvent::UsageLoaded(usage) => self.usage.merge(usage),
             AppEvent::LocaleNames(names) => self.on_locale_names(*names),
+            AppEvent::RenameStore { presets, state } => self.on_rename_store(presets, *state),
+            AppEvent::RenameMeta {
+                generation,
+                metas,
+                done,
+            } => self.on_rename_meta(generation, metas, done),
+            AppEvent::RenameWalk {
+                generation,
+                items,
+                existing,
+                capped,
+            } => self.on_rename_walk(generation, items, existing, capped),
+            AppEvent::RenameJournal {
+                want,
+                here,
+                batches,
+            } => self.on_rename_journal(want, here, batches),
             AppEvent::PinsChanged(store) => {
                 self.pins_pending = Some(store);
                 self.apply_pending_pins();
@@ -5368,6 +5391,112 @@ mod job_tests {
         assert!(l.app.rename_panel.as_ref().is_some_and(|p| p.options.regex));
         press(&mut l.app, "<Esc>q");
         assert_eq!(l.app.mode, Mode::Normal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Slice 3: `s` walks into the selected folder, `^s` saves a preset, the rename is
+    /// journaled and `u` puts every name back (folders included), the search lands in the
+    /// history (`^p`), and `^o` loads the preset.
+    #[test]
+    fn bulk_rename_subfolders_presets_history_and_undo() {
+        let dir = std::env::temp_dir().join(format!(
+            "sentier-rename3-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(dir.join("sub").join("deep"));
+        let _ = std::fs::write(dir.join("sub").join("a.txt"), "a");
+        let _ = std::fs::write(dir.join("sub").join("deep").join("b.txt"), "b");
+        let _ = std::fs::write(dir.join("c.txt"), "c");
+        let names = |d: &std::path::Path| -> Vec<String> {
+            let mut v: Vec<String> = std::fs::read_dir(d)
+                .map(|rd| {
+                    rd.flatten()
+                        .map(|e| e.file_name().to_string_lossy().to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            v.sort();
+            v
+        };
+        let mut l = Live::new(&dir);
+        l.goto("sub");
+        press(&mut l.app, "<Tab>");
+        l.goto("c.txt");
+        press(&mut l.app, "<Tab>");
+        press(&mut l.app, "r");
+        assert_eq!(l.app.mode, Mode::Rename);
+        // The search lands in the history; uppercase everything, subfolders included.
+        type_text(&mut l.app, "u");
+        press(&mut l.app, "<Tab>");
+        type_text(&mut l.app, "u");
+        press(&mut l.app, "<Esc>tts");
+        l.until(|a| a.rename_panel.as_ref().is_some_and(|p| !p.walking));
+        let rows = l_plan(&l.app);
+        assert_eq!(
+            rows.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
+            ["SUB", "DEEP", "B.txt", "A.txt", "C.txt"],
+            "each folder's contents right after it"
+        );
+        // ^s: a preset.
+        press(&mut l.app, "<C-s>");
+        type_text(&mut l.app, "upper");
+        press(&mut l.app, "<CR>");
+        assert_eq!(l.app.rename_presets.len(), 1);
+        assert!(status(&l.app).contains("saved preset upper"));
+        press(&mut l.app, "<CR>");
+        assert!(l.app.confirm_note().contains("Rename 5 items?"));
+        press(&mut l.app, "y");
+        l.until(|a| a.ops_running == 0 && names(&dir).contains(&"SUB".to_string()));
+        assert_eq!(names(&dir.join("SUB")), ["A.txt", "DEEP"]);
+        assert_eq!(names(&dir.join("SUB").join("DEEP")), ["B.txt"]);
+        assert_eq!(
+            l.app.rename_state.search.first().map(String::as_str),
+            Some("u")
+        );
+
+        // u: the journal, one question, every name back.
+        press(&mut l.app, "u");
+        l.until(|a| a.confirm.is_some());
+        assert!(
+            l.app
+                .confirm_note()
+                .contains("Undo the last bulk rename (5 items, today"),
+            "{}",
+            l.app.confirm_note()
+        );
+        press(&mut l.app, "y");
+        l.until(|a| a.ops_running == 0 && names(&dir).contains(&"sub".to_string()));
+        assert_eq!(names(&dir), ["c.txt", "sub"]);
+        assert_eq!(names(&dir.join("sub")), ["a.txt", "deep"]);
+        assert_eq!(names(&dir.join("sub").join("deep")), ["b.txt"]);
+
+        // ^p brings the last search back; ^o loads the preset.
+        l.until(|a| {
+            a.view_listing
+                .as_ref()
+                .is_some_and(|li| li.entries.iter().any(|e| e.name == "c.txt"))
+        });
+        l.goto("c.txt");
+        press(&mut l.app, ":rename<CR>");
+        press(&mut l.app, "<C-p>");
+        assert_eq!(
+            l.app.rename_panel.as_ref().map(|p| p.search.text()),
+            Some("u".to_string())
+        );
+        press(&mut l.app, "<C-o>");
+        let screen = render(&mut l.app, 160, 40);
+        assert!(
+            screen.contains("Rename presets") && screen.contains("upper"),
+            "{screen}"
+        );
+        press(&mut l.app, "<CR>");
+        assert_eq!(
+            l.app.rename_panel.as_ref().map(|p| p.options.format),
+            Some(crate::rename::engine::Format::Upper)
+        );
+        press(&mut l.app, "<Esc>q");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
