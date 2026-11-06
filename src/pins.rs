@@ -31,6 +31,9 @@ pub enum PinKind {
     Web,
     Sync,
     Backup,
+    /// A user's PC reached through its admin shares (CLAUDE.md section 14): `host`,
+    /// optional `user` hint and `auth` profile (default "admin") in the extra fields.
+    Machine,
 }
 
 impl PinKind {
@@ -42,6 +45,7 @@ impl PinKind {
             PinKind::Web => "web",
             PinKind::Sync => "sync",
             PinKind::Backup => "backup",
+            PinKind::Machine => "machine",
         }
     }
 
@@ -142,6 +146,7 @@ impl Pin {
             PinKind::App => self.command.as_deref(),
             PinKind::Web => self.url.as_deref(),
             PinKind::Sync | PinKind::Backup => self.extra.get("source").and_then(|v| v.as_str()),
+            PinKind::Machine => self.extra.get("host").and_then(|v| v.as_str()),
         };
         s.unwrap_or_default().to_string()
     }
@@ -156,6 +161,7 @@ impl Pin {
             PinKind::Web if self.url.is_none() => "a url",
             PinKind::Sync if !has("source") || !has("dest") => "source and dest",
             PinKind::Backup if !has("source") || !has("dest_dir") => "source and dest_dir",
+            PinKind::Machine if !has("host") => "a host",
             _ => return None,
         };
         Some(format!("{} pin needs {needs}", self.kind.label()))

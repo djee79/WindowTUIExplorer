@@ -23,6 +23,7 @@ enum Section {
     Pinned,
     Drives,
     Shares,
+    Machines,
 }
 
 impl Section {
@@ -30,6 +31,7 @@ impl Section {
         match e.kind {
             EntryKind::Share => Section::Shares,
             EntryKind::Pin => Section::Pinned,
+            EntryKind::Machine(_) => Section::Machines,
             _ => Section::Drives,
         }
     }
@@ -38,6 +40,7 @@ impl Section {
             Section::Pinned => "PINNED FOLDERS",
             Section::Drives => "DRIVES",
             Section::Shares => "SHARES",
+            Section::Machines => "MACHINES",
         }
     }
 }
@@ -167,7 +170,39 @@ fn short_error(e: &Entry, err: &ListError) -> &'static str {
     }
 }
 
+/// `  ● JDOE-LT042              online · 4 ms` (the dot from the port-445 probe).
+fn machine_line(e: &Entry, w: usize, is_cursor: bool, online: Option<bool>) -> Line<'static> {
+    let base = if is_cursor {
+        Style::new().bg(SEL_BG).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new()
+    };
+    let (dot, color) = match online {
+        Some(true) => ("●", OK),
+        Some(false) => ("×", ERR),
+        None => ("○", DIM),
+    };
+    let name_w = KEY_W + NAME_W;
+    let right = truncate(&e.detail, w.saturating_sub(name_w + 6));
+    let pad = w.saturating_sub(4 + name_w + width(&right) + 1);
+    Line::from(vec![
+        Span::styled("  ", base),
+        Span::styled(dot, base.fg(color)),
+        Span::styled(" ", base),
+        Span::styled(
+            format!("{:<name_w$}", truncate(&e.name, name_w - 1)),
+            base.fg(FG),
+        ),
+        Span::styled(" ".repeat(pad), base),
+        Span::styled(right, base.fg(DIM)),
+        Span::styled(" ", base),
+    ])
+}
+
 fn row_line(app: &App, e: &Entry, w: usize, is_cursor: bool) -> Line<'static> {
+    if let EntryKind::Machine(online) = e.kind {
+        return machine_line(e, w, is_cursor, online);
+    }
     let reach = App::root_target(e).and_then(|t| app.reach_of(&t).cloned());
     let (key, name, path, name_color) = match e.kind {
         EntryKind::Drive(DriveKind::Network) => {
@@ -275,6 +310,20 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
             if !tags.is_empty() {
                 lines.push(info_line("Tags", truncate(&tags, vw)));
             }
+        }
+        EntryKind::Machine(_) => {
+            lines.push(info_line("Kind", "machine (admin shares)".to_string()));
+            lines.push(info_line("Status", e.detail.clone()));
+            if let Some(u) = app.machine_user(&e.name) {
+                lines.push(info_line("User", u));
+            }
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                " l opens its view · M pins it · gm all machines",
+                theme::dim(),
+            )));
+            f.render_widget(Paragraph::new(lines), inner);
+            return;
         }
         _ => {
             lines.push(info_line("Kind", "saved share".to_string()));

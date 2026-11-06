@@ -15,6 +15,42 @@ const FILE_NAME: &str = "config.toml";
 pub struct Config {
     #[serde(default)]
     pub auth: BTreeMap<String, AuthProfile>,
+    /// `[[machine.path]]`: path templates for the machine view.
+    #[serde(default)]
+    pub machine: MachineSection,
+    /// `[machines]`: `recent_days`, `watch`.
+    #[serde(default)]
+    pub machines: MachinesSection,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct MachineSection {
+    #[serde(default)]
+    pub path: Vec<crate::machines::PathTemplate>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct MachinesSection {
+    pub recent_days: Option<u32>,
+    #[serde(default)]
+    pub watch: bool,
+}
+
+impl Config {
+    /// The path templates: config.toml's, or the spec's defaults when it has none.
+    pub fn templates(&self) -> Vec<crate::machines::PathTemplate> {
+        if self.machine.path.is_empty() {
+            crate::machines::default_templates()
+        } else {
+            self.machine.path.clone()
+        }
+    }
+
+    pub fn recent_days(&self) -> u32 {
+        self.machines
+            .recent_days
+            .unwrap_or(crate::machines::DEFAULT_RECENT_DAYS)
+    }
 }
 
 /// Parses config.toml. A broken file is an error message (shown, not fatal).
@@ -49,5 +85,32 @@ protocol = "auto"
         assert_eq!(c.auth["admin"].user, r"CORP\adm-user");
         assert_eq!(parse(""), Ok(Config::default()));
         assert!(parse("[auth.admin]\nuser = 3").is_err());
+    }
+
+    #[test]
+    fn machine_templates_and_recent_days() {
+        assert_eq!(
+            Config::default().templates().len(),
+            6,
+            "the spec's defaults"
+        );
+        assert_eq!(Config::default().recent_days(), 30);
+        let text = r#"
+[machines]
+recent_days = 7
+
+[[machine.path]]
+name = "AVEVA local"
+path = 'C$\Users\{user}\AppData\Local\AVEVA'
+key  = "a"
+"#;
+        let Ok(c) = parse(text) else { panic!() };
+        let t = c.templates();
+        assert_eq!(t.len(), 1, "configured ones replace the defaults");
+        assert_eq!(
+            (t[0].name.as_str(), t[0].key_char()),
+            ("AVEVA local", Some('a'))
+        );
+        assert_eq!(c.recent_days(), 7);
     }
 }

@@ -59,6 +59,23 @@ pub enum AppEvent {
     PinsSaveFailed(String),
     /// A picker's matcher has new results.
     Wake,
+    /// The port-445 probe of a machine: the round trip, or why not.
+    MachineProbe {
+        host: String,
+        result: Result<Duration, String>,
+    },
+    /// Who uses a machine (logged on, profile folders).
+    MachineUsers {
+        host: String,
+        result: Result<crate::fs::worker::MachineUsers, String>,
+    },
+    /// Which template folders exist on a machine.
+    PathsChecked {
+        host: String,
+        found: Vec<(String, bool)>,
+    },
+    /// The recent machines were read.
+    RecentMachines(Result<Vec<crate::machines::Recent>, String>),
     /// config.toml was read (or why not).
     ConfigLoaded(Result<crate::config::Config, String>),
     /// A connection with credentials finished: `target` is where it went (an alias for

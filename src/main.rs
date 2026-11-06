@@ -7,6 +7,7 @@ mod event;
 mod fs;
 mod keymap;
 mod locations;
+mod machines;
 mod picker;
 mod pins;
 mod platform;

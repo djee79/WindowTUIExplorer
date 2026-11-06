@@ -50,6 +50,10 @@ const IMAGE_PREVIEW_LOCAL: Duration = Duration::from_secs(5);
 const IMAGE_PREVIEW_NETWORK: Duration = Duration::from_secs(15);
 /// Connecting with credentials: a dead host takes ~20 s to give up.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(25);
+/// The port-445 probe, name lookup included.
+const MACHINE_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+/// NetWkstaUserEnum on a host that answered the probe.
+const MACHINE_USERS_TIMEOUT: Duration = Duration::from_secs(8);
 /// Context lines around each match, and the most matches a preview collects.
 const GREP_CONTEXT: usize = 2;
 const GREP_MAX_MATCHES: usize = 500;
@@ -121,6 +125,39 @@ impl From<io::Error> for ListError {
             _ => ListError::Other(e.to_string()),
         }
     }
+}
+
+/// What `Worker::machine_users` found out about who uses a machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineUsers {
+    /// `NetWkstaUserEnum`, people only.
+    pub logged_on: Vec<String>,
+    /// The profile folders of `C$\Users`, newest first.
+    pub profiles: Vec<String>,
+    /// The newest profile that isn't a system or admin one.
+    pub likely: Option<String>,
+}
+
+/// The round trip of a TCP connect to `host`:445, with a 500 ms timeout per address.
+/// Blocking (name lookup + connect).
+fn port_445(host: &str) -> Result<Duration, String> {
+    use std::net::{TcpStream, ToSocketAddrs};
+    let addrs: Vec<_> = (host, 445)
+        .to_socket_addrs()
+        .map_err(|_| "name not found".to_string())?
+        .collect();
+    let mut last = "no address".to_string();
+    for addr in addrs {
+        let start = Instant::now();
+        match TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
+            Ok(_) => return Ok(start.elapsed()),
+            Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+                last = "port 445 doesn't answer".to_string()
+            }
+            Err(_) => last = "port 445 refused".to_string(),
+        }
+    }
+    Err(last)
 }
 
 /// How to connect: plainly, or with one of the two fixes for error 1219 (already connected
@@ -229,8 +266,9 @@ impl Worker {
                     let timeout = timeout_for(&loc, timeouts).await;
                     list_dir(id, &loc, p.to_os_path(), timeout, &cancel, &tx).await
                 }
-                // The app owns search results; there's nothing to list.
+                // The app owns search results and machine views; nothing to list.
                 Loc::Results { .. } => Err(ListError::Other("search results".to_string())),
+                Loc::Machines | Loc::Machine(_) => Err(ListError::Other("machines".to_string())),
             };
             if cancel.is_cancelled() {
                 return;
@@ -403,6 +441,130 @@ impl Worker {
                 remembered,
                 dropped,
             });
+        });
+    }
+
+    /// Is `host` up? A TCP connect to port 445 (SMB) with a 500 ms timeout, before any SMB
+    /// call, so an asleep laptop answers in half a second instead of a 20 s SMB timeout.
+    /// Sends one `MachineProbe` with the round trip.
+    pub fn machine_probe(&self, host: String) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let h = host.clone();
+            let call = tokio::task::spawn_blocking(move || port_445(&h));
+            let result = match tokio::time::timeout(MACHINE_PROBE_TIMEOUT, call).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(_) => Err("no answer (name lookup timed out)".to_string()),
+            };
+            let _ = tx.send(AppEvent::MachineProbe { host, result });
+        });
+    }
+
+    /// Who uses `host`: `NetWkstaUserEnum` (needs admin rights), and the profile folders
+    /// of `\\host\C$\Users` (newest first) as the fallback and the choice for `u`.
+    /// Sends one `MachineUsers`.
+    pub fn machine_users(&self, host: String) {
+        let (tx, timeout) = (self.tx.clone(), self.timeouts.network);
+        self.rt.spawn(async move {
+            let h = host.clone();
+            let logged = tokio::task::spawn_blocking(move || platform::logged_on_users(&h));
+            let logged_on = match tokio::time::timeout(MACHINE_USERS_TIMEOUT, logged).await {
+                Ok(Ok(Ok(u))) => crate::machines::people(&u),
+                _ => Vec::new(),
+            };
+            let h = host.clone();
+            let profiles = tokio::task::spawn_blocking(move || {
+                let dir = format!(r"\\{h}\C$\Users");
+                let mut out = Vec::new();
+                for e in std::fs::read_dir(&dir)?.flatten() {
+                    let Ok(meta) = e.metadata() else { continue };
+                    if meta.is_dir() {
+                        out.push((
+                            e.file_name().to_string_lossy().to_string(),
+                            meta.modified().ok(),
+                        ));
+                    }
+                }
+                Ok::<_, io::Error>(out)
+            });
+            let profiles = match tokio::time::timeout(timeout, profiles).await {
+                Ok(Ok(Ok(p))) => Ok(p),
+                Ok(Ok(Err(e))) => Err(ListError::from(e).to_string()),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(_) => Err("timed out".to_string()),
+            };
+            let result = match profiles {
+                Ok(p) => {
+                    let likely = crate::machines::likely_user(&p);
+                    let mut names: Vec<(String, Option<std::time::SystemTime>)> = p;
+                    names.sort_by_key(|n| std::cmp::Reverse(n.1));
+                    Ok(MachineUsers {
+                        logged_on,
+                        profiles: names.into_iter().map(|(n, _)| n).collect(),
+                        likely,
+                    })
+                }
+                // Logged-on users alone still say who it is.
+                Err(_) if !logged_on.is_empty() => Ok(MachineUsers {
+                    logged_on,
+                    profiles: Vec::new(),
+                    likely: None,
+                }),
+                Err(e) => Err(e),
+            };
+            let _ = tx.send(AppEvent::MachineUsers { host, result });
+        });
+    }
+
+    /// Which of `paths` (expanded templates) exist. Sends one `PathsChecked`.
+    pub fn check_paths(&self, host: String, paths: Vec<String>) {
+        let (tx, timeout) = (self.tx.clone(), self.timeouts.network);
+        self.rt.spawn(async move {
+            let call = tokio::task::spawn_blocking(move || {
+                paths
+                    .into_iter()
+                    .map(|p| {
+                        let there = std::fs::metadata(&p).is_ok_and(|m| m.is_dir());
+                        (p, there)
+                    })
+                    .collect::<Vec<_>>()
+            });
+            let found = match tokio::time::timeout(timeout * 2, call).await {
+                Ok(Ok(f)) => f,
+                _ => Vec::new(),
+            };
+            let _ = tx.send(AppEvent::PathsChecked { host, found });
+        });
+    }
+
+    /// Loads the recent machines. Sends one `RecentMachines`.
+    pub fn load_recent_machines(&self, days: u32) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let call = tokio::task::spawn_blocking(move || match crate::machines::recent_path() {
+                Some(p) => crate::machines::load_recent(&p, days),
+                None => Ok(Vec::new()),
+            });
+            let result = match tokio::time::timeout(Duration::from_secs(3), call).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(_) => Err("machines.tsv: timed out".to_string()),
+            };
+            let _ = tx.send(AppEvent::RecentMachines(result));
+        });
+    }
+
+    /// Saves the recent machines (local disk). Failures are only logged.
+    pub fn save_recent_machines(&self, list: Vec<crate::machines::Recent>) {
+        self.rt.spawn(async move {
+            let call = tokio::task::spawn_blocking(move || match crate::machines::recent_path() {
+                Some(p) => crate::machines::save_recent(&p, &list),
+                None => Ok(()),
+            });
+            if let Ok(Ok(Err(e))) = tokio::time::timeout(Duration::from_secs(3), call).await {
+                tracing::warn!(error = %e, "couldn't save recent machines");
+            }
         });
     }
 
@@ -708,9 +870,14 @@ async fn list_root(
         .map(|p| Entry::virtual_entry(p.display(), EntryKind::Share, String::new()))
         .collect();
     saved.sort_by(|a, b| natural_cmp(&a.name, &b.name));
+    // Machines come with the pins from the app but go last, in their own section.
+    let (machines, pins): (Vec<Entry>, Vec<Entry>) = pins
+        .into_iter()
+        .partition(|e| matches!(e.kind, EntryKind::Machine(_)));
     let mut entries = pins;
     entries.extend(drives);
     entries.extend(saved);
+    entries.extend(machines);
     Ok(entries)
 }
 

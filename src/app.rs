@@ -6,6 +6,7 @@
 
 pub mod auth;
 mod keys;
+mod machines;
 mod picker;
 mod pins;
 mod preview;
@@ -229,6 +230,12 @@ pub struct App {
     pub cred: Option<auth::CredPrompt>,
     cred_asked: HashSet<String>,
     connections_made: HashSet<String>,
+    /// Machines: what's known per host (lowercase), the recent ones (and whether the file
+    /// was read), and the host `u` is picking a user for.
+    machines: HashMap<String, machines::MachineInfo>,
+    pub recent_machines: Vec<crate::machines::Recent>,
+    recent_loaded: bool,
+    machine_user_host: Option<String>,
     /// `:net drop <server>` waiting for the connection list; `:net list` shown.
     net_drop_server: Option<String>,
     pub net_listing: Option<auth::NetListing>,
@@ -310,6 +317,10 @@ impl App {
             cred: None,
             cred_asked: HashSet::new(),
             connections_made: HashSet::new(),
+            machines: HashMap::new(),
+            recent_machines: Vec::new(),
+            recent_loaded: false,
+            machine_user_host: None,
             net_drop_server: None,
             net_listing: None,
             reach: HashMap::new(),
@@ -326,6 +337,8 @@ impl App {
         app.worker.load_shares();
         app.worker.load_pins();
         app.worker.load_config();
+        app.worker
+            .load_recent_machines(crate::machines::DEFAULT_RECENT_DAYS);
         app.worker.load_keymap();
         app.set_cwd(start, None);
         app
@@ -421,6 +434,11 @@ impl App {
         self.cursor = 0;
         self.offset = 0;
 
+        // A machine view, or a path on a machine's admin share: remember the machine and
+        // probe port 445 before SMB gets a chance to hang on it.
+        if let Some(host) = self.cwd.admin_host().map(str::to_string) {
+            self.touch_machine(&host);
+        }
         // Show the cached listing right away, refresh it in the background.
         self.request(self.cwd.clone(), true);
         if let Some(parent) = self.cwd.parent() {
@@ -443,6 +461,10 @@ impl App {
     }
 
     fn go_parent(&mut self) {
+        // The root of `\\HOST\C$` of a known machine goes back to its machine view.
+        if let Some(view) = self.machine_parent() {
+            return self.navigate(view, None);
+        }
         if let Some(parent) = self.cwd.parent() {
             let name = self.cwd.name();
             self.navigate(parent, Some(name));
@@ -452,6 +474,9 @@ impl App {
     fn open_selected(&mut self) {
         let Some(entry) = self.selected() else { return };
         let (name, container) = (entry.name.clone(), entry.is_container());
+        if self.template_needs_user(&name) {
+            return;
+        }
         // A Locations entry known to be unreachable: say so and stay put (never hang),
         // and probe again so a second Enter works once it's back.
         if self.at_root()
@@ -499,6 +524,11 @@ impl App {
         if self.pending.contains_key(&loc) || matches!(loc, Loc::Results { .. }) {
             return;
         }
+        // Machine views are built from what's known (templates, probes, users).
+        if matches!(loc, Loc::Machines | Loc::Machine(_)) {
+            self.build_machine_view(&loc);
+            return;
+        }
         let state = self.dirs.entry(loc.clone()).or_default();
         if !force && (state.listing.is_some() || state.error.is_some()) {
             return;
@@ -508,9 +538,11 @@ impl App {
             count: 0,
         });
         let req = match loc {
-            Loc::Root => self
-                .worker
-                .list_root(self.shares.clone(), self.pin_entries()),
+            Loc::Root => {
+                let mut extra = self.pin_entries();
+                extra.extend(self.machine_root_entries());
+                self.worker.list_root(self.shares.clone(), extra)
+            }
             _ => self.worker.list(loc.clone()),
         };
         self.pending.insert(loc, req);
@@ -548,6 +580,11 @@ impl App {
             self.last_probe_round = Some(Instant::now());
         }
         for target in listing.entries.iter().filter_map(App::root_target) {
+            // Machines get the port-445 probe (their dot comes from it).
+            if let Loc::Machine(host) = &target {
+                self.probe_machine_quietly(host, all);
+                continue;
+            }
             if all || !self.reach.contains_key(&target) {
                 self.probe(target);
             }
@@ -706,6 +743,22 @@ impl App {
     }
 
     fn refresh(&mut self) {
+        // `R` in a machine view probes the machine and looks up its users again; in
+        // the Machines list, every listed machine.
+        match self.cwd.clone() {
+            Loc::Machine(host) => self.reprobe_machine(&host),
+            Loc::Machines => {
+                let hosts: Vec<String> = self
+                    .view_listing
+                    .as_ref()
+                    .map(|l| l.entries.iter().map(|e| e.name.clone()).collect())
+                    .unwrap_or_default();
+                for h in hosts {
+                    self.reprobe_machine(&h);
+                }
+            }
+            _ => {}
+        }
         self.request(self.cwd.clone(), true);
         if let Some(p) = self.preview_loc() {
             self.request(p, true);
@@ -814,7 +867,10 @@ impl App {
             }
             AppEvent::Wake => {}
             AppEvent::ConfigLoaded(result) => match result {
-                Ok(config) => self.config = config,
+                Ok(config) => {
+                    self.config = config;
+                    self.apply_recent_days();
+                }
                 Err(e) => {
                     tracing::warn!(error = %e, "config.toml");
                     self.set_status(e, true);
@@ -829,6 +885,10 @@ impl App {
                 dropped,
             } => self.on_connected(requested, target, user, result, remembered, dropped),
             AppEvent::NetList(result) => self.on_net_list(result),
+            AppEvent::MachineProbe { host, result } => self.on_machine_probe(host, result),
+            AppEvent::MachineUsers { host, result } => self.on_machine_users(host, result),
+            AppEvent::PathsChecked { host, found } => self.on_paths_checked(host, found),
+            AppEvent::RecentMachines(result) => self.on_recent_machines(result),
             AppEvent::NetDropped(results) => self.on_net_dropped(results),
             AppEvent::PinsLoaded(result) => self.on_pins_loaded(result),
             AppEvent::PinsSaveFailed(e) => {
@@ -2851,5 +2911,185 @@ mod auth_tests {
         assert!(status(&app).contains("hasn't made any"));
         press(&mut app, ":net frob<CR>");
         assert!(app.status.as_ref().is_some_and(|s| s.is_error));
+    }
+}
+
+#[cfg(test)]
+mod machine_tests {
+    //! Machines without a network: probe and user lookups are injected as events (the
+    //! test runtime is never driven).
+    use super::tests::{fixture, press, render};
+    use super::*;
+    use crate::fs::worker::MachineUsers;
+    use crate::machines::Recent;
+
+    fn status(app: &App) -> String {
+        app.status
+            .as_ref()
+            .map(|s| s.text.clone())
+            .unwrap_or_default()
+    }
+
+    fn with_recent(hosts: &[&str]) -> (App, tokio::runtime::Runtime) {
+        let (mut app, rt) = fixture();
+        app.on_pins_loaded(Ok((crate::pins::PinStore::default(), Vec::new())));
+        let now = SystemTime::now();
+        app.handle(AppEvent::RecentMachines(Ok(hosts
+            .iter()
+            .map(|h| Recent {
+                host: h.to_string(),
+                opened: now,
+                seen: None,
+            })
+            .collect())));
+        (app, rt)
+    }
+
+    fn up(app: &mut App, host: &str, logged_on: &[&str]) {
+        app.handle(AppEvent::MachineProbe {
+            host: host.to_string(),
+            result: Ok(Duration::from_millis(4)),
+        });
+        app.handle(AppEvent::MachineUsers {
+            host: host.to_string(),
+            result: Ok(MachineUsers {
+                logged_on: logged_on.iter().map(|s| s.to_string()).collect(),
+                profiles: vec!["jdoe".into(), "asmith".into()],
+                likely: Some("jdoe".into()),
+            }),
+        });
+    }
+
+    fn names(app: &App) -> Vec<String> {
+        app.view_listing
+            .as_ref()
+            .map(|l| {
+                app.view
+                    .iter()
+                    .map(|&i| l.entries[i].name.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn machines_list_view_templates_and_keys() {
+        let (mut app, _rt) = with_recent(&["PC-042", "PC-007"]);
+        press(&mut app, "gm");
+        assert_eq!(app.cwd, Loc::Machines);
+        assert_eq!(names(&app), ["PC-042", "PC-007"]);
+
+        press(&mut app, "l"); // PC-042
+        assert_eq!(app.cwd, Loc::Machine("PC-042".into()));
+        // Before the users are known, templates with {user} wait for one.
+        press(&mut app, "d");
+        assert!(status(&app).contains("who's the user"), "{}", status(&app));
+
+        up(&mut app, "PC-042", &["jdoe"]);
+        let n = names(&app);
+        assert_eq!(n[0], r"\\PC-042\C$\Users\jdoe\Desktop");
+        assert_eq!(n.last().map(String::as_str), Some(r"\\PC-042\C$"));
+        app.status = None; // the "who's the user" hint above would hide the machine line
+        let screen = render(&mut app, 140, 30);
+        assert!(
+            screen.contains("ADMIN SHARE") && screen.contains("PC-042  ·  jdoe"),
+            "{screen}"
+        );
+        assert!(screen.contains("d  Desktop"), "{screen}");
+        assert!(screen.contains("online · 4 ms"), "{screen}");
+
+        // d jumps to jdoe's Desktop.
+        press(&mut app, "d");
+        assert_eq!(app.cwd.display(), r"\\PC-042\C$\Users\jdoe\Desktop");
+        // From the C$ root, h goes back to the machine view.
+        press(&mut app, r":cd \\PC-042\C$<CR>");
+        press(&mut app, "h");
+        assert_eq!(app.cwd, Loc::Machine("PC-042".into()));
+
+        // u: templates for someone else.
+        press(&mut app, "u<C-u>asmith<CR>");
+        assert_eq!(names(&app)[0], r"\\PC-042\C$\Users\asmith\Desktop");
+        assert!(status(&app).contains("templates for asmith"));
+    }
+
+    #[test]
+    fn offline_machines_fail_fast() {
+        let (mut app, _rt) = with_recent(&[]);
+        let target = Loc::parse(r"\\PC-OFF\C$\Users").unwrap_or(Loc::Root);
+        app.navigate(target.clone(), None);
+        assert!(app.pending.contains_key(&target), "listing asked");
+        app.handle(AppEvent::MachineProbe {
+            host: "PC-OFF".into(),
+            result: Err("port 445 doesn't answer".into()),
+        });
+        assert!(!app.pending.contains_key(&target), "no waiting on SMB");
+        let err = app.dir(&target).and_then(|s| s.error.clone());
+        let text = err.map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            text.contains("offline") && text.contains("never seen"),
+            "{text}"
+        );
+        // And it's remembered as a recent machine.
+        assert_eq!(
+            app.recent_machines.first().map(|r| r.host.as_str()),
+            Some("PC-OFF")
+        );
+    }
+
+    #[test]
+    fn pin_a_machine_and_jump_back() {
+        let (mut app, _rt) = with_recent(&["PC-042"]);
+        press(&mut app, "gm");
+        press(&mut app, "M");
+        assert_eq!(
+            app.prompt.as_ref().map(|p| p.editor.text()).as_deref(),
+            Some("PC-042")
+        );
+        press(&mut app, "<CR>users laptop<CR>j<CR>");
+        let pin = &app.pins.pins[0];
+        assert_eq!(pin.kind, crate::pins::PinKind::Machine);
+        assert_eq!(
+            pin.extra.get("host").and_then(|v| v.as_str()),
+            Some("PC-042")
+        );
+        assert_eq!(
+            pin.extra.get("auth").and_then(|v| v.as_str()),
+            Some("admin")
+        );
+        assert_eq!(pin.key_char(), Some('j'));
+
+        press(&mut app, "gl'j");
+        assert_eq!(app.cwd, Loc::Machine("PC-042".into()));
+        // Pinned machines come first in the list, and once.
+        press(&mut app, "gm");
+        assert_eq!(names(&app), ["PC-042"]);
+    }
+
+    #[test]
+    fn locations_have_a_machines_section() {
+        use crate::platform::DriveKind;
+        let (mut app, _rt) = with_recent(&["PC-042"]);
+        let mut entries = vec![Entry::virtual_entry(
+            "C:".into(),
+            EntryKind::Drive(DriveKind::Fixed),
+            "Windows".into(),
+        )];
+        entries.extend(app.machine_root_entries());
+        app.dirs.insert(
+            Loc::Root,
+            DirState {
+                listing: Some(super::tests::listing_unsorted(entries)),
+                ..DirState::default()
+            },
+        );
+        app.set_cwd(Loc::Root, None);
+        app.pending.clear();
+        let screen = render(&mut app, 140, 30);
+        assert!(
+            screen.contains("MACHINES") && screen.contains("PC-042"),
+            "{screen}"
+        );
+        press(&mut app, "jl");
+        assert_eq!(app.cwd, Loc::Machine("PC-042".into()));
     }
 }

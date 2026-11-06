@@ -7,7 +7,7 @@ use super::theme::{self, BORDER, DIMMED, DIR, ERR, FG, INACTIVE_SEL_BG, NET, SEL
 use super::{human_size, spinner, thousands, truncate, width};
 use crate::app::{App, DirState, Mode, visible_indices};
 use crate::fs::worker::ListError;
-use crate::fs::{Entry, EntryKind, Listing};
+use crate::fs::{Entry, EntryKind, Listing, Template};
 use crate::preview::PreviewKind;
 use crate::preview::image::{ImagePreview, Picture};
 use chrono::{DateTime, Local};
@@ -356,6 +356,10 @@ fn draw_simple_rows(
 
 /// `name\` for directories, `name →` for links, truncated to `max` cells.
 fn display_name(e: &Entry, max: usize) -> String {
+    // A template shows `d  Desktop` (its full path goes in the date column).
+    if let EntryKind::Template(_) = e.kind {
+        return truncate(&e.detail, max);
+    }
     let suffix = match (e.kind, e.is_link) {
         (EntryKind::Dir, false) | (EntryKind::Share | EntryKind::Pin, _) => "\\",
         (EntryKind::Dir, true) => "\\ →",
@@ -375,8 +379,19 @@ fn entry_style(e: &Entry) -> Style {
         EntryKind::Dir => DIR,
         EntryKind::File if e.is_link => NET,
         EntryKind::File => FG,
+        EntryKind::Machine(Some(true)) => NET,
+        EntryKind::Machine(Some(false)) => DIMMED,
+        EntryKind::Machine(None) => FG,
+        EntryKind::Template(Template::Missing | Template::NeedsUser) => DIMMED,
+        EntryKind::Template(_) => DIR,
     };
     theme::fg(color)
+}
+
+/// The path of a template relative to its machine: `C$\Users\jdoe\Desktop`.
+fn template_path(e: &Entry) -> String {
+    let rest = e.name.trim_start_matches('\\');
+    rest.split_once('\\').map_or(rest, |(_, p)| p).to_string()
 }
 
 /// Which optional columns fit in the current panel.
@@ -522,6 +537,12 @@ impl Cols {
                 EntryKind::Share => "share".to_string(),
                 EntryKind::Pin => "pin".to_string(),
                 EntryKind::Dir => String::new(),
+                EntryKind::Machine(Some(true)) => "online".to_string(),
+                EntryKind::Machine(Some(false)) => "offline".to_string(),
+                EntryKind::Machine(None) => String::new(),
+                EntryKind::Template(Template::Missing) => "missing".to_string(),
+                EntryKind::Template(Template::NeedsUser) => "who? u".to_string(),
+                EntryKind::Template(_) => String::new(),
             };
             spans.push(Span::styled(format!("{size:>SIZE_W$}"), meta_style));
         }
@@ -529,6 +550,9 @@ impl Cols {
             // Virtual entries have no dates; a share's remark goes there instead.
             let date = match e.kind {
                 EntryKind::Share | EntryKind::Pin => truncate(&e.detail, DATE_W),
+                // Machines: how they answered; templates: where they lead.
+                EntryKind::Machine(_) => truncate(&e.detail, DATE_W),
+                EntryKind::Template(_) => super::truncate_left(&template_path(e), DATE_W),
                 _ if self.results && self.scored => format!("{:>5}", e.detail),
                 _ => e.modified.map(fmt_minute).unwrap_or_default(),
             };

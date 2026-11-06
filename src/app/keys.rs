@@ -45,6 +45,8 @@ pub enum PromptKind {
     TagRename,
     /// `gP` without a count: which PDF page.
     GotoPage,
+    /// `u` in a machine view: whose folders the templates open.
+    MachineUser,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +79,7 @@ impl Prompt {
             PromptKind::ViewKey => "view key (empty = none): ",
             PromptKind::TagRename => "rename tag to: ",
             PromptKind::GotoPage => "go to page: ",
+            PromptKind::MachineUser => "templates for user: ",
         }
     }
 }
@@ -135,6 +138,14 @@ impl App {
 
     fn on_normal_key(&mut self, ev: KeyEvent) {
         let key = Key::from_event(&ev);
+        // In a machine view a template's key jumps there, and `u` picks the user.
+        if self.keys_pending.is_empty()
+            && self.count.is_none()
+            && let Some(c) = key.plain_char()
+            && self.machine_key(c)
+        {
+            return;
+        }
         if self.keys_pending.is_empty() {
             // `0` starts nothing on its own; after a digit it's part of the count.
             if let Some(d) = key.is_digit()
@@ -311,6 +322,7 @@ impl App {
             Action::NextPage => self.step_page(n, true),
             Action::FullPreview => self.toggle_full_preview(),
             Action::Connect => self.connect_here(),
+            Action::Machines => self.open_machines(),
             Action::Net(arg) => self.net_command(&arg),
             Action::PrevPage => self.step_page(n, false),
             Action::GotoPage => match count {
@@ -443,7 +455,7 @@ impl App {
         };
         match kind {
             PromptKind::ConfirmUnpin | PromptKind::Confirm => p.note = self.pin_prompt_note(kind),
-            PromptKind::PinTags => self.prompt_changed(&mut p),
+            PromptKind::PinTags | PromptKind::MachineUser => self.prompt_changed(&mut p),
             _ => {}
         }
         self.prompt = Some(p);
@@ -466,6 +478,22 @@ impl App {
             return;
         }
         match (p.kind, ev.code) {
+            // `u` in a machine view: Tab cycles through the users found.
+            (PromptKind::MachineUser, KeyCode::Tab | KeyCode::BackTab) => {
+                let choices = self.machine_user_choices();
+                if !choices.is_empty() {
+                    let now = p.editor.text();
+                    let at = choices.iter().position(|c| c.eq_ignore_ascii_case(&now));
+                    let next = match (at, ev.code == KeyCode::Tab) {
+                        (Some(i), true) => (i + 1) % choices.len(),
+                        (Some(i), false) => (i + choices.len() - 1) % choices.len(),
+                        (None, _) => 0,
+                    };
+                    p.editor = LineEditor::new(&choices[next]);
+                }
+                self.prompt = Some(p);
+                return;
+            }
             (PromptKind::PinTags, KeyCode::Tab) => {
                 if let Some(text) = self.complete_tag(&p.editor.text()) {
                     p.editor = LineEditor::new(&text);
@@ -579,6 +607,14 @@ impl App {
             | PromptKind::ViewKey
             | PromptKind::TagRename
             | PromptKind::GotoPage => p.note.clear(),
+            PromptKind::MachineUser => {
+                let choices = self.machine_user_choices();
+                p.note = if choices.is_empty() {
+                    "a user name (its profile folder)".to_string()
+                } else {
+                    format!("Tab: {}", choices.join(" · "))
+                };
+            }
         }
     }
 
@@ -631,6 +667,7 @@ impl App {
                     self.mode = Mode::Prompt;
                 }
             }
+            PromptKind::MachineUser => self.machine_user_picked(&text),
             PromptKind::GotoPage => match text.trim().parse::<usize>() {
                 Ok(n) if n > 0 => self.goto_page(n),
                 _ if text.trim().is_empty() => {}
@@ -659,6 +696,7 @@ impl App {
             | PromptKind::ViewKey
             | PromptKind::TagRename => self.pin_cancel(p.kind),
             PromptKind::GotoPage => {}
+            PromptKind::MachineUser => self.machine_user_host = None,
         }
     }
 

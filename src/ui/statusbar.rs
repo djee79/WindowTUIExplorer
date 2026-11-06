@@ -186,16 +186,32 @@ pub fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             .add_modifier(Modifier::BOLD),
     );
     let rw: usize = right.iter().map(|s| s.width()).sum();
+    // A user's machine (machine view or `\\HOST\X$`): a red banner naming it and its user,
+    // so nobody forgets whose PC they're in (CLAUDE.md section 14).
+    let mut left = vec![badge, Span::raw("  ")];
+    let mut used = 12;
+    if let Some(host) = app.cwd.admin_host() {
+        let user = app
+            .machine_user(host)
+            .map(|u| format!("  ·  {u}"))
+            .unwrap_or_default();
+        let banner = format!(" ADMIN SHARE  ·  {host}{user} ");
+        used += super::width(&banner) + 2;
+        left.push(Span::styled(
+            banner,
+            Style::new()
+                .bg(ERR)
+                .fg(ON_ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ));
+        left.push(Span::raw("  "));
+    }
     let path = truncate_left(
         &app.cwd.display(),
-        (area.width as usize).saturating_sub(rw + 12),
+        (area.width as usize).saturating_sub(rw + used),
     );
     let path_color = if app.cwd.is_network() { NET } else { FG };
-    let left = vec![
-        badge,
-        Span::raw("  "),
-        Span::styled(path, theme::bold(path_color)),
-    ];
+    left.push(Span::styled(path, theme::bold(path_color)));
     bar(f, area, left, right);
 }
 
@@ -206,7 +222,8 @@ fn server_of(loc: &Loc) -> Option<String> {
             FsRoot::Share { server, .. } => Some(server.clone()),
             FsRoot::Drive(_) => None,
         },
-        Loc::Root | Loc::Results { .. } => None,
+        Loc::Machine(h) => Some(h.clone()),
+        Loc::Root | Loc::Results { .. } | Loc::Machines => None,
     }
 }
 
@@ -303,6 +320,21 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     if let Some(status) = &app.status {
         let color = if status.is_error { ERR } else { FG };
         left.push(Span::styled(status.text.clone(), theme::fg(color)));
+    } else if let Loc::Machine(host) = &app.cwd {
+        // `● online · 4 ms · logged on jdoe · u other user`
+        let (online, status) = app.machine_status(host);
+        let (dot, color) = match online {
+            Some(true) => ("● ", OK),
+            Some(false) => ("× ", ERR),
+            None => ("○ ", theme::DIM),
+        };
+        left.push(Span::styled(dot, theme::fg(color)));
+        left.push(Span::raw(status));
+        let who = app.machine_user(host).map_or_else(
+            || "  ·  no user yet (u picks one)".to_string(),
+            |u| format!("  ·  templates for {u} (u other user)"),
+        );
+        left.push(Span::styled(who, theme::dim()));
     } else if app.at_root() {
         left.push(Span::raw(super::locations::summary(app)));
     } else if let Some(s) = app.search_state(&app.cwd) {

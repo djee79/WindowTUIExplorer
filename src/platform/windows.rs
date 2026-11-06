@@ -497,6 +497,44 @@ fn bgra_premultiplied_to_rgba(px: &mut [u8]) {
     }
 }
 
+/// The users logged on to `host` (`NetWkstaUserEnum`, level 1; needs admin rights on it),
+/// as `user` names, machine accounts and repeats included (see `machines::people`).
+///
+/// **Blocks** like every NetApi call: a dead host parks the thread for ~20 s. Run it on the
+/// blocking pool under a timeout, after the port-445 probe said the host is up.
+pub fn logged_on_users(host: &str) -> io::Result<Vec<String>> {
+    use windows::Win32::NetworkManagement::NetManagement::{NetWkstaUserEnum, WKSTA_USER_INFO_1};
+    let name = HSTRING::from(format!("\\\\{}", host.trim_start_matches('\\')));
+    let mut buf: *mut u8 = std::ptr::null_mut();
+    let (mut read, mut total) = (0u32, 0u32);
+    // SAFETY: `name` outlives the call; the out-pointers point at live locals. On success
+    // netapi32 allocates `buf`, freed below.
+    let rc = unsafe {
+        NetWkstaUserEnum(
+            &name,
+            1,
+            Some(&mut buf),
+            MAX_PREFERRED_LENGTH,
+            Some(&mut read),
+            &mut total,
+            None,
+        )
+    };
+    if rc != ERROR_SUCCESS.0 && rc != ERROR_MORE_DATA.0 {
+        return Err(io::Error::from_raw_os_error(rc as i32));
+    }
+    if buf.is_null() {
+        return Ok(Vec::new());
+    }
+    // SAFETY: on success netapi32 returned `read` consecutive WKSTA_USER_INFO_1 records.
+    let items =
+        unsafe { std::slice::from_raw_parts(buf as *const WKSTA_USER_INFO_1, read as usize) };
+    let users = items.iter().map(|u| wide(u.wkui1_username)).collect();
+    // SAFETY: `buf` came from netapi32 and is freed exactly once.
+    let _ = unsafe { NetApiBufferFree(Some(buf.cast())) };
+    Ok(users)
+}
+
 // ------------------------------------------------------------------- SMB connections
 
 /// A live connection, as `net use` lists it.

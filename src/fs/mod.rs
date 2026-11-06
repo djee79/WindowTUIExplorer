@@ -19,6 +19,21 @@ pub enum EntryKind {
     /// A pinned folder in the Locations root, named by its full path; `detail` holds the
     /// pin's name.
     Pin,
+    /// A machine (Machines list, Locations), named by its host: port 445 answered (true),
+    /// didn't (false), not checked yet (None). `detail` says how / when.
+    Machine(Option<bool>),
+    /// A path template in a machine view, named by its full path (`detail`: `d  Desktop`).
+    Template(Template),
+}
+
+/// Whether a machine view's template folder is there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Template {
+    Unknown,
+    There,
+    Missing,
+    /// It has `{user}` and nobody is known yet (`u` picks one).
+    NeedsUser,
 }
 
 #[derive(Debug, Clone)]

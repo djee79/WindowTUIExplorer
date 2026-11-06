@@ -63,6 +63,11 @@ pub enum Loc {
     /// Search results shown as a folder (`s` / `S`). Entries are named by their path
     /// relative to `origin`, the directory the search ran from, which is also the parent.
     Results { id: u64, origin: Box<Loc> },
+    /// `gm`: pinned and recent machines (CLAUDE.md section 14). Entries are host names.
+    Machines,
+    /// A machine view: its path templates and `C$`, named by their full path
+    /// (`\\HOST\C$\Users\jdoe\Desktop`), so opening one is plain navigation.
+    Machine(String),
 }
 
 impl FsPath {
@@ -260,7 +265,8 @@ impl Loc {
         match self {
             Loc::Root => None,
             Loc::Results { origin, .. } => Some((**origin).clone()),
-            Loc::Server(_) => Some(Loc::Root),
+            Loc::Server(_) | Loc::Machines => Some(Loc::Root),
+            Loc::Machine(_) => Some(Loc::Machines),
             Loc::Fs(p) if p.parts.is_empty() => match &p.root {
                 FsRoot::Drive(_) => Some(Loc::Root),
                 FsRoot::Share { server, .. } => Some(Loc::Server(server.clone())),
@@ -291,7 +297,16 @@ impl Loc {
                         _ => Err(PathError::Invalid(format!("not a location: {name}"))),
                     }
                 }
-                _ => Err(PathError::Invalid(format!("not a location: {name}"))),
+                // MACHINES lists bare host names (no `\`, no `:`).
+                _ => Loc::machine(name),
+            },
+            Loc::Machines => Loc::machine(name),
+            // Template entries are full paths on the machine.
+            Loc::Machine(host) => match Loc::parse(name)? {
+                Loc::Fs(p) if p.server().is_some_and(|s| s.eq_ignore_ascii_case(host)) => {
+                    Ok(Loc::Fs(p))
+                }
+                _ => Err(PathError::Invalid(format!("not on {host}: {name}"))),
             },
             Loc::Server(server) => {
                 validate_component(name)?;
@@ -317,13 +332,28 @@ impl Loc {
         }
     }
 
+    /// A machine view for a host name: letters, digits, `-`, `_`, `.` (a NetBIOS name, a
+    /// DNS name or an IPv4 address).
+    pub fn machine(host: &str) -> Result<Loc, PathError> {
+        let h = host.trim();
+        let ok = !h.is_empty()
+            && h.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        if ok {
+            Ok(Loc::Machine(h.to_string()))
+        } else {
+            Err(PathError::Invalid(format!("not a machine name: {host}")))
+        }
+    }
+
     /// The name this location has inside its parent's listing.
     pub fn name(&self) -> String {
         match self {
             Loc::Root => "Locations".to_string(),
-            Loc::Server(s) => s.clone(),
+            Loc::Server(s) | Loc::Machine(s) => s.clone(),
             Loc::Fs(p) => p.name(),
             Loc::Results { .. } => "search".to_string(),
+            Loc::Machines => "Machines".to_string(),
         }
     }
 
@@ -333,6 +363,26 @@ impl Loc {
             Loc::Server(s) => format!("\\\\{s}"),
             Loc::Fs(p) => p.display(),
             Loc::Results { origin, .. } => format!("search in {}", origin.display()),
+            Loc::Machines => "Machines".to_string(),
+            Loc::Machine(h) => format!("machine {h}"),
+        }
+    }
+
+    /// The machine a location is on: a machine view, or any path under an admin share
+    /// (`\\HOST\C$`, `\\HOST\D$`, not `IPC$`) of a host.
+    pub fn admin_host(&self) -> Option<&str> {
+        match self {
+            Loc::Machine(h) => Some(h),
+            Loc::Fs(p) => match &p.root {
+                FsRoot::Share { server, share }
+                    if share.ends_with('$') && !share.eq_ignore_ascii_case("IPC$") =>
+                {
+                    Some(server)
+                }
+                _ => None,
+            },
+            Loc::Results { origin, .. } => origin.admin_host(),
+            _ => None,
         }
     }
 
@@ -348,8 +398,8 @@ impl Loc {
     /// (Mapped drive letters look local here; the worker asks the OS about those.)
     pub fn is_network(&self) -> bool {
         match self {
-            Loc::Root => false,
-            Loc::Server(_) => true,
+            Loc::Root | Loc::Machines => false,
+            Loc::Server(_) | Loc::Machine(_) => true,
             Loc::Fs(p) => p.is_network(),
             Loc::Results { origin, .. } => origin.is_network(),
         }
@@ -369,6 +419,8 @@ impl Loc {
             Loc::Fs(p) => p.key(),
             // `|` can't appear in a path, so this never collides with a real one.
             Loc::Results { id, .. } => format!("|search|{id}"),
+            Loc::Machines => "|machines".to_string(),
+            Loc::Machine(h) => format!("|machine|{}", h.to_lowercase()),
         }
     }
 }
@@ -651,7 +703,12 @@ mod tests {
         for bad in ["a\\b", "a/b", "..", ".", "a:b", "a?"] {
             assert!(c.join(bad).is_err(), "{bad}");
         }
-        assert!(Loc::Root.join("nope").is_err());
+        // A bare name in Locations is a machine (its MACHINES section).
+        assert_eq!(
+            Loc::Root.join("JDOE-LT042"),
+            Ok(Loc::Machine("JDOE-LT042".into()))
+        );
+        assert!(Loc::Root.join("not a host!").is_err());
         // Pinned folders are listed by their full path.
         for full in [r"C:\work\HIT", r"\\srv\STD$\cat", r"\\srv\share", r"\\srv"] {
             assert_eq!(
@@ -757,10 +814,52 @@ mod tests {
                 Ok(*want)
             );
         }
-        // Full paths (pinned folders) join too; relative names and garbage don't.
-        for bad in [r"\\", "dir", r"\dir", r"C:dir"] {
+        // Full paths (pinned folders) join too; relative paths and garbage don't
+        // (a bare name is a machine, see `join_rejects_non_names`).
+        for bad in [r"\\", r"\dir", r"C:dir", "a b"] {
             assert!(Loc::Root.join(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn machine_locations() {
+        let m = Loc::Machine("PC-042".into());
+        assert_eq!(m.parent(), Some(Loc::Machines));
+        assert_eq!(Loc::Machines.parent(), Some(Loc::Root));
+        assert_eq!(
+            m,
+            Loc::Machine("pc-042".into()),
+            "hosts compare case-insensitively"
+        );
+        assert_ne!(
+            m,
+            Loc::Server("PC-042".into()),
+            "a machine view isn't the server node"
+        );
+        assert_eq!(Loc::Machines.join("PC-042"), Ok(m.clone()));
+        // Templates are full paths on the same machine.
+        assert_eq!(
+            m.join(r"\\PC-042\C$\Users\jdoe").map(|l| l.display()),
+            Ok(r"\\PC-042\C$\Users\jdoe".to_string())
+        );
+        assert!(m.join(r"\\OTHER\C$").is_err(), "not another machine");
+        assert!(m.is_network());
+        // Admin shares tell their host; other shares and IPC$ don't.
+        let host = |s: &str| {
+            Loc::parse(s)
+                .ok()
+                .and_then(|l| l.admin_host().map(str::to_string))
+        };
+        assert_eq!(host(r"\\PC-042\C$\Users"), Some("PC-042".into()));
+        assert_eq!(host(r"\\PC-042\D$"), Some("PC-042".into()));
+        assert_eq!(host(r"\\srv\project"), None);
+        assert_eq!(host(r"\\srv\IPC$"), None);
+        assert_eq!(host(r"C:\x"), None);
+        assert_eq!(m.admin_host(), Some("PC-042"));
+        assert!(Loc::machine("10.0.0.5").is_ok());
+        assert!(Loc::machine("pc.corp.example").is_ok());
+        assert!(Loc::machine("").is_err());
+        assert!(Loc::machine(r"a\b").is_err());
     }
 
     #[test]

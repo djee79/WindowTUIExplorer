@@ -321,6 +321,8 @@ pub enum Action {
     NextPage,
     /// `:net list` / `:net drop <server>` / `:net drop-all`.
     Net(String),
+    /// `gm`: the Machines list.
+    Machines,
     /// `:connect`: the credential prompt for the cwd's share.
     Connect,
     /// `zp`: full-screen preview (zoom, pan, next file).
@@ -390,6 +392,7 @@ const NAMED: &[(&str, Action)] = &[
     ("next-page", Action::NextPage),
     ("full-preview", Action::FullPreview),
     ("connect", Action::Connect),
+    ("machines", Action::Machines),
     ("prev-page", Action::PrevPage),
     ("goto-page", Action::GotoPage),
     ("next-match", Action::NextMatch),
@@ -573,6 +576,7 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("r", RenamePin, "rename (Locations: a pin)"),
         ("~", Cd("~".to_string()), "home"),
         ("gl", Locations, "Locations"),
+        ("gm", Machines, "Machines (user PCs)"),
         ("gd", Downloads, "Downloads"),
         ("g\\", VolumeRoot, "root of this drive or share"),
         ("g<Space>", GotoPath, "go to a path (any form, UNC too)"),

@@ -495,3 +495,38 @@ Manual checklist (home NAS has a saved password):
 - [ ] A second, valid NAS account: error 1219 → `a` (alias) opens the same folder; `:net
       list` shows both. `:net drop-all` removes the sentier one.
 - [ ] Leave Remember unticked while testing: it would replace the saved NAS credential.
+
+## M3b machines, slice 1: machine views (code complete 2026-11-06, manual check pending)
+
+- `Loc::Machines` (`gm`, parent Locations) and `Loc::Machine(host)` (parent Machines), both
+  built by the app (not listed by the worker). A bare name in Locations is a machine (its
+  MACHINES section: pinned + 8 most recent). `Loc::admin_host()`: a machine view or any
+  `\HOST\X$` path (not `IPC$`).
+- Pins: `kind = "machine"` with `host`, optional `user` hint and `auth` (default `admin`) in
+  the extra fields. `M` on a machine (or in its view), `m{key}` in its view, `'key` opens it.
+- Recent machines: `%LOCALAPPDATA%\sentier\machines.tsv` (host, opened, last seen), kept
+  `machines.recent_days` (30) days. Every machine view or admin-share path records it.
+- Port-445 probe first (500 ms connect, 3 s with the name lookup): online with the round
+  trip, or `offline (port 445 doesn't answer) · last seen 3 d ago`. An offline host's
+  admin-share listing is cancelled and fails at once instead of waiting on SMB.
+- Users: `NetWkstaUserEnum` (level 1, admin rights; people only), and the profile folders
+  of `C$\Users` newest first (system / `adm-*` / Administrator skipped) as the fallback.
+  Templates use: the one picked with `u` › logged on › the pin's `user` › newest profile.
+- `[[machine.path]]` templates in config.toml (the spec's six by default); `{user}` and
+  `{host}` expand; one key each jumps there from the view (`d w t r p`). Template folders are
+  checked in the background (missing → greyed "missing"); `{user}` templates without a user
+  say "who? u". `u` prompts for the user (Tab cycles the ones found). `C$` is last.
+- `h` from the root of `\HOST\C$` of a known machine goes back to its view. `R` re-probes.
+- Red `ADMIN SHARE · HOST · user` banner in the header on admin shares and machine views;
+  status line `● online · 4 ms · templates for jdoe (u other user)`.
+
+Next slice: the `<leader>m` machine picker (recent, pinned, inventory CSV, `getad`-style
+JSON command), `is:machine is:online is:offline`. With file operations (M4/M6): the
+"Delete 2 files on HOST (user's machine)?" confirmations and the audit log. With open-with
+(M5): machine actions (RDP, Computer Management, Event Viewer, PowerShell, remotectl).
+
+Manual checklist (office, admin account):
+- [ ] `:cd \<a colleague's PC>\C$`: banner, probe, then `h` → machine view with the user.
+- [ ] `d` / `w` / `t` jump to that user's folders; `u` picks another user.
+- [ ] A laptop that's off: offline in under a second, no hang.
+- [ ] `M` pins it; `gm` and `gl` list it.

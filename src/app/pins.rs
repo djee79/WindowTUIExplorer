@@ -126,6 +126,14 @@ impl App {
                 );
                 return;
             }
+            Loc::Machine(host) => {
+                let host = host.clone();
+                return self.pin_machine(&host, Some(c));
+            }
+            Loc::Machines => {
+                self.set_status("M on a machine pins it".into(), false);
+                return;
+            }
         };
         if !self.pins_ready() {
             return;
@@ -183,6 +191,9 @@ impl App {
         let Some(pin) = self.pins.pins.get(idx).cloned() else {
             return;
         };
+        if pin.kind == PinKind::Machine {
+            return self.open_machine_pin(&pin);
+        }
         let Some(target) = pin.target() else {
             let when = match pin.kind {
                 PinKind::Sync | PinKind::Backup => "M4b",
@@ -225,6 +236,10 @@ impl App {
     /// `M`: pin the item under the cursor (folder → folder pin, .exe/.bat/.lnk → app,
     /// other files → file pin).
     pub(super) fn pin_item(&mut self) {
+        // A machine under the cursor (Machines, Locations) or the machine being viewed.
+        if let Some(host) = self.machine_here() {
+            return self.pin_machine(&host, None);
+        }
         let Some(entry) = self.selected().cloned() else {
             self.set_status("nothing under the cursor to pin".into(), false);
             return;
@@ -346,6 +361,11 @@ impl App {
     }
 
     // ------------------------------------------------------------------ prompts
+
+    /// A new machine pin through the usual prompts (name, tags, then a key unless given).
+    pub(super) fn pin_machine_draft(&mut self, pin: Pin, key: Option<char>) {
+        self.start_draft(PinDraft::new(pin, key, key.is_none()));
+    }
 
     fn start_draft(&mut self, draft: PinDraft) {
         let name = draft.pin.name.clone();

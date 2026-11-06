@@ -215,6 +215,7 @@ fn kind_color(kind: ItemKind) -> ratatui::style::Color {
         ItemKind::Pin(PinKind::App) => OK,
         ItemKind::Pin(PinKind::Web) | ItemKind::Tag => NET,
         ItemKind::Pin(PinKind::Sync | PinKind::Backup) => theme::WARN,
+        ItemKind::Pin(PinKind::Machine) => ERR,
         ItemKind::View => ACCENT,
     }
 }
@@ -358,6 +359,16 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
             if let Some(m) = extra("mode") {
                 lines.push(info_line("Mode", m));
             }
+        }
+        PinKind::Machine => {
+            lines.push(info_line("Host", pin.detail()));
+            if let Some(u) = extra("user") {
+                lines.push(info_line("User", u));
+            }
+            lines.push(info_line(
+                "Login",
+                extra("auth").unwrap_or_else(|| "admin".to_string()),
+            ));
         }
     }
     lines.push(info_line(
