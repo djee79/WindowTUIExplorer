@@ -124,6 +124,7 @@ impl App {
             Mode::Help => self.mode = Mode::Normal,
             Mode::Prompt => self.on_prompt_key(key),
             Mode::Picker => self.on_picker_key(key),
+            Mode::Preview => self.on_preview_key(key),
             Mode::Normal => self.on_normal_key(key),
         }
     }
@@ -306,6 +307,7 @@ impl App {
             Action::NameSearch => self.open_prompt(PromptKind::NameSearch),
             Action::ContentSearch => self.open_prompt(PromptKind::ContentSearch),
             Action::NextPage => self.step_page(n, true),
+            Action::FullPreview => self.toggle_full_preview(),
             Action::PrevPage => self.step_page(n, false),
             Action::GotoPage => match count {
                 Some(c) => self.goto_page(c),

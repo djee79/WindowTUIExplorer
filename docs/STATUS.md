@@ -423,3 +423,24 @@ Note: on this machine PDFs have no thumbnail handler; they use Windows.Data.Pdf 
 Manual checklist:
 - [ ] A .docx / .xlsx / .mp4: thumbnail or file info, never a spinner flash.
 - [ ] At the office: a .dwg with Autodesk's thumbnail handler installed.
+
+## M2b previews, slice 4: `zp` full screen + zoom, preloading (code complete 2026-11-06)
+
+- `zp` (on a picture, PDF or thumbnail-type file): the preview fills the body (`Mode::Preview`).
+  `j`/`k` next / previous file (zoom resets), `]p`/`[p` pages (counts), `+`/`-` zoom
+  100 · 150 · 200 · 300 · 400 · 600 · 800 %, `=` back to 100 %, `H J K L` pan a quarter
+  of the visible part, `zp`/`Esc`/`q` back. Status bar: `PREVIEW · zoom 200 %`; title shows
+  the zoom. These keys are fixed for now (keymap tables for other modes come with config).
+- Zoom is a real crop (`preview::crop_rect`, `View` in the `ImageKey`): the visible part is
+  cut out and fitted to the box, growing past its natural size. PDFs are re-rendered wider
+  when zoomed (up to 12 000 DIPs) so text stays sharp; thumbnails are asked bigger.
+- Preloading: once the current preview is shown, the nearest previewable file on each side
+  and the next PDF page are requested into the cache (not while zoomed). A request already
+  on its way is never sent twice; landing on a file being preloaded waits for that answer.
+- "No thumbnail" (and other non-timeout failures) are remembered (LRU of 256), so moving
+  back and forth doesn't ask the shell again.
+
+Manual checklist:
+- [ ] `zp` on a photo, `+ + +`, `H J K L`, `=`, `j` to the next photo, `zp` back: no ghost.
+- [ ] `zp` on a drawing PDF, `++`, pan to the title block: text sharp. `]p` pages.
+- [ ] In a folder of photos, `j` after the first preview: the next one appears instantly.

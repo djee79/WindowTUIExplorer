@@ -87,6 +87,8 @@ pub enum Mode {
     Help,
     /// A picker is open (`<leader>p`); it has its own insert / normal modes.
     Picker,
+    /// `zp`: the preview fills the body (zoom, pan, pages, next file).
+    Preview,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +210,13 @@ pub struct App {
     moved_at: Instant,
     /// The page shown for each PDF previewed (0-based), so coming back keeps the page.
     pdf_pages: HashMap<Loc, u32>,
+    /// Pictures Windows has none of / that failed (not retried), and requests on their way.
+    image_misses: crate::preview::Lru<crate::preview::ImageKey, String>,
+    image_inflight: HashSet<crate::preview::ImageKey>,
+    /// Zoom and pan of the full-screen preview (`zp`); reset when the file changes.
+    pview: crate::preview::View,
+    full_count: Option<usize>,
+    full_pending: Option<preview::FullPending>,
     /// Reachability of Locations entries, keyed by the location each one opens.
     pub reach: HashMap<Loc, Reach>,
     last_probe_round: Option<Instant>,
@@ -277,6 +286,11 @@ impl App {
             image_resized: false,
             moved_at: Instant::now(),
             pdf_pages: HashMap::new(),
+            image_misses: crate::preview::Lru::new(256),
+            image_inflight: HashSet::new(),
+            pview: crate::preview::View::default(),
+            full_count: None,
+            full_pending: None,
             reach: HashMap::new(),
             last_probe_round: None,
             status: None,
@@ -665,6 +679,8 @@ impl App {
         let now = Instant::now();
         self.preview_due = Some(now + PREVIEW_DELAY);
         self.moved_at = now;
+        // Another file: zoom and pan start over.
+        self.pview = crate::preview::View::default();
     }
 
     fn refresh(&mut self) {
@@ -2175,7 +2191,10 @@ mod preview_tests {
             },
         );
         app.set_cwd(cwd, None);
-        let dir = std::env::temp_dir().join(format!("sentier-prev-{}", std::process::id()));
+        // One folder per call: tests run in parallel and each removes its own.
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("sentier-prev-{}-{n}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("photo.png");
         let img = image::RgbaImage::from_pixel(400, 200, image::Rgba([200, 30, 30, 255]));
@@ -2338,7 +2357,9 @@ mod preview_tests {
         let Some(key) = app.image.as_ref().map(|s| s.key.clone()) else {
             panic!()
         };
-        let Ok(p) = crate::preview::image::pdf(&pdf, 0, &app.graphics, key.cols, key.rows) else {
+        let Ok(p) =
+            crate::preview::image::pdf(&pdf, 0, &app.graphics, key.cols, key.rows, key.view)
+        else {
             panic!()
         };
         app.handle(AppEvent::ImagePreview {
@@ -2424,7 +2445,8 @@ mod preview_tests {
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .is_ok()
         );
-        let Ok(mut thumb) = crate::preview::image::decode(&png, &app.graphics, key.cols, key.rows)
+        let Ok(mut thumb) =
+            crate::preview::image::decode(&png, &app.graphics, key.cols, key.rows, key.view)
         else {
             panic!()
         };
@@ -2448,5 +2470,141 @@ mod preview_tests {
                 .as_ref()
                 .is_some_and(|s| s.key.loc.name() == "spec.docx")
         );
+    }
+
+    /// C:\work holding `files`, the cursor on the first, the picture box reported.
+    fn gallery(files: &[&str]) -> (App, tokio::runtime::Runtime) {
+        let (mut app, rt, _) = with_photo();
+        let cwd = app.cwd.clone();
+        let entries = files
+            .iter()
+            .map(|n| entry(n, EntryKind::File, 4096, false))
+            .collect();
+        app.dirs.insert(
+            cwd.clone(),
+            DirState {
+                listing: Some(listing(entries)),
+                ..DirState::default()
+            },
+        );
+        app.set_cwd(cwd, None);
+        app.set_cursor(0);
+        render(&mut app, 120, 30);
+        (app, rt)
+    }
+
+    fn answer(app: &mut App, key: crate::preview::ImageKey) {
+        let mut png = Vec::new();
+        assert!(
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                64,
+                64,
+                image::Rgba([1, 1, 1, 255])
+            ))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .is_ok()
+        );
+        let Ok(p) =
+            crate::preview::image::decode(&png, &app.graphics, key.cols, key.rows, key.view)
+        else {
+            panic!()
+        };
+        app.handle(AppEvent::ImagePreview {
+            key,
+            result: Ok(Arc::new(p)),
+        });
+    }
+
+    fn current(app: &App) -> Option<crate::preview::ImageKey> {
+        app.image.as_ref().map(|s| s.key.clone())
+    }
+
+    #[test]
+    fn preloads_neighbours_once_and_uses_them() {
+        let (mut app, _rt) = gallery(&["a.png", "b.png", "c.png", "notes.txt"]);
+        press(&mut app, "j"); // b.png
+        settle(&mut app);
+        let Some(b) = current(&app) else { panic!() };
+        assert_eq!(app.image_inflight.len(), 1, "only the current one so far");
+        answer(&mut app, b);
+        let names: Vec<String> = app.image_inflight.iter().map(|k| k.loc.name()).collect();
+        assert_eq!(app.image_inflight.len(), 2, "{names:?}");
+        assert!(names.contains(&"a.png".into()) && names.contains(&"c.png".into()));
+
+        // Onto c.png while its preload is on the way: not asked twice.
+        press(&mut app, "j");
+        settle(&mut app);
+        assert_eq!(app.image_inflight.len(), 2, "no duplicate request");
+        let Some(c) = current(&app) else { panic!() };
+        answer(&mut app, c);
+        assert!(
+            app.image
+                .as_ref()
+                .is_some_and(|s| matches!(s.result, Some(Ok(_))))
+        );
+        // c's neighbours: b is cached, notes.txt has nothing to preview.
+        let names: Vec<String> = app.image_inflight.iter().map(|k| k.loc.name()).collect();
+        assert_eq!(names, ["a.png"], "only a.png is still on its way");
+    }
+
+    #[test]
+    fn missing_thumbnails_are_not_asked_again() {
+        let (mut app, _rt) = gallery(&["notes.txt", "spec.docx"]);
+        press(&mut app, "j");
+        settle(&mut app);
+        let Some(key) = current(&app) else { panic!() };
+        app.handle(AppEvent::ImagePreview {
+            key,
+            result: Err("no Windows thumbnail".into()),
+        });
+        press(&mut app, "kj");
+        settle(&mut app);
+        assert!(app.image_inflight.is_empty(), "remembered, not re-asked");
+        assert!(
+            app.image
+                .as_ref()
+                .is_some_and(|s| matches!(s.result, Some(Err(_))))
+        );
+    }
+
+    #[test]
+    fn full_screen_zoom_pan_and_next_file() {
+        let (mut app, _rt) = gallery(&["a.txt", "b.png", "c.png"]);
+        press(&mut app, "zp");
+        assert_eq!(app.mode, Mode::Normal, "nothing to show for a .txt");
+        let small = app.image_area.map(|r| r.width).unwrap_or(0);
+        press(&mut app, "jzp");
+        assert_eq!(app.mode, Mode::Preview);
+        let screen = render(&mut app, 120, 30);
+        assert!(screen.contains("PREVIEW"), "{screen}");
+        let big = app.image_area.map(|r| r.width).unwrap_or(0);
+        assert!(big > small * 2, "the whole body: {small} → {big}");
+        settle(&mut app);
+        assert_eq!(
+            current(&app).map(|k| (k.loc.name(), k.cols)),
+            Some(("b.png".into(), big))
+        );
+
+        press(&mut app, "++L");
+        settle(&mut app);
+        let Some(k) = current(&app) else { panic!() };
+        assert_eq!(k.view.zoom, 200);
+        assert!(k.view.cx > 500, "panned right");
+        let screen = render(&mut app, 120, 30);
+        assert!(screen.contains("b.png · 200 %"), "{screen}");
+        press(&mut app, "=");
+        settle(&mut app);
+        assert_eq!(current(&app).map(|k| k.view.zoom), Some(100));
+
+        // j: the next file, zoom starts over.
+        press(&mut app, "+j");
+        settle(&mut app);
+        let Some(k) = current(&app) else { panic!() };
+        assert_eq!((k.loc.name().as_str(), k.view.zoom), ("c.png", 100));
+
+        press(&mut app, "zp");
+        assert_eq!(app.mode, Mode::Normal);
+        press(&mut app, "zp<Esc>");
+        assert_eq!(app.mode, Mode::Normal, "Esc leaves too");
     }
 }

@@ -65,6 +65,15 @@ const PICKER_INSERT_HINTS: &[(&str, &str)] = &[
     ("Esc", "normal mode"),
 ];
 
+const FULL_PREVIEW_HINTS: &[(&str, &str)] = &[
+    ("j/k", "next / previous file"),
+    ("]p/[p", "page"),
+    ("+/-", "zoom"),
+    ("=", "fit"),
+    ("HJKL", "pan"),
+    ("zp/Esc", "back"),
+];
+
 const PICKER_NORMAL_HINTS: &[(&str, &str)] = &[
     ("j/k", "move"),
     ("Enter", "open"),
@@ -248,6 +257,20 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         bar(f, area, left, Vec::new());
         return;
     }
+    if app.mode == Mode::Preview {
+        left.push(badge(" PREVIEW ", ACCENT));
+        left.push(Span::raw("  "));
+        let msg = match &app.status {
+            Some(s) => Span::styled(s.text.clone(), theme::fg(if s.is_error { ERR } else { FG })),
+            None => Span::styled(
+                format!("full screen  ·  zoom {} %", app.zoom()),
+                theme::dim(),
+            ),
+        };
+        left.push(msg);
+        bar(f, area, left, Vec::new());
+        return;
+    }
     if let (Mode::Picker, Some(p)) = (app.mode, &app.picker) {
         left.push(match p.mode {
             crate::picker::PickerMode::Insert => badge(" INSERT ", OK),
@@ -371,6 +394,8 @@ pub fn draw_hints(f: &mut Frame, area: Rect, app: &App) {
             crate::picker::PickerMode::Insert => PICKER_INSERT_HINTS,
             crate::picker::PickerMode::Normal => PICKER_NORMAL_HINTS,
         }
+    } else if app.mode == Mode::Preview {
+        FULL_PREVIEW_HINTS
     } else if app.at_root() {
         ROOT_HINTS
     } else if let Some(s) = app.search_state(&app.cwd) {

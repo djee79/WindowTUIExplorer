@@ -319,6 +319,8 @@ pub enum Action {
     ContentSearch,
     /// `]p` / `[p` / `gP`: page through the PDF under the cursor (counts work).
     NextPage,
+    /// `zp`: full-screen preview (zoom, pan, next file).
+    FullPreview,
     PrevPage,
     GotoPage,
     /// `]m` / `[m`: next / previous match in the preview of a content-search result.
@@ -382,6 +384,7 @@ const NAMED: &[(&str, Action)] = &[
     ("name-search", Action::NameSearch),
     ("content-search", Action::ContentSearch),
     ("next-page", Action::NextPage),
+    ("full-preview", Action::FullPreview),
     ("prev-page", Action::PrevPage),
     ("goto-page", Action::GotoPage),
     ("next-match", Action::NextMatch),
@@ -545,6 +548,7 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("s", NameSearch, "search names below here"),
         ("S", ContentSearch, "search contents below here"),
         ("]p", NextPage, "next PDF page"),
+        ("zp", FullPreview, "full-screen preview"),
         ("[p", PrevPage, "previous PDF page"),
         ("gP", GotoPage, "go to PDF page"),
         ("]m", NextMatch, "next match in the preview"),

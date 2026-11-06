@@ -235,6 +235,93 @@ pub struct ImageKey {
     pub page: u32,
     pub cols: u16,
     pub rows: u16,
+    /// Zoom and pan (full-screen preview); `View::default()` everywhere else.
+    pub view: View,
+}
+
+/// Zoom levels, in percent.
+pub const ZOOMS: &[u16] = &[100, 150, 200, 300, 400, 600, 800];
+
+/// What part of a picture is shown: a zoom in percent and the point of the picture at the
+/// center of the box, in thousandths of its width and height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct View {
+    pub zoom: u16,
+    pub cx: u16,
+    pub cy: u16,
+}
+
+impl Default for View {
+    fn default() -> Self {
+        View {
+            zoom: 100,
+            cx: 500,
+            cy: 500,
+        }
+    }
+}
+
+impl View {
+    pub fn zoomed(self) -> bool {
+        self.zoom > 100
+    }
+
+    /// `+` / `-`: the next zoom level up or down. Zooming out to 100 % recenters.
+    pub fn step_zoom(self, up: bool) -> View {
+        let i = ZOOMS.iter().position(|z| *z >= self.zoom).unwrap_or(0);
+        let i = if up {
+            (i + 1).min(ZOOMS.len() - 1)
+        } else {
+            i.saturating_sub(1)
+        };
+        let zoom = ZOOMS[i];
+        if zoom == 100 {
+            View::default()
+        } else {
+            View { zoom, ..self }
+        }
+    }
+
+    /// `H J K L`: move the view a quarter of what's visible, staying on the picture.
+    pub fn pan(self, dx: i32, dy: i32) -> View {
+        if !self.zoomed() {
+            return self;
+        }
+        // At zoom z about 1/z of the picture shows; a step is a quarter of that.
+        let step = 250_000 / i32::from(self.zoom);
+        let half = 50_000 / i32::from(self.zoom);
+        let clamp = |c: u16, d: i32| (i32::from(c) + d * step).clamp(half, 1000 - half) as u16;
+        View {
+            cx: clamp(self.cx, dx),
+            cy: clamp(self.cy, dy),
+            ..self
+        }
+    }
+}
+
+/// The part of a `w`×`h` px picture to show in a `cols`×`rows` cell box (cells of
+/// `cell_w`×`cell_h` px) at `view`: (x, y, width, height) in picture pixels. The whole
+/// picture at 100 %.
+pub fn crop_rect(w: u32, h: u32, cols: u16, rows: u16, view: View) -> (u32, u32, u32, u32) {
+    const CELL_W: f64 = 10.0;
+    const CELL_H: f64 = 20.0;
+    if !view.zoomed() || w == 0 || h == 0 || cols == 0 || rows == 0 {
+        return (0, 0, w, h);
+    }
+    let (wf, hf) = (f64::from(w), f64::from(h));
+    let (box_w, box_h) = (f64::from(cols) * CELL_W, f64::from(rows) * CELL_H);
+    // The scale that fits the whole picture, times the zoom.
+    let s = (box_w / wf).min(box_h / hf) * f64::from(view.zoom) / 100.0;
+    let vis_w = (box_w / s).min(wf);
+    let vis_h = (box_h / s).min(hf);
+    let x = (f64::from(view.cx) / 1000.0 * wf - vis_w / 2.0).clamp(0.0, wf - vis_w);
+    let y = (f64::from(view.cy) / 1000.0 * hf - vis_h / 2.0).clamp(0.0, hf - vis_h);
+    (
+        x.round() as u32,
+        y.round() as u32,
+        (vis_w.round() as u32).max(1),
+        (vis_h.round() as u32).max(1),
+    )
 }
 
 /// A small least-recently-used cache: the most recent at the front.
@@ -437,5 +524,75 @@ mod tests {
         assert!(too_big_for_network(MAX_NETWORK_BYTES + 1, true));
         assert!(!too_big_for_network(MAX_NETWORK_BYTES + 1, false));
         assert!(!too_big_for_network(1024, true));
+    }
+
+    #[test]
+    fn zoom_steps_and_recenters() {
+        let v = View::default();
+        assert!(!v.zoomed());
+        assert_eq!(v.step_zoom(false), v, "can't go below 100 %");
+        let z = v.step_zoom(true).step_zoom(true);
+        assert_eq!(z.zoom, 200);
+        let panned = z.pan(1, 0);
+        assert!(panned.cx > 500);
+        assert_eq!(
+            panned.step_zoom(false).step_zoom(false),
+            View::default(),
+            "100 % recenters"
+        );
+        let mut top = View::default();
+        for _ in 0..10 {
+            top = top.step_zoom(true);
+        }
+        assert_eq!(top.zoom, 800, "stops at the top");
+        assert_eq!(
+            View::default().pan(1, 1),
+            View::default(),
+            "no pan at 100 %"
+        );
+    }
+
+    #[test]
+    fn pan_stays_on_the_picture() {
+        let mut v = View::default().step_zoom(true).step_zoom(true); // 200 %
+        for _ in 0..20 {
+            v = v.pan(-1, -1);
+        }
+        // At 200 % half the picture shows: the center can't go past a quarter.
+        assert_eq!((v.cx, v.cy), (250, 250));
+        for _ in 0..20 {
+            v = v.pan(1, 1);
+        }
+        assert_eq!((v.cx, v.cy), (750, 750));
+    }
+
+    #[test]
+    fn crop_table() {
+        // A 1000×1000 picture in a 50×25 box (500×500 px): fits at 0.5.
+        let at = |zoom, cx, cy| View { zoom, cx, cy };
+        assert_eq!(
+            crop_rect(1000, 1000, 50, 25, View::default()),
+            (0, 0, 1000, 1000)
+        );
+        // 200 %: half of it, centered.
+        assert_eq!(
+            crop_rect(1000, 1000, 50, 25, at(200, 500, 500)),
+            (250, 250, 500, 500)
+        );
+        // Panned to the top-left corner: clamped to the picture.
+        assert_eq!(
+            crop_rect(1000, 1000, 50, 25, at(200, 0, 0)),
+            (0, 0, 500, 500)
+        );
+        assert_eq!(
+            crop_rect(1000, 1000, 50, 25, at(400, 1000, 1000)),
+            (750, 750, 250, 250)
+        );
+        // A wide picture (2000×500) in the same box fits by width (0.25): at 200 % half
+        // the width shows, and all of the height (it was letterboxed).
+        assert_eq!(
+            crop_rect(2000, 500, 50, 25, at(200, 500, 500)),
+            (500, 0, 1000, 500)
+        );
     }
 }

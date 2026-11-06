@@ -1,22 +1,32 @@
-//! The picture preview (CLAUDE.md section 11) in the app: which picture the preview column
-//! wants, asking the worker for it, and the in-memory cache.
+//! The picture preview (CLAUDE.md section 11) in the app: which picture the preview wants,
+//! asking the worker for it, the in-memory cache, preloading, and the full-screen view.
 //!
 //! - Asked only after the cursor has been still for [`IMAGE_STILL`], so holding `j` doesn't
 //!   decode every file it passes.
 //! - The box comes from the UI's last frame ([`App::image_area`]); when it changes (window
-//!   resized) the picture is fitted again.
+//!   resized, full screen) the picture is fitted again.
 //! - Answers for a picture the cursor has left are dropped (the key differs), but kept in
-//!   the cache, so coming back is instant.
+//!   the cache, so coming back is instant. "No thumbnail" answers are remembered too, so
+//!   the shell isn't asked again.
+//! - Preloading (Yazi's idea): once the current picture is shown, the previous and next
+//!   previewable files, and the next page of a PDF, are prepared into the cache. A request
+//!   already on its way is never sent twice.
+//! - `zp` full screen: the preview takes the whole body. `j`/`k` move to the next file,
+//!   `]p`/`[p` page, `+`/`-` zoom, `=` resets, `H J K L` pan, `zp`/`Esc`/`q` go back.
 
 use super::{App, Mode};
+use crate::fs::Entry;
 use crate::fs::path::Loc;
 use crate::preview::image::ImagePreview;
-use crate::preview::{ImageKey, PreviewKind};
+use crate::preview::{ImageKey, PreviewKind, View};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Cursor stillness before a picture is read.
 pub const IMAGE_STILL: Duration = Duration::from_millis(60);
+/// How far the preloader looks for the previous / next previewable file.
+const PRELOAD_SCAN: usize = 20;
 
 /// The picture the preview column shows (or is waiting for).
 #[derive(Debug, Clone)]
@@ -26,13 +36,20 @@ pub struct ImageState {
     pub result: Option<Result<Arc<ImagePreview>, String>>,
 }
 
+/// Keys pending in the full-screen preview (`zp`, `]p`, `[p`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FullPending {
+    Z,
+    Next,
+    Prev,
+}
+
 impl App {
-    /// The picture the preview column should show now, fitted to the UI's box.
-    fn image_target(&self) -> Option<ImageKey> {
-        if self.mode == Mode::Picker || self.at_root() {
+    /// The key for previewing `e` (in the cwd listing) in the UI's box at `view`.
+    fn key_for(&self, e: &Entry, view: View) -> Option<ImageKey> {
+        if e.is_container() {
             return None;
         }
-        let e = self.selected().filter(|e| !e.is_container())?;
         let kind = PreviewKind::of(&e.name)?;
         let area = self.image_area?;
         if area.width == 0 || area.height == 0 {
@@ -50,8 +67,132 @@ impl App {
             page,
             cols: area.width,
             rows: area.height,
+            view,
         })
     }
+
+    /// The picture the preview should show now.
+    fn image_target(&self) -> Option<ImageKey> {
+        if self.mode == Mode::Picker || self.at_root() {
+            return None;
+        }
+        self.key_for(self.selected()?, self.pview)
+    }
+
+    /// Sends `key` to the worker unless it's cached, remembered as missing, or already
+    /// on its way.
+    fn request_image(&mut self, key: ImageKey) {
+        if self.image_cache.get(&key).is_some()
+            || self.image_misses.get(&key).is_some()
+            || self.image_inflight.contains(&key)
+        {
+            return;
+        }
+        self.image_inflight.insert(key.clone());
+        self.worker.image_preview(key, self.graphics.clone());
+    }
+
+    /// From `tick`: once the cursor has been still long enough, make sure the picture the
+    /// preview wants is shown or on its way.
+    pub(super) fn image_tick(&mut self, now: Instant) {
+        if now.duration_since(self.moved_at) < IMAGE_STILL {
+            return;
+        }
+        let Some(key) = self.image_target() else {
+            return;
+        };
+        if self.image.as_ref().is_some_and(|s| s.key == key) {
+            return;
+        }
+        let known = match (self.image_cache.get(&key), self.image_misses.get(&key)) {
+            (Some(hit), _) => Some(Ok(hit)),
+            (None, Some(miss)) => Some(Err(miss)),
+            (None, None) => None,
+        };
+        let hit = known.is_some();
+        self.image = Some(ImageState {
+            key: key.clone(),
+            result: known,
+        });
+        self.dirty = true;
+        if hit {
+            self.preload();
+        } else {
+            // A preload may already be fetching it: then its answer fills this in.
+            self.request_image(key);
+        }
+    }
+
+    pub(super) fn on_image_preview(
+        &mut self,
+        key: ImageKey,
+        result: Result<Arc<ImagePreview>, String>,
+    ) {
+        self.image_inflight.remove(&key);
+        match &result {
+            Ok(p) => self.image_cache.put(key.clone(), Arc::clone(p)),
+            // A timeout may pass (a slow share); anything else won't change by asking again.
+            Err(e) if !e.contains("timed out") => self.image_misses.put(key.clone(), e.clone()),
+            Err(_) => {}
+        }
+        if let Some(s) = self.image.as_mut().filter(|s| s.key == key) {
+            s.result = Some(result);
+            self.dirty = true;
+            self.preload();
+        }
+    }
+
+    /// Prepares the previous and next previewable files, and the next PDF page, into the
+    /// cache. Not while zoomed: those pictures are cropped to this file.
+    fn preload(&mut self) {
+        if self.pview.zoomed() {
+            return;
+        }
+        let mut keys = Vec::new();
+        // The next page of the PDF shown.
+        if let Some(s) = &self.image
+            && let Some(Ok(p)) = &s.result
+            && let Some(info) = &p.pdf
+            && info.page + 1 < info.count
+        {
+            keys.push(ImageKey {
+                page: info.page + 1,
+                ..s.key.clone()
+            });
+        }
+        // The nearest previewable file on each side.
+        if let Some(listing) = self.view_listing.clone() {
+            for forward in [true, false] {
+                let rows = (1..=PRELOAD_SCAN).filter_map(|d| {
+                    if forward {
+                        self.cursor.checked_add(d)
+                    } else {
+                        self.cursor.checked_sub(d)
+                    }
+                });
+                let next = rows
+                    .filter_map(|row| self.view.get(row))
+                    .filter_map(|&i| listing.entries.get(i))
+                    .find_map(|e| self.key_for(e, View::default()));
+                keys.extend(next);
+            }
+        }
+        for key in keys {
+            self.request_image(key);
+        }
+    }
+
+    /// The picture state for the file at `loc`, if it's the one held.
+    pub fn image_of(&self, loc: &Loc) -> Option<&ImageState> {
+        self.image.as_ref().filter(|s| &s.key.loc == loc)
+    }
+
+    /// Something is being read for the preview: the spinner keeps ticking.
+    pub(super) fn image_busy(&self) -> bool {
+        self.image.as_ref().is_some_and(|s| s.result.is_none())
+    }
+
+    // ------------------------------------------------------------------ PDF pages
 
     /// `]p` / `[p` (with a count): page through the PDF under the cursor. Stops at the
     /// first and last page.
@@ -104,55 +245,87 @@ impl App {
         Some((loc, count))
     }
 
-    /// From `tick`: once the cursor has been still long enough, make sure the picture the
-    /// preview wants is shown or on its way.
-    pub(super) fn image_tick(&mut self, now: Instant) {
-        if now.duration_since(self.moved_at) < IMAGE_STILL {
+    // ---------------------------------------------------------------- full screen
+
+    /// `zp`: the preview takes the whole body (and back).
+    pub(super) fn toggle_full_preview(&mut self) {
+        if self.mode == Mode::Preview {
+            return self.leave_full_preview();
+        }
+        let previewable = self
+            .selected()
+            .is_some_and(|e| !e.is_container() && PreviewKind::of(&e.name).is_some());
+        if !previewable {
+            self.set_status(
+                "zp: no picture, PDF or thumbnail under the cursor".into(),
+                false,
+            );
             return;
         }
-        let Some(key) = self.image_target() else {
-            return;
-        };
-        if self.image.as_ref().is_some_and(|s| s.key == key) {
-            return;
-        }
-        if let Some(hit) = self.image_cache.get(&key) {
-            self.image = Some(ImageState {
-                key,
-                result: Some(Ok(hit)),
-            });
-            self.dirty = true;
-            return;
-        }
-        self.image = Some(ImageState {
-            key: key.clone(),
-            result: None,
-        });
+        self.mode = Mode::Preview;
+        self.pview = View::default();
+        self.full_count = None;
+        self.full_pending = None;
         self.dirty = true;
-        self.worker.image_preview(key, self.graphics.clone());
     }
 
-    pub(super) fn on_image_preview(
-        &mut self,
-        key: ImageKey,
-        result: Result<Arc<ImagePreview>, String>,
-    ) {
-        if let Ok(p) = &result {
-            self.image_cache.put(key.clone(), Arc::clone(p));
+    fn leave_full_preview(&mut self) {
+        self.mode = Mode::Normal;
+        self.pview = View::default();
+        self.dirty = true;
+    }
+
+    /// Keys in the full-screen preview.
+    pub(super) fn on_preview_key(&mut self, ev: KeyEvent) {
+        if ev.modifiers.contains(KeyModifiers::CONTROL) {
+            return;
         }
-        if let Some(s) = self.image.as_mut().filter(|s| s.key == key) {
-            s.result = Some(result);
+        let pending = self.full_pending.take();
+        let count = self.full_count.take();
+        let n = count.unwrap_or(1).max(1);
+        let ni = isize::try_from(n).unwrap_or(isize::MAX);
+        match (pending, ev.code) {
+            (Some(FullPending::Z), KeyCode::Char('p')) => self.leave_full_preview(),
+            (Some(FullPending::Next), KeyCode::Char('p')) => self.step_page(n, true),
+            (Some(FullPending::Prev), KeyCode::Char('p')) => self.step_page(n, false),
+            (Some(_), _) => {}
+            (None, KeyCode::Char(c)) if c.is_ascii_digit() && (c != '0' || count.is_some()) => {
+                let d = c as usize - '0' as usize;
+                self.full_count = Some((count.unwrap_or(0) * 10 + d).min(99_999));
+            }
+            (None, KeyCode::Esc | KeyCode::Char('q')) => self.leave_full_preview(),
+            (None, KeyCode::Char('z')) => self.full_pending = Some(FullPending::Z),
+            (None, KeyCode::Char(']')) => {
+                self.full_pending = Some(FullPending::Next);
+                self.full_count = count;
+            }
+            (None, KeyCode::Char('[')) => {
+                self.full_pending = Some(FullPending::Prev);
+                self.full_count = count;
+            }
+            (None, KeyCode::Char('j') | KeyCode::Down) => self.move_cursor(ni),
+            (None, KeyCode::Char('k') | KeyCode::Up) => self.move_cursor(-ni),
+            (None, KeyCode::Char('+')) => self.set_view(self.pview.step_zoom(true)),
+            (None, KeyCode::Char('-')) => self.set_view(self.pview.step_zoom(false)),
+            (None, KeyCode::Char('=')) => self.set_view(View::default()),
+            (None, KeyCode::Char('H')) => self.set_view(self.pview.pan(-1, 0)),
+            (None, KeyCode::Char('L')) => self.set_view(self.pview.pan(1, 0)),
+            (None, KeyCode::Char('K')) => self.set_view(self.pview.pan(0, -1)),
+            (None, KeyCode::Char('J')) => self.set_view(self.pview.pan(0, 1)),
+            _ => {}
+        }
+        self.dirty = true;
+    }
+
+    /// The full-screen zoom in percent (100 when not zoomed).
+    pub fn zoom(&self) -> u16 {
+        self.pview.zoom
+    }
+
+    fn set_view(&mut self, view: View) {
+        if view != self.pview {
+            self.pview = view;
             self.dirty = true;
         }
-    }
-
-    /// The picture state for the file at `loc`, if it's the one held.
-    pub fn image_of(&self, loc: &Loc) -> Option<&ImageState> {
-        self.image.as_ref().filter(|s| &s.key.loc == loc)
-    }
-
-    /// Something is being read: the spinner keeps ticking.
-    pub(super) fn image_busy(&self) -> bool {
-        self.image.as_ref().is_some_and(|s| s.result.is_none())
     }
 }

@@ -434,9 +434,9 @@ impl Worker {
                 } else {
                     IMAGE_PREVIEW_LOCAL
                 };
-                let (cols, rows) = (key.cols, key.rows);
+                let (cols, rows, view) = (key.cols, key.rows, key.view);
                 let call = tokio::task::spawn_blocking(move || {
-                    preview::image::thumbnail(&path, &picker, cols, rows).map(Arc::new)
+                    preview::image::thumbnail(&path, &picker, cols, rows, view).map(Arc::new)
                 });
                 let result = match tokio::time::timeout(timeout, call).await {
                     Ok(Ok(r)) => r,
@@ -459,14 +459,14 @@ impl Worker {
             };
             let result = match read {
                 Ok(bytes) => {
-                    let (cols, rows, page) = (key.cols, key.rows, key.page);
+                    let (cols, rows, page, view) = (key.cols, key.rows, key.page, key.view);
                     let is_pdf = preview::PreviewKind::of(&key.loc.name())
                         == Some(preview::PreviewKind::Pdf);
                     let decode = tokio::task::spawn_blocking(move || {
                         if is_pdf {
-                            preview::image::pdf(&bytes, page, &picker, cols, rows)
+                            preview::image::pdf(&bytes, page, &picker, cols, rows, view)
                         } else {
-                            preview::image::decode(&bytes, &picker, cols, rows)
+                            preview::image::decode(&bytes, &picker, cols, rows, view)
                         }
                         .map(Arc::new)
                     });

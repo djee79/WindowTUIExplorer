@@ -35,15 +35,25 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     .areas(area);
     draw_parent(f, parent, app);
     draw_current(f, current, app);
-    // The box a picture may fill: the preview panel less a margin and a caption line.
-    let inner = panel(String::new(), false).inner(preview);
+    draw_preview_panel(f, preview, app);
+}
+
+/// `zp`: the preview panel over the whole body.
+pub fn draw_fullscreen(f: &mut Frame, area: Rect, app: &mut App) {
+    draw_preview_panel(f, area, app);
+}
+
+/// The preview panel in `area`: tells the app the box a picture may fill (the panel less a
+/// margin and two caption lines) and where one went.
+fn draw_preview_panel(f: &mut Frame, area: Rect, app: &mut App) {
+    let inner = panel(String::new(), false).inner(area);
     app.image_area = Some(Rect {
         x: inner.x + 1,
         width: inner.width.saturating_sub(2),
         height: inner.height.saturating_sub(2),
         ..inner
     });
-    let drawn = draw_preview(f, preview, app);
+    let drawn = draw_preview(f, area, app);
     app.image_drawn = drawn.as_ref().map(|d| d.rect);
     app.image_place = drawn.and_then(|d| d.place);
 }
@@ -222,7 +232,10 @@ fn draw_current(f: &mut Frame, area: Rect, app: &mut App) {
 /// The preview panel. Returns where a picture was drawn, if one was.
 fn draw_preview(f: &mut Frame, area: Rect, app: &App) -> Option<Drawn> {
     let entry = app.selected();
-    let title = entry.map(|e| e.name.clone()).unwrap_or_default();
+    let mut title = entry.map(|e| e.name.clone()).unwrap_or_default();
+    if app.mode == Mode::Preview && app.zoom() > 100 {
+        title = format!("{title} · {} %", app.zoom());
+    }
     let block = panel(title, false);
     let inner = block.inner(area);
     f.render_widget(block, area);

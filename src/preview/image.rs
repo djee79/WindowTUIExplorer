@@ -8,6 +8,7 @@
 //! picture to exactly the box, whatever the screen scaling. The cell size then only
 //! matters for the shape, and 10×20 has the 1:2 shape of every common terminal font.
 
+use super::View;
 use image::{DynamicImage, ImageReader};
 use ratatui::layout::Size;
 use ratatui_image::Resize;
@@ -19,6 +20,8 @@ const CELL_W: f64 = 10.0;
 const CELL_H: f64 = 20.0;
 /// iTerm2 pictures are sent at twice that resolution, so they stay sharp on 200 % screens.
 const SHARPNESS: f64 = 2.0;
+/// The widest a zoomed PDF page is rendered, in device-independent pixels.
+const MAX_PDF_WIDTH: f64 = 12_000.0;
 
 /// An encoded picture.
 pub enum Picture {
@@ -78,13 +81,29 @@ pub fn read(path: &str) -> Result<Vec<u8>, String> {
 /// [`read`] then [`decode`], for callers without a timeout to place (tests).
 #[cfg(test)]
 pub fn load(path: &str, picker: &Picker, cols: u16, rows: u16) -> Result<ImagePreview, String> {
-    decode(&read(path)?, picker, cols, rows)
+    decode(&read(path)?, picker, cols, rows, View::default())
+}
+
+/// Zoomed in (full-screen preview): the part of `img` that `view` shows. The crop is
+/// then fitted to the box like a whole picture, growing if need be.
+fn apply_view(img: DynamicImage, cols: u16, rows: u16, view: View) -> DynamicImage {
+    if !view.zoomed() {
+        return img;
+    }
+    let (x, y, w, h) = super::crop_rect(img.width(), img.height(), cols, rows, view);
+    img.crop_imm(x, y, w, h)
 }
 
 /// Decodes `bytes` and encodes the picture to fit `cols`×`rows` cells, keeping its shape.
 /// Big pictures fill the box; small ones keep their natural size (one cell per 10×20 px)
 /// instead of being blown up. CPU only: slow on a huge picture, but it can't hang.
-pub fn decode(bytes: &[u8], picker: &Picker, cols: u16, rows: u16) -> Result<ImagePreview, String> {
+pub fn decode(
+    bytes: &[u8],
+    picker: &Picker,
+    cols: u16,
+    rows: u16,
+    view: View,
+) -> Result<ImagePreview, String> {
     let reader = ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
@@ -94,8 +113,9 @@ pub fn decode(bytes: &[u8], picker: &Picker, cols: u16, rows: u16) -> Result<Ima
         .unwrap_or_else(|| "?".to_string());
     let img = reader.decode().map_err(|e| e.to_string())?;
     let (width, height) = (img.width(), img.height());
+    let img = apply_view(img, cols, rows, view);
     Ok(ImagePreview {
-        picture: encode(img, picker, cols, rows)?,
+        picture: encode(img, picker, cols, rows, view.zoomed())?,
         width,
         height,
         format,
@@ -113,14 +133,18 @@ pub fn pdf(
     picker: &Picker,
     cols: u16,
     rows: u16,
+    view: View,
 ) -> Result<ImagePreview, String> {
-    let width = (f64::from(cols) * CELL_W * SHARPNESS) as u32;
+    // Zoomed in, the page is rendered bigger, so the crop stays sharp.
+    let width = (f64::from(cols) * CELL_W * SHARPNESS * f64::from(view.zoom) / 100.0)
+        .min(MAX_PDF_WIDTH) as u32;
     let rendered =
         crate::platform::pdf_page(bytes, page, width).map_err(|e| format!("PDF: {e}"))?;
     let img = image::load_from_memory(&rendered.png).map_err(|e| e.to_string())?;
     let (w, h) = (img.width(), img.height());
+    let img = apply_view(img, cols, rows, view);
     Ok(ImagePreview {
-        picture: encode(img, picker, cols, rows)?,
+        picture: encode(img, picker, cols, rows, view.zoomed())?,
         width: w,
         height: h,
         format: "PDF".to_string(),
@@ -141,16 +165,19 @@ pub fn thumbnail(
     picker: &Picker,
     cols: u16,
     rows: u16,
+    view: View,
 ) -> Result<ImagePreview, String> {
-    let longest = (f64::from(cols) * CELL_W).max(f64::from(rows) * CELL_H) * SHARPNESS;
+    let longest =
+        (f64::from(cols) * CELL_W).max(f64::from(rows) * CELL_H) * SHARPNESS * f64::from(view.zoom)
+            / 100.0;
     // Windows gives an empty message when there's simply no thumbnail handler.
     let th = crate::platform::shell_thumbnail(path, longest as u32)
         .map_err(|_| "no Windows thumbnail".to_string())?;
     let rgba = image::RgbaImage::from_raw(th.width, th.height, th.rgba)
         .ok_or_else(|| "bad thumbnail size".to_string())?;
-    let img = DynamicImage::ImageRgba8(rgba);
+    let img = apply_view(DynamicImage::ImageRgba8(rgba), cols, rows, view);
     Ok(ImagePreview {
-        picture: encode(img, picker, cols, rows)?,
+        picture: encode(img, picker, cols, rows, view.zoomed())?,
         width: th.width,
         height: th.height,
         format: "Windows thumbnail".to_string(),
@@ -160,31 +187,47 @@ pub fn thumbnail(
 }
 
 /// A decoded picture, for the terminal: sentier's iTerm2 encoder, or ratatui-image's
-/// cells (halfblocks).
-fn encode(img: DynamicImage, picker: &Picker, cols: u16, rows: u16) -> Result<Picture, String> {
+/// cells (halfblocks). `grow`: fill the box even past the natural size (a zoomed crop).
+fn encode(
+    img: DynamicImage,
+    picker: &Picker,
+    cols: u16,
+    rows: u16,
+    grow: bool,
+) -> Result<Picture, String> {
     if picker.protocol_type() == ProtocolType::Iterm2 {
-        let size = fit_cells(img.width(), img.height(), cols, rows);
+        let size = fit(img.width(), img.height(), cols, rows, grow);
         return Ok(Picture::Iterm2 {
             data: encode_iterm2(&img, size)?,
             size,
         });
     }
+    let resize = if grow {
+        Resize::Scale(None)
+    } else {
+        Resize::Fit(None)
+    };
     picker
-        .new_protocol(img, Size::new(cols, rows), Resize::Fit(None))
+        .new_protocol(img, Size::new(cols, rows), resize)
         .map(Picture::Cells)
         .map_err(|e| e.to_string())
 }
 
 /// The cells a `w`×`h` px picture covers in a `cols`×`rows` box: as big as fits, keeping
 /// its shape, but never bigger than its natural size.
+#[cfg(test)]
 pub fn fit_cells(w: u32, h: u32, cols: u16, rows: u16) -> Size {
+    fit(w, h, cols, rows, false)
+}
+
+/// [`fit_cells`], optionally growing past the natural size.
+fn fit(w: u32, h: u32, cols: u16, rows: u16, grow: bool) -> Size {
     if w == 0 || h == 0 || cols == 0 || rows == 0 {
         return Size::new(0, 0);
     }
     let (w, h) = (f64::from(w), f64::from(h));
-    let scale = (f64::from(cols) * CELL_W / w)
-        .min(f64::from(rows) * CELL_H / h)
-        .min(1.0);
+    let scale = (f64::from(cols) * CELL_W / w).min(f64::from(rows) * CELL_H / h);
+    let scale = if grow { scale } else { scale.min(1.0) };
     let c = ((w * scale / CELL_W).round() as u16).clamp(1, cols);
     let r = ((h * scale / CELL_H).round() as u16).clamp(1, rows);
     Size::new(c, r)
@@ -370,7 +413,7 @@ mod tests {
     fn pdf_pages_render_and_report_their_size() {
         let pdf = crate::platform::tests::tiny_pdf(&[(595, 842), (1191, 842)]);
         for proto in [ProtocolType::Halfblocks, ProtocolType::Iterm2] {
-            let Ok(got) = super::pdf(&pdf, 1, &picker(proto), 40, 30) else {
+            let Ok(got) = super::pdf(&pdf, 1, &picker(proto), 40, 30, View::default()) else {
                 panic!("{proto:?}")
             };
             let Some(info) = &got.pdf else { panic!() };
@@ -385,6 +428,47 @@ mod tests {
             // Landscape: wider than tall, in cells of 1:2.
             assert!(size.width > size.height, "{size:?}");
         }
-        assert!(super::pdf(b"%PDF-broken", 0, &picker(ProtocolType::Iterm2), 10, 10).is_err());
+        assert!(
+            super::pdf(
+                b"%PDF-broken",
+                0,
+                &picker(ProtocolType::Iterm2),
+                10,
+                10,
+                View::default()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn zoomed_crops_grow_to_fill_the_box() {
+        let mut png = Vec::new();
+        assert!(
+            DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                100,
+                100,
+                image::Rgba([1, 2, 3, 255])
+            ))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .is_ok()
+        );
+        let p = picker(ProtocolType::Iterm2);
+        // 100×100 px is 10×5 cells naturally; the box is 40×20.
+        let Ok(fit) = decode(&png, &p, 40, 20, View::default()) else {
+            panic!()
+        };
+        assert_eq!(
+            fit.picture.size(),
+            Size::new(10, 5),
+            "natural size at 100 %"
+        );
+        let zoomed = View::default().step_zoom(true).step_zoom(true);
+        let Ok(z) = decode(&png, &p, 40, 20, zoomed) else {
+            panic!()
+        };
+        let s = z.picture.size();
+        assert!(s.height == 20 || s.width == 40, "fills the box: {s:?}");
+        assert_eq!((z.width, z.height), (100, 100), "the picture's own size");
     }
 }

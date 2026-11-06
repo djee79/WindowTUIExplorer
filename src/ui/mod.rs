@@ -33,7 +33,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         f.area(),
     );
     statusbar::draw_header(f, header, app);
-    if app.at_root() {
+    if app.mode == Mode::Preview {
+        columns::draw_fullscreen(f, body, app);
+    } else if app.at_root() {
         locations::draw(f, body, app);
     } else {
         columns::draw(f, body, app);
