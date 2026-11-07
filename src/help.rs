@@ -123,6 +123,26 @@ const JOINED: &[(&[&str], &str)] = &[
         &["tab-next", "tab-prev"],
         "next / previous tab ({n}gt: tab n)",
     ),
+    (
+        &["sort-name", "sort-name-reverse"],
+        "by name, A → Z (,N reversed)",
+    ),
+    (
+        &["sort-modified", "sort-modified-reverse"],
+        "by date modified, newest first (,M oldest)",
+    ),
+    (
+        &["sort-created", "sort-created-reverse"],
+        "by date created, newest first (,C oldest)",
+    ),
+    (
+        &["sort-size", "sort-size-reverse"],
+        "by size, biggest first (,S smallest)",
+    ),
+    (
+        &["sort-ext", "sort-ext-reverse"],
+        "by extension (,E reversed)",
+    ),
 ];
 
 /// A key in the overlay's notation: `↓`, `↵`, `C-d`, `A-↵`, `PgDn`, `‹c›`.
@@ -612,6 +632,7 @@ mod tests {
                 "HISTORY",
                 "TABS",
                 "SEARCH & FILTER",
+                "SORT",
                 "PREVIEW",
                 "SELECT & EDIT",
                 "PATHS & WINDOWS",
@@ -660,6 +681,16 @@ mod tests {
         assert_eq!(
             row(&d, "go to tab n").map(chips),
             Some(vec!["A-1…9".to_string()])
+        );
+        // Sorting: a key and its capital on one row, the reverse in the dimmed note.
+        let size = row(&d, "by size, biggest first");
+        assert_eq!(
+            size.map(chips),
+            Some(vec![",s".to_string(), ",S".to_string()])
+        );
+        assert_eq!(
+            size.and_then(|r| r.note.clone()).as_deref(),
+            Some("(,S smallest)")
         );
         assert!(
             row(&d, "next match").is_none(),
@@ -746,10 +777,10 @@ mod tests {
         );
         // Every binding section exactly once, in order.
         let order: Vec<usize> = four[..3].iter().flat_map(|c| c.sections.clone()).collect();
-        assert_eq!(order, (0..12).collect::<Vec<_>>());
+        assert_eq!(order, (0..13).collect::<Vec<_>>());
         // Balanced: no column more than the tallest section taller than another.
         let hs: Vec<usize> = four[..3].iter().map(|c| column_height(&d, c)).collect();
-        let tallest = (0..12)
+        let tallest = (0..13)
             .map(|i| section_height(&d.sections[i], COL_W))
             .max()
             .unwrap_or(0);

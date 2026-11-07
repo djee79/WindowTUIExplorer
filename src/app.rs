@@ -189,6 +189,10 @@ pub struct App {
     pub page: usize,
 
     pub show_hidden: bool,
+    /// How folders are ordered (`,m`, `,s`…; kept in ui.toml).
+    pub sort: crate::fs::sort::DirSort,
+    /// The order changed at this time and isn't in ui.toml yet (saved once keys settle).
+    sort_dirty: Option<Instant>,
     /// vim's `number` and `relativenumber`; both on is neovim's hybrid gutter.
     pub number: bool,
     pub relative_number: bool,
@@ -388,6 +392,8 @@ impl App {
             offset: 0,
             page: 20,
             show_hidden: false,
+            sort: Default::default(),
+            sort_dirty: None,
             number: true,
             relative_number: true,
             filter: String::new(),
@@ -519,6 +525,7 @@ impl App {
         app.worker.load_usage();
         app.worker.locale_names();
         app.worker.load_rename_store();
+        app.worker.load_ui_state();
         app.worker.wtm_offer_check();
         app.set_cwd(start, None);
         app
@@ -1015,6 +1022,13 @@ impl App {
             Some(l) => visible_indices(l, show_hidden, &self.filter),
             None => Vec::new(),
         };
+        // The folder order (results come ordered by their own sort).
+        if !in_results
+            && !self.at_root()
+            && let Some(l) = &listing
+        {
+            self.sort.apply(&l.entries, &mut self.view);
+        }
         self.view_listing = listing;
         let found = keep.and_then(|name| {
             let entries = &self.view_listing.as_ref()?.entries;
@@ -1130,6 +1144,12 @@ impl App {
             AppEvent::Ran { what, result } => self.on_ran(what, result),
             // Launches recorded before the file was read stay.
             AppEvent::UsageLoaded(usage) => self.usage.merge(usage),
+            // The saved order, unless it was already changed in this session.
+            AppEvent::UiState(st) if self.sort_dirty.is_none() => {
+                self.sort = st.sort();
+                self.rebuild_view();
+            }
+            AppEvent::UiState(_) => {}
             AppEvent::LocaleNames(names) => self.on_locale_names(*names),
             AppEvent::RenameStore { presets, state } => self.on_rename_store(presets, *state),
             AppEvent::RenameMeta {
@@ -1266,6 +1286,15 @@ impl App {
 
     /// Time-driven work: spinner frames, debounced preview, status expiry.
     pub fn tick(&mut self, now: Instant) {
+        // The folder order: one save after a burst of `,` keys, in order.
+        if self
+            .sort_dirty
+            .is_some_and(|t| now.duration_since(t) >= Duration::from_millis(500))
+        {
+            self.sort_dirty = None;
+            self.worker
+                .save_ui_state(crate::state::UiState::from_sort(self.sort));
+        }
         // Folder visits: written at most every 5 s, not on every move.
         if self.usage_dirty && now.duration_since(self.usage_saved) >= Duration::from_secs(5) {
             self.usage_dirty = false;
@@ -5793,6 +5822,83 @@ mod job_tests {
         assert!(l.app.rename_panel.as_ref().is_some_and(|p| p.options.regex));
         press(&mut l.app, "<Esc>q");
         assert_eq!(l.app.mode, Mode::Normal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `,s` `,S` `,m` `,e` `,n` order the folder (folders first, the cursor stays on its
+    /// item), the status bar says how, the choice is saved for next time, and `:sort`
+    /// does the same; in search results the same keys sort the results.
+    #[test]
+    fn comma_keys_sort_the_folder_and_remember_it() {
+        let dir = std::env::temp_dir().join(format!(
+            "sentier-sort-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(dir.join("zfolder"));
+        let base = std::time::SystemTime::now() - Duration::from_secs(10 * 86_400);
+        for (name, size, days) in [("a.txt", 300, 1), ("b.pdf", 10, 5), ("c.dwg", 2000, 3)] {
+            let p = dir.join(name);
+            let _ = std::fs::write(&p, "x".repeat(size));
+            if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&p) {
+                let _ = f.set_modified(base + Duration::from_secs(days * 86_400));
+            }
+        }
+        let mut l = Live::new(&dir);
+        assert_eq!(l.names(), ["zfolder", "a.txt", "b.pdf", "c.dwg"]);
+        l.goto("b.pdf");
+        press(&mut l.app, ",s");
+        assert_eq!(
+            l.names(),
+            ["zfolder", "c.dwg", "a.txt", "b.pdf"],
+            "biggest first"
+        );
+        assert_eq!(
+            l.app.selected().map(|e| e.name.clone()).as_deref(),
+            Some("b.pdf"),
+            "the cursor stays on its item"
+        );
+        assert!(
+            status(&l.app).contains("biggest first"),
+            "{}",
+            status(&l.app)
+        );
+        // Once the message fades, the status line keeps saying how it's sorted.
+        l.app.status = None;
+        let screen = render(&mut l.app, 160, 20);
+        assert!(screen.contains("sort: size ↓"), "{screen}");
+        press(&mut l.app, ",S");
+        assert_eq!(l.names(), ["zfolder", "b.pdf", "a.txt", "c.dwg"]);
+        press(&mut l.app, ",m");
+        assert_eq!(
+            l.names(),
+            ["zfolder", "b.pdf", "c.dwg", "a.txt"],
+            "newest first"
+        );
+        press(&mut l.app, ",e");
+        assert_eq!(
+            l.names(),
+            ["zfolder", "c.dwg", "b.pdf", "a.txt"],
+            "dwg pdf txt"
+        );
+        // Saved for next time.
+        let saved = crate::state::path().unwrap_or_default();
+        l.until(|_| crate::state::load(&saved).sort == "ext");
+        // :sort, and back to name.
+        press(&mut l.app, ":sort size<CR>");
+        assert_eq!(l.app.sort.key, crate::fs::sort::SortKey::Size);
+        press(&mut l.app, ",n");
+        assert_eq!(l.names(), ["zfolder", "a.txt", "b.pdf", "c.dwg"]);
+        l.app.status = None;
+        assert!(render(&mut l.app, 160, 20).contains("sort: name ↑"));
+        // ,r outside results explains itself.
+        press(&mut l.app, ",r");
+        assert!(
+            status(&l.app).contains("search results"),
+            "{}",
+            status(&l.app)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

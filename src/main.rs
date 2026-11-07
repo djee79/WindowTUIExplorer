@@ -21,6 +21,7 @@ mod preview;
 mod prompt;
 mod rename;
 mod search;
+mod state;
 mod ui;
 
 use anyhow::{Context, Result, bail};
@@ -302,6 +303,12 @@ fn real_main() -> Result<()> {
         && let Err(e) = frecency::save(&path, &usage)
     {
         tracing::warn!(error = %e, "saving usage.tsv at exit");
+    }
+    // A folder order changed in the last half second.
+    if let (Some(st), Some(path)) = (app.take_unsaved_sort(), state::path())
+        && let Err(e) = state::save(&path, &st)
+    {
+        tracing::warn!(error = %e, "saving ui.toml at exit");
     }
     let quit = result?;
     if let (Quit::WithCwd, Some(file)) = (quit, &args.cwd_file) {

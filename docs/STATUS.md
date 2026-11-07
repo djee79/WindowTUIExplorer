@@ -1191,3 +1191,16 @@ filters as plain text meanwhile; the empty prompt lists what it understands.
 In `f` and in `s` / `S`: `*pdf, *txt` (glob patterns → a glob alternation `{*pdf,*txt}`),
 `ext:pdf, txt` (a list that goes on after a trailing comma), and in `f` plain words
 `rev3, plan` (any of them). Braces written by hand are left alone.
+
+## Sorting folders (code complete 2026-11-06, manual check pending)
+
+Yazi's keys: `,n` name, `,m` modified, `,c` created, `,s` size, `,e` extension, capitals
+reverse; `,r` relevance in search results (the same keys sort results; `,s` no longer
+cycles there; `cycle-sort` stays for old keymap.toml files). Folders stay first, ties keep
+the name order, the cursor stays on its item. `fs/sort.rs` (pure; 50 000 entries sort in
+milliseconds, so it runs in the view rebuild). The status bar shows `sort: size ↓` (bold
+when not the default) and the message says what it means ("biggest first"). Kept in
+`%LOCALAPPDATA%\sentier\ui.toml` (`state.rs`): saved 0.5 s after the last change from
+`tick` (a burst of keys can't race parallel saves; found by the test), flushed at exit;
+a startup read never overrides a change already made. `:sort <key> [reverse]`; a SORT
+section in `g?` with `,m ,M` on one row.

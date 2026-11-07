@@ -413,6 +413,9 @@ pub enum Action {
     GotoResultFolder,
     /// `,s`: cycle the results sort.
     CycleSort,
+    /// `,n` `,m` `,c` `,s` `,e` `,r` (capital: reversed), `:sort <key> [reverse]`: order the
+    /// folder (or the search results) by that.
+    Sort(crate::fs::sort::SortKey, bool),
     /// `:{n}`: go to row n.
     GotoLine(usize),
     /// `:set nu` / `:set nonu`.
@@ -497,6 +500,50 @@ const NAMED: &[(&str, Action)] = &[
     ("quit-write-cwd", Action::QuitWriteCwd),
     ("quit-no-write", Action::QuitNoWrite),
     ("redraw", Action::Redraw),
+    (
+        "sort-name",
+        Action::Sort(crate::fs::sort::SortKey::Name, false),
+    ),
+    (
+        "sort-name-reverse",
+        Action::Sort(crate::fs::sort::SortKey::Name, true),
+    ),
+    (
+        "sort-modified",
+        Action::Sort(crate::fs::sort::SortKey::Modified, false),
+    ),
+    (
+        "sort-modified-reverse",
+        Action::Sort(crate::fs::sort::SortKey::Modified, true),
+    ),
+    (
+        "sort-created",
+        Action::Sort(crate::fs::sort::SortKey::Created, false),
+    ),
+    (
+        "sort-created-reverse",
+        Action::Sort(crate::fs::sort::SortKey::Created, true),
+    ),
+    (
+        "sort-size",
+        Action::Sort(crate::fs::sort::SortKey::Size, false),
+    ),
+    (
+        "sort-size-reverse",
+        Action::Sort(crate::fs::sort::SortKey::Size, true),
+    ),
+    (
+        "sort-ext",
+        Action::Sort(crate::fs::sort::SortKey::Ext, false),
+    ),
+    (
+        "sort-ext-reverse",
+        Action::Sort(crate::fs::sort::SortKey::Ext, true),
+    ),
+    (
+        "sort-relevance",
+        Action::Sort(crate::fs::sort::SortKey::Relevance, false),
+    ),
     ("tab-new", Action::NewTab(String::new())),
     ("tab-close", Action::CloseTab),
     ("tab-next", Action::NextTab),
@@ -796,6 +843,13 @@ pub const COMMANDS: &[Command] = {
             Same,
         ),
         cmd(
+            "sort",
+            "<name|modified|created|size|ext> [reverse]",
+            "order this folder (also ,n ,m ,c ,s ,e)",
+            RenameOptions,
+            NoKey,
+        ),
+        cmd(
             "set",
             "rnu nornu nu nonu",
             "line numbers",
@@ -836,6 +890,7 @@ pub enum Group {
     History,
     Tabs,
     SearchFilter,
+    Sort,
     Preview,
     SelectEdit,
     PathsWindows,
@@ -848,11 +903,12 @@ pub enum Group {
 
 impl Group {
     /// The order of the sections in `g?`.
-    pub const ALL: [Group; 12] = [
+    pub const ALL: [Group; 13] = [
         Group::Move,
         Group::History,
         Group::Tabs,
         Group::SearchFilter,
+        Group::Sort,
         Group::Preview,
         Group::SelectEdit,
         Group::PathsWindows,
@@ -869,6 +925,7 @@ impl Group {
             Group::History => "HISTORY",
             Group::Tabs => "TABS",
             Group::SearchFilter => "SEARCH & FILTER",
+            Group::Sort => "SORT",
             Group::Preview => "PREVIEW",
             Group::SelectEdit => "SELECT & EDIT",
             Group::PathsWindows => "PATHS & WINDOWS",
@@ -899,7 +956,8 @@ impl Action {
             Back | Forward | PreviousDir => Group::History,
             NewTab(_) | CloseTab | NextTab | PrevTab | GotoTab(_) => Group::Tabs,
             SearchForward | SearchBackward | SearchNext | SearchPrev | Filter | NameSearch
-            | ContentSearch | GotoResultFolder | CycleSort | Escape => Group::SearchFilter,
+            | ContentSearch | GotoResultFolder | Escape => Group::SearchFilter,
+            CycleSort | Sort(..) => Group::Sort,
             FullPreview | NextPage | PrevPage | GotoPage | NextMatch | PrevMatch => Group::Preview,
             ToggleMark | Visual | Yank | Cut | Paste | PasteOverwrite | RepeatPaste | NewFile
             | NewDir | Rename | UndoRenameHere | UndoRename(_) | RenamePanel | BulkRename
@@ -938,6 +996,17 @@ impl Action {
             })),
             "net" => Ok(Action::Net(arg.to_string())),
             "connect" => Ok(Action::Connect(arg.to_string())),
+            "sort" => {
+                let mut words = arg.split_whitespace();
+                let key = match words.next() {
+                    None => crate::fs::sort::SortKey::Name,
+                    Some(w) => crate::fs::sort::SortKey::parse(w).ok_or_else(|| {
+                        "sort name | modified | created | size | ext | relevance [reverse]".to_string()
+                    })?,
+                };
+                let reverse = words.any(|w| matches!(w, "reverse" | "rev" | "r" | "desc" | "!"));
+                Ok(Action::Sort(key, reverse))
+            }
             "tabnew" | "tabe" | "tabedit" => Ok(Action::NewTab(arg.to_string())),
             "tabnext" | "tabn" if arg.is_empty() => Ok(Action::NextTab),
             "tabnext" | "tabn" => match arg.parse::<usize>() {
@@ -1053,6 +1122,7 @@ pub struct Keymap {
 /// The default normal-mode table: (keys, action, desc). An empty desc keeps an alias out
 /// of the which-key popup and help (the primary key is listed instead).
 fn defaults() -> Vec<(&'static str, Action, &'static str)> {
+    use crate::fs::sort::SortKey;
     use Action::*;
     vec![
         ("j", Down, "down"),
@@ -1107,7 +1177,49 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("]m", NextMatch, "next match in the preview"),
         ("[m", PrevMatch, "previous match in the preview"),
         ("gr", GotoResultFolder, "go to the result's folder"),
-        (",s", CycleSort, "cycle results sort"),
+        (",n", Sort(SortKey::Name, false), "sort by name (A → Z)"),
+        (",N", Sort(SortKey::Name, true), "sort by name (Z → A)"),
+        (
+            ",m",
+            Sort(SortKey::Modified, false),
+            "sort by date modified (newest first)",
+        ),
+        (
+            ",M",
+            Sort(SortKey::Modified, true),
+            "sort by date modified (oldest first)",
+        ),
+        (
+            ",c",
+            Sort(SortKey::Created, false),
+            "sort by date created (newest first)",
+        ),
+        (
+            ",C",
+            Sort(SortKey::Created, true),
+            "sort by date created (oldest first)",
+        ),
+        (
+            ",s",
+            Sort(SortKey::Size, false),
+            "sort by size (biggest first)",
+        ),
+        (
+            ",S",
+            Sort(SortKey::Size, true),
+            "sort by size (smallest first)",
+        ),
+        (",e", Sort(SortKey::Ext, false), "sort by extension"),
+        (
+            ",E",
+            Sort(SortKey::Ext, true),
+            "sort by extension (reversed)",
+        ),
+        (
+            ",r",
+            Sort(SortKey::Relevance, false),
+            "sort search results by relevance",
+        ),
         ("<Esc>", Escape, "clear filter / search"),
         ("H", Back, "back in history"),
         ("<C-o>", Back, ""),
@@ -1224,7 +1336,7 @@ fn group_label(prefix: &[Key], leader: Key) -> &'static str {
             KeyCode::Char('m') => "pin this folder as",
             KeyCode::Char('y') => "yank",
             KeyCode::Char('c') => "change",
-            KeyCode::Char(',') => "results",
+            KeyCode::Char(',') => "sort",
             _ => "more",
         },
         [l, k] if *l == leader && k.code == KeyCode::Char('r') => "run a preset",
@@ -1651,6 +1763,7 @@ mod tests {
                 "<old> <new>" => format!("{c} a b"),
                 "rnu nornu nu nonu" => format!("{c} rnu"),
                 "[n]" => format!("{c} 2"),
+                a if a.starts_with("<name|") => format!("{c} size reverse"),
                 _ => format!("{c} x"),
             };
             assert!(Action::parse(&line).is_ok(), "{line}");
@@ -1762,13 +1875,19 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(problems.len(), 2, "{problems:?}");
         assert!(problems[0].contains("unknown modifier"), "{problems:?}");
-        // With `,` as leader, `,s` (cycle sort) is a prefix of `,sk` (keymaps).
-        assert!(
-            problems[1].contains("<leader>s also starts <leader>sk"),
-            "{problems:?}"
-        );
+        // With `,` as leader, the sort keys `,n` `,s` `,r` start leader sequences too: said.
+        for clash in [
+            "<leader>n also starts",
+            "<leader>s also starts <leader>sk",
+            "<leader>r also starts",
+        ] {
+            assert!(
+                problems.iter().any(|p| p.contains(clash)),
+                "{clash}: {problems:?}"
+            );
+        }
+        assert_eq!(problems.len(), 4, "{problems:?}");
     }
 
     #[test]

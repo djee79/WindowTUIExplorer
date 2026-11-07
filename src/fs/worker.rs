@@ -1275,6 +1275,27 @@ impl Worker {
         });
     }
 
+    /// ui.toml (the folder order): one `UiState`.
+    pub fn load_ui_state(&self) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let st = crate::state::path()
+                .map(|p| crate::state::load(&p))
+                .unwrap_or_default();
+            let _ = tx.send(AppEvent::UiState(st));
+        });
+    }
+
+    pub fn save_ui_state(&self, st: crate::state::UiState) {
+        self.rt.spawn_blocking(move || {
+            if let Some(p) = crate::state::path()
+                && let Err(e) = crate::state::save(&p, &st)
+            {
+                tracing::warn!(error = %e, "saving ui.toml");
+            }
+        });
+    }
+
     /// The frecency store: one `UsageLoaded`.
     pub fn load_usage(&self) {
         let tx = self.tx.clone();

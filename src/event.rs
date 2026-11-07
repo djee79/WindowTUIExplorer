@@ -136,6 +136,8 @@ pub enum AppEvent {
         here: bool,
         batches: Vec<(crate::rename::apply::Entry, Vec<bool>)>,
     },
+    /// ui.toml, read at startup (the folder order).
+    UiState(crate::state::UiState),
     /// The frecency store, read at startup.
     UsageLoaded(crate::frecency::Usage),
     /// Something was started, shown or copied (`what`), or why not.

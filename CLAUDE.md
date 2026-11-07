@@ -189,7 +189,12 @@ src/
 - `Enter` / `l` opens (directory → enter, file → its first opener, section 13; `O` = open-with menu).
 - Typing a path: `:cd <path>` (or `:e <path>`) accepts any path form from rule 3, with Tab
   completion. Completion also runs in the worker.
-- Status bar: path, item count, selection count, free space (async), share reachability.
+- Status bar: path, item count, selection count, free space (async), share reachability,
+  and the sort order.
+- **Sorting** (Yazi's `,` keys): `,n` name (natural), `,m` date modified, `,c` date
+  created, `,s` size, `,e` extension; the capital reverses (`,M` oldest first). Folders
+  always first, ties in name order. One order for every folder, kept in
+  `%LOCALAPPDATA%\sentier\ui.toml` (saved once the keys settle). `:sort <key> [reverse]`.
 - **Tabs** (Yazi's idea, vim keys): `t` opens a tab on the current folder, `Alt-1`…`Alt-9`
   or `{n}gt` go to tab n, `gt` / `gT` next / previous, `q` closes a tab (and quits on the
   last one). `:tabnew [path]`, `:tabnext [n]`, `:tabprevious`, `:tabclose`. Plain digits
@@ -669,7 +674,9 @@ enters the result's folder, `gx`.
 - `Esc` (with no search running) or `H` leaves the results and returns to the folder you
   searched from. `L` goes forward to them again (results are part of the history).
 - `gr` jumps to the real parent folder of the result under the cursor.
-- Sorting: by score while typing. `,s` cycles through score / path / size / modified.
+- Sorting: by relevance (score) while typing; the folder sort keys work on results too:
+  `,n` path, `,m` / `,c` dates, `,s` size, `,e` extension (capital: reversed), `,r` back to
+  relevance.
 - `<leader>ff` (files picker) and `<leader>/` (grep picker) remain as Telescope-style popups
   for quick open-and-close. `s`/`S` are the browse-the-results versions. Both share the same
   walker and matcher code.
@@ -1057,7 +1064,8 @@ filters) · `dialog` (confirmations, sync preview).
 | `/` `?` then `n` `N` | incremental search in the current dir (forward/backward), next/prev match |
 | `f` | filter the current dir (live, `Esc` clears): plain text, or the search language: `*.pdf`, `*.pdf, *.txt` (commas = or), `ext:pdf,dwg`, `size:>10mb`, `mtime:<7d`, `type:d`, `!old`, `re:…` |
 | `s` · `S` | recursive name search · content search; results stream in as a folder (section 12) |
-| `gr` · `,s` | (in results) go to the result's real folder · cycle sort |
+| `gr` · `,r` | (in results) go to the result's real folder · sort by relevance |
+| `,n` `,m` `,c` `,s` `,e` (capital: reversed) · `:sort <key> [reverse]` | order the folder by name · date modified · date created · size · extension; folders first; remembered (ui.toml); the status bar shows it (`sort: size ↓`) |
 | `H` `L` / `Ctrl-o` | back / forward in directory history (`Ctrl-o` = back) |
 | `-` | parent directory (vim-vinegar / oil.nvim) |
 | `~` | home · `gl` Locations · `gm` Machines · `gd` Downloads · `g\` the root of the current drive or share |

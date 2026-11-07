@@ -518,7 +518,13 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
             left.push(Span::styled(sel, theme::bold(ACCENT)));
         }
         left.push(sep());
-        left.push(Span::raw("sort: name ↑"));
+        // The default order is plain; any other stands out (it changes what you see).
+        let sort = format!("sort: {}", app.sort.label());
+        if app.sort == crate::fs::sort::DirSort::default() {
+            left.push(Span::raw(sort));
+        } else {
+            left.push(Span::styled(sort, theme::bold(ACCENT)));
+        }
         left.push(sep());
         let hidden = if app.show_hidden { "on" } else { "off" };
         left.push(Span::raw(format!("hidden: {hidden}")));

@@ -492,6 +492,7 @@ impl App {
             Action::PrevMatch => self.step_match(n, false),
             Action::GotoResultFolder => self.goto_result_folder(),
             Action::CycleSort => self.cycle_sort(),
+            Action::Sort(key, reverse) => self.set_sort(key, reverse),
             Action::GotoLine(line) => self.set_cursor(line.saturating_sub(1)),
             Action::SetNumber(on) => self.number = on,
             Action::SetRelativeNumber(on) => self.relative_number = on,

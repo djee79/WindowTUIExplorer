@@ -3,6 +3,7 @@
 
 use super::App;
 use crate::fs::path::Loc;
+use crate::fs::sort::{DirSort, SortKey};
 use crate::fs::worker::CancelToken;
 use crate::fs::{Entry, EntryKind, Listing, natural_cmp};
 use crate::search::SearchMatcher;
@@ -20,33 +21,6 @@ const REBUILD_EVERY: Duration = Duration::from_millis(50);
 /// Results shown are capped so a `*` search on a huge share stays usable.
 pub const MAX_HITS: usize = 200_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortMode {
-    Score,
-    Path,
-    Size,
-    Modified,
-}
-
-impl SortMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            SortMode::Score => "score",
-            SortMode::Path => "path",
-            SortMode::Size => "size",
-            SortMode::Modified => "modified",
-        }
-    }
-    fn next(self) -> SortMode {
-        match self {
-            SortMode::Score => SortMode::Path,
-            SortMode::Path => SortMode::Size,
-            SortMode::Size => SortMode::Modified,
-            SortMode::Modified => SortMode::Score,
-        }
-    }
-}
-
 pub struct SearchState {
     pub id: u64,
     pub query: String,
@@ -61,7 +35,8 @@ pub struct SearchState {
     pub cancelled: bool,
     pub current: String,
     pub last_progress: Instant,
-    pub sort: SortMode,
+    /// `,r` relevance (the default), `,n` path, `,m` `,c` dates, `,s` size, `,e` extension.
+    pub sort: DirSort,
     /// `S`: the hits are files whose contents matched; the score is their match count.
     pub content: bool,
     /// Kept for the match preview of content results.
@@ -86,10 +61,11 @@ impl SearchState {
     }
 
     /// Content results sort by match count where name results sort by score.
-    pub fn sort_label(&self) -> &'static str {
-        match self.sort {
-            SortMode::Score if self.content => "matches",
-            s => s.label(),
+    pub fn sort_label(&self) -> String {
+        match self.sort.key {
+            SortKey::Relevance if self.content => "matches".to_string(),
+            SortKey::Relevance => "score".to_string(),
+            _ => self.sort.label(),
         }
     }
 
@@ -108,15 +84,31 @@ impl SearchState {
 
     fn build(&mut self) {
         let mut order: Vec<&Hit> = self.hits.iter().collect();
-        match self.sort {
-            SortMode::Score => order.sort_by(|a, b| {
+        let ext = |h: &Hit| {
+            let name = h.rel.rsplit('\\').next().unwrap_or(&h.rel);
+            match name.rsplit_once('.') {
+                Some((stem, e)) if !stem.is_empty() && !h.is_dir => e.to_lowercase(),
+                _ => String::new(),
+            }
+        };
+        match self.sort.key {
+            SortKey::Relevance => order.sort_by(|a, b| {
                 b.score
                     .cmp(&a.score)
                     .then_with(|| natural_cmp(&a.rel, &b.rel))
             }),
-            SortMode::Path => order.sort_by(|a, b| natural_cmp(&a.rel, &b.rel)),
-            SortMode::Size => order.sort_by_key(|h| std::cmp::Reverse(h.size)),
-            SortMode::Modified => order.sort_by_key(|h| std::cmp::Reverse(h.modified)),
+            SortKey::Name => order.sort_by(|a, b| natural_cmp(&a.rel, &b.rel)),
+            SortKey::Size => order.sort_by_key(|h| std::cmp::Reverse(h.size)),
+            SortKey::Modified => order.sort_by_key(|h| std::cmp::Reverse(h.modified)),
+            SortKey::Created => order.sort_by_key(|h| std::cmp::Reverse(h.created)),
+            SortKey::Ext => order.sort_by(|a, b| {
+                ext(a)
+                    .cmp(&ext(b))
+                    .then_with(|| natural_cmp(&a.rel, &b.rel))
+            }),
+        }
+        if self.sort.reverse {
+            order.reverse();
         }
         let entries = order
             .into_iter()
@@ -220,7 +212,10 @@ impl App {
             cancelled: false,
             current: String::new(),
             last_progress: now,
-            sort: SortMode::Score,
+            sort: DirSort {
+                key: SortKey::Relevance,
+                reverse: false,
+            },
             content,
             scored: matcher.is_scored(),
             matcher,
@@ -360,17 +355,51 @@ impl App {
         }
     }
 
-    /// `,s`: score → path → size → modified.
+    /// `,n` `,m` `,c` `,s` `,e` (capital: reversed), `,r`, `:sort …`: in search results,
+    /// their order; in a folder, every folder's order (kept for next time).
+    pub(super) fn set_sort(&mut self, key: SortKey, reverse: bool) {
+        let sort = DirSort { key, reverse };
+        if let Loc::Results { id, .. } = self.cwd {
+            let Some(s) = self.search_mut(id) else { return };
+            s.sort = sort;
+            let label = s.sort_label();
+            s.build();
+            self.rebuild_view();
+            return self.set_status(format!("results sorted by {label}"), false);
+        }
+        if key == SortKey::Relevance {
+            return self.set_status(
+                ",r sorts search results by relevance; here: ,n ,m ,c ,s ,e".into(),
+                false,
+            );
+        }
+        self.sort = sort;
+        self.rebuild_view();
+        // Saved once the keys settle (tick), so a burst of `,` keys can't race.
+        self.sort_dirty = Some(Instant::now());
+        self.set_status(
+            format!(
+                "sorted by {} ({}), folders first · ,n back to name",
+                key.word(),
+                sort.meaning()
+            ),
+            false,
+        );
+    }
+
+    /// `cycle-sort` (an older keymap.toml binding): relevance → path → size → modified
+    /// in search results.
     pub(super) fn cycle_sort(&mut self) {
         let Loc::Results { id, .. } = self.cwd else {
-            return self.set_status(",s sorts search results".into(), false);
+            return self.set_status(",m ,s ,e … sort a folder".into(), false);
         };
-        let Some(s) = self.search_mut(id) else { return };
-        s.sort = s.sort.next();
-        let label = s.sort_label();
-        s.build();
-        self.rebuild_view();
-        self.set_status(format!("sort: {label}"), false);
+        let next = match self.search_mut(id).map(|s| s.sort.key) {
+            Some(SortKey::Relevance) => SortKey::Name,
+            Some(SortKey::Name) => SortKey::Size,
+            Some(SortKey::Size) => SortKey::Modified,
+            _ => SortKey::Relevance,
+        };
+        self.set_sort(next, false);
     }
 
     // ------------------------------------------------------------ match preview
@@ -454,4 +483,13 @@ pub struct GrepPreview {
     pub result: Option<Result<MatchPreview, String>>,
     /// Index into `MatchPreview::matches` of the match `]m` / `[m` is on.
     pub current: usize,
+}
+
+impl App {
+    /// The folder order if it changed and isn't saved yet (written at exit by main).
+    pub fn take_unsaved_sort(&mut self) -> Option<crate::state::UiState> {
+        self.sort_dirty
+            .take()
+            .map(|_| crate::state::UiState::from_sort(self.sort))
+    }
 }
