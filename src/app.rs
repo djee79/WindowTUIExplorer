@@ -252,6 +252,8 @@ pub struct App {
     pub image_place: Option<Arc<crate::preview::image::ImagePreview>>,
     /// The window was resized: the old picture must be erased by hand.
     pub image_resized: bool,
+    /// `<C-l>`: clear the terminal and draw it all again on the next frame.
+    pub redraw: bool,
     /// When the cursor last moved (pictures wait for it to be still).
     moved_at: Instant,
     /// The page shown for each PDF previewed (0-based), so coming back keeps the page.
@@ -422,6 +424,7 @@ impl App {
             image_drawn: None,
             image_place: None,
             image_resized: false,
+            redraw: false,
             moved_at: Instant::now(),
             pdf_pages: HashMap::new(),
             image_misses: crate::preview::Lru::new(256),
@@ -1428,6 +1431,12 @@ pub fn run(
         while let Ok(ev) = rx.try_recv() {
             app.handle(ev);
         }
+        // `<C-l>`: whatever else wrote on the screen goes; everything is drawn again.
+        if std::mem::take(&mut app.redraw) {
+            terminal.clear()?;
+            first_frame = true;
+            last_image = None;
+        }
         // `:rename` (and later inline openers): the program gets the terminal.
         if let Some(req) = app.inline.take() {
             let result = fileops::run_inline(&req, term);
@@ -1593,6 +1602,18 @@ mod tests {
 
     fn sel(app: &App) -> Option<&str> {
         app.selected().map(|e| e.name.as_str())
+    }
+
+    /// `<C-l>` and `:redraw`: the next frame clears the terminal first.
+    #[test]
+    fn ctrl_l_and_redraw_ask_for_a_full_redraw() {
+        let (mut app, _rt) = fixture();
+        assert!(!app.redraw);
+        press(&mut app, "<C-l>");
+        assert!(app.redraw, "Ctrl-L");
+        app.redraw = false;
+        press(&mut app, ":redraw<CR>");
+        assert!(app.redraw, ":redraw");
     }
 
     /// `g?`: generated from the keymap, grouped, chips, commands with their keys; `/`

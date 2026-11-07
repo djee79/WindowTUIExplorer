@@ -764,7 +764,9 @@ use   = ["default", "notepadpp", "reveal"]
   - `inline`: leave the alternate screen and raw mode, run the program in this console,
     wait for it, then restore and refresh the listing. For Neovim, less, etc.
   - `detached`: start without waiting (GUI apps). Its stdout/stderr go to the log, never the
-    TUI.
+    TUI. sentier sets `ELECTRON_NO_ATTACH_CONSOLE=1` for itself at startup, so Electron apps
+    started through Windows' own handlers (the "Windows suggests" apps, the default app)
+    don't attach to its console and print their logs over the TUI (VS Code did).
   - `tab`: an alias for `detached` with a WezTerm-spawn helper.
 - `{paths}` expands to one argument per selected file. `for = "each"` runs the opener once
   per file instead. Network paths are passed as UNC, never re-mapped.
@@ -1063,6 +1065,7 @@ filters) · `dialog` (confirmations, sync preview).
 | `:` | command line (`:cd`, `:e`, `:pin`, `:sync <preset>`, `:backup <preset>`, `:rename`, `:import-wtm`, `:q`) |
 | `t` · `Alt-1`…`9` / `{n}gt` · `gt` `gT` | new tab here · go to tab n · next / previous tab |
 | `q` / `:q` · `ZZ` · `ZQ` | quit (with several tabs: close this one) · quit writing cwd (for the shell wrapper) · quit without writing |
+| `Ctrl-L` / `:redraw` | clear and redraw the screen (if another program wrote on it) |
 | `g?` | help overlay (`?` stays vim's backward search), generated from the live keymap (docs/HELP_OVERLAY_SPEC.md): sections by task, key chips, the `:` commands with their keys, `/` filters. `<leader>sk` searches the same rows. |
 
 ### Leader (Space), LazyVim-style

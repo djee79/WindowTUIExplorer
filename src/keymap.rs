@@ -376,6 +376,8 @@ pub enum Action {
     Quit,
     QuitWriteCwd,
     QuitNoWrite,
+    /// `<C-l>` / `:redraw`: clear the terminal and draw everything again (vim's redraw).
+    Redraw,
     /// `t` / `:tabnew [path]`: a new tab on this folder (or `path`).
     NewTab(String),
     /// `:tabclose`: close this tab (`q` does too, and quits on the last one).
@@ -494,6 +496,7 @@ const NAMED: &[(&str, Action)] = &[
     ("quit", Action::Quit),
     ("quit-write-cwd", Action::QuitWriteCwd),
     ("quit-no-write", Action::QuitNoWrite),
+    ("redraw", Action::Redraw),
     ("tab-new", Action::NewTab(String::new())),
     ("tab-close", Action::CloseTab),
     ("tab-next", Action::NextTab),
@@ -786,6 +789,13 @@ pub const COMMANDS: &[Command] = {
             Via("undo-rename-here"),
         ),
         cmd(
+            "redraw",
+            "",
+            "clear and redraw the screen",
+            RenameOptions,
+            Same,
+        ),
+        cmd(
             "set",
             "rnu nornu nu nonu",
             "line numbers",
@@ -905,7 +915,7 @@ impl Action {
             Launcher | FilesPicker | DirsPicker | GrepPicker | CommandsPicker | KeymapsPicker
             | MachinePicker => Group::Pickers,
             Jobs | Sync(..) | Backup(_) | SyncPicker | ImportWtm => Group::SyncBackup,
-            Refresh | CommandLine | Quit | QuitWriteCwd | QuitNoWrite | SetNumber(_)
+            Refresh | CommandLine | Quit | QuitWriteCwd | QuitNoWrite | Redraw | SetNumber(_)
             | SetRelativeNumber(_) => Group::Session,
         }
     }
@@ -1189,6 +1199,11 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("ZZ", QuitWriteCwd, "quit and cd the shell here"),
         ("Q", QuitWriteCwd, ""),
         ("ZQ", QuitNoWrite, "quit without writing the cwd"),
+        (
+            "<C-l>",
+            Redraw,
+            "redraw the screen (if a program scribbled on it)",
+        ),
     ]
 }
 

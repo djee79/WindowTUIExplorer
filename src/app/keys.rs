@@ -422,6 +422,10 @@ impl App {
                 }
             }
             Action::QuitNoWrite => self.quit = Some(Quit::Plain),
+            Action::Redraw => {
+                self.redraw = true;
+                self.dirty = true;
+            }
             Action::NewTab(path) => self.new_tab(Some(&path)),
             Action::CloseTab => {
                 if !self.close_tab() {

@@ -66,6 +66,15 @@ struct Args {
 }
 
 fn main() -> ExitCode {
+    // Electron apps (VS Code, Teams, Slack…) started from here attach to their parent's
+    // console and print their logs into it: started by Windows' own handlers from inside
+    // sentier, that parent is us, and the log lands on top of the TUI. Electron's switch
+    // turns that off for every program we start (they inherit our environment).
+    // SAFETY: first thing in main, before any thread exists, so nothing reads the
+    // environment concurrently.
+    unsafe {
+        std::env::set_var("ELECTRON_NO_ATTACH_CONSOLE", "1");
+    }
     let all: Vec<String> = std::env::args().skip(1).collect();
     match all.first().map(String::as_str) {
         Some("run") => return ExitCode::from(run_headless(&all[1..])),

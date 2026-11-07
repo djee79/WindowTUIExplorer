@@ -1137,3 +1137,13 @@ through; again with `s`. Pause a big copy with `p`, resume, and compare the resu
   `cargo test`): one test run opened a VS Code window before this guard existed.
 
 Manual check: `o` on a .pmlmac → Neovim in the terminal, `:q` → back; `O` → Notepad++.
+
+## Fix: VS Code's log on top of the TUI; Ctrl-L redraw (2026-11-06)
+
+Opening a file in VS Code from "Windows suggests" (IAssocHandler::Invoke, in sentier's
+own process) let Code.exe, an Electron app, attach to its parent's console (ours) and
+print its main-process log over the screen. sentier now sets `ELECTRON_NO_ATTACH_CONSOLE=1`
+first thing in `main` (inherited by everything it starts: VS Code, Teams, Slack…). Also
+new: `Ctrl-L` / `:redraw` clears and redraws the whole screen, for anything else that
+writes on the terminal. Manual check: `O` on a .txt → Visual Studio Code (Windows
+suggests), close VS Code, the screen stays clean.
