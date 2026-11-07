@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>sentier jobs panel</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,600;0,700;1,400&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 1760px; height: 1000px; box-sizing: border-box; background: #1a1b26; color: #c0caf5; font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace; font-size: 13px; line-height: 20px; display: flex; flex-direction: column; padding: 6px 12px 8px; gap: 10px">
+
+<div style="display: flex; align-items: center; gap: 1ch; height: 20px">
+<span style="background: #ff9e64; color: #1a1b26; font-weight: 700; padding: 0 1ch">sentier</span>
+<span style="background: #24283b; color: #ff9e64; padding: 0 1ch">1 test</span>
+<span style="color: #828bb8; padding: 0 1ch">{{tab2}}</span>
+<span style="color: #a9b1d6; margin-left: 1ch">C:\Users\jdoe\Downloads\test</span>
+</div>
+
+<div style="flex: 1; min-height: 0; display: flex; gap: 1ch">
+
+<div style="position: relative; width: 64ch; flex: none; border: 1px solid #3b4261; border-radius: 6px; padding: 20px 2ch 12px 1ch; display: flex; flex-direction: column; gap: 18px">
+<div style="position: absolute; top: -11px; left: 2ch; background: #1a1b26; padding: 0 1ch; color: #7aa2f7; font-weight: 700">Jobs</div>
+<div style="position: absolute; top: -11px; right: 2ch; background: #1a1b26; padding: 0 1ch; color: #828bb8">{{jobCount}}</div>
+
+<section style="display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; align-items: center; gap: 1ch; padding-left: 2ch">
+<span style="color: #7aa2f7; font-weight: 700">RUNNING</span><span style="color: #828bb8">{{runningCount}}</span>
+<span style="flex: 1; border-top: 1px solid #292e42"></span>
+</div>
+<sc-for list="{{running}}" as="job" hint-placeholder-count="1">
+<div style="display: grid; grid-template-columns: 2ch minmax(0, 1fr); background: #1f2335; border-radius: 4px; padding: 6px 0">
+<span style="color: {{job.color}}; font-weight: 700">▌</span>
+<div style="display: flex; flex-direction: column; padding-right: 1ch">
+<div style="display: flex; justify-content: space-between; gap: 2ch">
+<span style="color: #c0caf5; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{job.src}} <span style="color: #828bb8">→</span> {{job.dst}}</span>
+<span style="color: {{job.color}}; font-weight: 700">{{job.status}}</span>
+</div>
+<div style="display: flex; gap: 1ch; white-space: pre; margin: 2px 0">
+<span><span style="color: {{job.color}}">{{job.bar.full}}</span><span style="color: {{job.color}}; background: #292e42">{{job.bar.part}}</span><span style="color: #292e42">{{job.bar.rest}}</span></span>
+<span style="color: #c0caf5; font-weight: 700">{{job.pct}}</span>
+<span style="color: #828bb8">{{job.eta}}</span>
+</div>
+<div style="color: #828bb8">{{job.meta}}</div>
+</div>
+</div>
+</sc-for>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 10px">
+<div style="display: flex; align-items: center; gap: 1ch; padding-left: 2ch">
+<span style="color: #7aa2f7; font-weight: 700">FINISHED</span><span style="color: #828bb8">3</span>
+<span style="flex: 1; border-top: 1px solid #292e42"></span>
+<span style="color: #828bb8"><span style="color: #ff9e64">↵</span> dismiss</span>
+</div>
+<sc-for list="{{finished}}" as="job" hint-placeholder-count="3">
+<div style="display: grid; grid-template-columns: 2ch minmax(0, 1fr)">
+<span></span>
+<div style="display: flex; flex-direction: column">
+<div style="display: flex; justify-content: space-between; gap: 2ch">
+<span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis"><span style="color: #9ece6a; font-weight: 700">✓</span> {{job.src}} <span style="color: #828bb8">→</span> {{job.dst}}</span>
+<span style="color: #828bb8">{{job.time}}</span>
+</div>
+<div style="color: #828bb8; padding-left: 2ch; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{job.meta}}</div>
+</div>
+</div>
+</sc-for>
+</section>
+</div>
+
+<div style="position: relative; flex: 1; min-width: 0; border: 1px solid #3b4261; border-radius: 6px; padding: 22px 3ch 14px; display: flex; flex-direction: column; gap: 22px">
+<div style="position: absolute; top: -11px; left: 2ch; background: #1a1b26; padding: 0 1ch; font-weight: 700">{{d.title}}</div>
+<div style="position: absolute; top: -11px; right: 2ch; background: #1a1b26; padding: 0 1ch; color: #828bb8">{{d.mode}}</div>
+
+<div style="display: flex; align-items: center; white-space: pre">
+<sc-for list="{{d.steps}}" as="st" hint-placeholder-count="4">
+<span><span style="color: {{st.color}}">{{st.icon}} {{st.label}}</span><span style="color: #828bb8">{{st.sub}}</span><span style="color: #3b4261">{{st.sep}}</span></span>
+</sc-for>
+</div>
+
+<sc-if value="{{d.stalled}}" hint-placeholder-val="{{ false }}">
+<div style="border: 1px solid #e0af68; border-radius: 4px; padding: 10px 2ch; display: flex; flex-direction: column; gap: 4px; max-width: 120ch">
+<div style="color: #e0af68; font-weight: 700">⚠ No progress for 1:12 · robocopy is waiting to retry a locked file</div>
+<div style="color: #a9b1d6"><span style="color: #c0caf5">DEMO\dbs\demo1043.dbx</span> is in use by another process <span style="color: #828bb8">(error 32)</span>. Retry 3 in 0:18. Everything else is copied.</div>
+<div style="color: #828bb8; margin-top: 4px"><span style="color: #ff9e64; font-weight: 600">s</span> skip this file   <span style="color: #ff9e64; font-weight: 600">R</span> retry now   <span style="color: #ff9e64; font-weight: 600">c</span> cancel job   <span style="color: #ff9e64; font-weight: 600">o</span> open log</div>
+</div>
+</sc-if>
+
+<div style="display: flex; flex-direction: column; width: fit-content">
+<div style="display: flex; align-items: baseline; gap: 2ch; white-space: pre">
+<span><span style="color: {{d.color}}">{{d.bar.full}}</span><span style="color: {{d.color}}; background: #292e42">{{d.bar.part}}</span><span style="color: #292e42">{{d.bar.rest}}</span></span>
+<span style="color: #c0caf5; font-weight: 700">{{d.pct}}</span>
+</div>
+<div style="display: flex; justify-content: space-between; margin-top: 4px; padding-right: 7ch">
+<span><span style="color: #c0caf5; font-weight: 600">{{d.done}}</span> <span style="color: #828bb8">of</span> {{d.total}}</span>
+<span><span style="color: #828bb8">ETA</span> <span style="color: {{d.etaColor}}; font-weight: 600">{{d.eta}}</span></span>
+</div>
+</div>
+
+<div style="display: grid; grid-template-columns: 76ch minmax(0, 1fr); column-gap: 6ch; align-items: start">
+<section style="display: flex; flex-direction: column">
+<div style="display: flex; align-items: center; gap: 1ch; margin-bottom: 6px">
+<span style="color: #7aa2f7; font-weight: 700">THROUGHPUT</span>
+<span style="flex: 1; border-top: 1px solid #292e42"></span>
+<span style="color: #828bb8">{{d.speedNote}}</span>
+</div>
+<div style="display: grid; grid-template-columns: 6ch auto; line-height: 16px">
+<div style="display: flex; flex-direction: column; justify-content: space-between; color: #828bb8; text-align: right; padding-right: 1ch"><span>12</span><span>0</span></div>
+<div style="display: flex; flex-direction: column; border-left: 1px solid #3b4261; border-bottom: 1px solid #3b4261; white-space: pre">
+<sc-for list="{{d.chart}}" as="line" hint-placeholder-count="4">
+<div style="color: {{d.color}}">{{line}}</div>
+</sc-for>
+</div>
+</div>
+<div style="display: flex; justify-content: space-between; color: #828bb8; padding-left: 7ch; margin-top: 2px"><span>{{d.chartStart}}</span><span>MB/s, last 64 s</span><span>now</span></div>
+</section>
+
+<section style="display: flex; flex-direction: column">
+<div style="display: flex; align-items: center; gap: 1ch; margin-bottom: 6px">
+<span style="color: #7aa2f7; font-weight: 700">STATUS</span>
+<span style="flex: 1; border-top: 1px solid #292e42"></span>
+</div>
+<sc-for list="{{d.stats}}" as="s" hint-placeholder-count="6">
+<div style="display: grid; grid-template-columns: 10ch minmax(0, 1fr); min-height: 22px">
+<span style="color: #828bb8">{{s.k}}</span>
+<span style="color: {{s.color}}; font-weight: 600">{{s.v}} <span style="color: #828bb8; font-weight: 400">{{s.note}}</span></span>
+</div>
+</sc-for>
+</section>
+</div>
+
+<section style="display: flex; flex-direction: column">
+<div style="display: flex; align-items: center; gap: 1ch; margin-bottom: 6px">
+<span style="color: #7aa2f7; font-weight: 700">PATHS</span>
+<span style="flex: 1; border-top: 1px solid #292e42"></span>
+</div>
+<div style="display: grid; grid-template-columns: 10ch minmax(0, 1fr); row-gap: 2px">
+<span style="color: #828bb8">From</span><span style="color: #c0caf5; word-break: break-all">{{d.from}}</span>
+<span style="color: #828bb8">To</span><span style="color: #c0caf5; word-break: break-all">{{d.to}}</span>
+<span style="color: #828bb8">Log</span><span style="word-break: break-all"><span style="color: #7dcfff">{{d.log}}</span>  <span style="color: #ff9e64; font-weight: 600">o</span> <span style="color: #828bb8">open</span></span>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; min-height: 0">
+<div style="display: flex; align-items: center; gap: 1ch; margin-bottom: 6px">
+<span style="color: #7aa2f7; font-weight: 700">ACTIVITY</span>
+<span style="flex: 1; border-top: 1px solid #292e42"></span>
+<span style="color: #828bb8">tail of the log</span>
+</div>
+<sc-for list="{{d.activity}}" as="a" hint-placeholder-count="4">
+<div style="display: grid; grid-template-columns: 10ch 9ch minmax(0, 1fr); min-height: 20px">
+<span style="color: #828bb8">{{a.t}}</span>
+<span style="color: {{a.color}}; font-weight: 600">{{a.kind}}</span>
+<span style="color: #a9b1d6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{a.msg}}</span>
+</div>
+</sc-for>
+</section>
+
+</div>
+</div>
+
+<div style="display: flex; flex-direction: column">
+<div style="display: flex; justify-content: space-between; align-items: center; height: 20px">
+<span style="display: flex; gap: 1ch; align-items: center">
+<span style="background: #ff9e64; color: #1a1b26; font-weight: 700; padding: 0 1ch">JOBS</span>
+<span style="color: {{footColor}}; font-weight: 600">{{footRunning}}</span><span style="color: #828bb8">·</span><span style="color: #9ece6a">3 done</span>
+<span style="color: #828bb8">· reports stay in %LOCALAPPDATA%\sentier\jobs\ until dismissed</span>
+</span>
+<span style="color: {{footColor}}; font-weight: 600; padding-right: 1ch">{{footRight}}</span>
+</div>
+<div style="display: flex; gap: 3ch; height: 20px; align-items: center; color: #828bb8; padding-left: 1ch">
+<sc-for list="{{hints}}" as="h" hint-placeholder-count="7">
+<span><span style="color: #ff9e64; font-weight: 600">{{h.k}}</span> {{h.label}}</span>
+</sc-for>
+</div>
+</div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"state":{"editor":"enum","options":["copying","stalled"],"default":"copying"},"$preview":{"width":1760,"height":1000}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const stalled = (this.props.state ?? 'copying') === 'stalled';
+    const ORANGE = '#ff9e64', YELLOW = '#e0af68', GREEN = '#9ece6a', RED = '#f7768e', BLUE = '#7aa2f7', DIM = '#828bb8', FG = '#c0caf5';
+    const parts = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
+    const bar = (pct, n) => {
+      const t = pct / 100 * n;
+      const f = Math.floor(t);
+      const p = f < n ? parts[Math.floor((t - f) * 8)] : '';
+      return { full: '█'.repeat(f), part: p, rest: '█'.repeat(Math.max(0, n - f - (p ? 1 : 0))) };
+    };
+    const blocks = ' ▁▂▃▄▅▆▇█';
+    const chart = (vals, max, rows) => {
+      const lines = [];
+      for (let r = rows - 1; r >= 0; r--) {
+        let s = '';
+        vals.forEach((v) => {
+          const e = Math.round(Math.max(0, v) / max * rows * 8) - r * 8;
+          s += e >= 8 ? '█' : e > 0 ? blocks[e] : ' ';
+        });
+        lines.push(s);
+      }
+      return lines;
+    };
+    const W = 64;
+    const vals = [];
+    for (let i = 0; i < W; i++) {
+      let v = 9.6 + 1.1 * Math.sin(i * 1.7) + 0.6 * Math.sin(i * 0.55);
+      if (stalled) {
+        if (i >= W - 12) v = i === W - 12 ? 2.1 : 0;
+      } else {
+        const age = i - (W - 32);
+        if (age < 0) v = 0;
+        else if (age < 3) v = [2.4, 6.1, 8.8][age];
+        if (i === W - 1) v = 10.6;
+      }
+      vals.push(v);
+    }
+
+    const color = stalled ? YELLOW : ORANGE;
+    const running = [stalled ? {
+      src: 'DEMO', dst: 'DEMO', status: 'STALLED', color: YELLOW,
+      bar: bar(99, 40), pct: '99%', eta: 'retry 3 in 0:18',
+      meta: 'copy · robocopy · 18,412 / 18,440 files · 3.96 / 4.00 GB',
+    } : {
+      src: 'site-survey.avi', dst: 'test', status: 'COPYING', color: ORANGE,
+      bar: bar(44, 40), pct: '44%', eta: 'ETA 0:37',
+      meta: 'copy · robocopy · 1 file · 306 / 700 MB · 10.6 MB/s',
+    }];
+    const finished = [
+      { src: '0xProto.zip', dst: 'test', time: '14:32', meta: '1 file · move (rename) → C:\\Users\\jdoe\\Downloads\\test' },
+      { src: '3 files', dst: '0xProto', time: '11:17', meta: '3 files · move (rename) → C:\\Users\\jdoe\\Downloads\\0xProto' },
+      { src: '3 files', dst: 'yazi-aarch64-pc-windows-msvc', time: '11:13', meta: '3 files · copy (native) → C:\\Users\\jdoe\\Downloads\\yazi-aarch64-pc-windows-msvc' },
+    ];
+
+    const step = (icon, label, c, sub, last) => ({ icon, label, color: c, sub: sub ? ' ' + sub : '', sep: last ? '' : '  ────  ' });
+    const d = stalled ? {
+      title: 'DEMO → DEMO', mode: 'copy · robocopy', stalled: true, color: YELLOW,
+      steps: [step('✓', 'Scanning', GREEN, '0:04'), step('◐', 'Copying', YELLOW, 'stalled 1:12'), step('○', 'Finishing', DIM), step('○', 'Done', DIM, '', true)],
+      bar: bar(99, 112), pct: '99%', done: '3.96 GB', total: '4.00 GB', eta: 'waiting on a locked file', etaColor: YELLOW,
+      speedNote: '0 B/s now · 9.7 MB/s avg', chartStart: '−64 s',
+      stats: [
+        { k: 'Speed', v: '0 B/s', note: 'since 19:22:41', color: YELLOW },
+        { k: 'Files', v: '18,412 / 18,440', note: '27 queued behind the locked file', color: FG },
+        { k: 'Elapsed', v: '6:48', note: 'started 19:17:05', color: FG },
+        { k: 'Retries', v: '2', note: 'next in 0:18 (every 30 s)', color: YELLOW },
+        { k: 'Errors', v: '1', note: 'file in use (32)', color: RED },
+      ],
+      from: '\\\\fileserver\\project\\DEMO\\',
+      to: 'D:\\local\\DEMO\\',
+      log: 'C:\\Users\\jdoe\\AppData\\Local\\sentier\\jobs\\2026-11-06_191705_DEMO-DEMO.log',
+      activity: [
+        { t: '19:22:40', kind: 'copy', color: BLUE, msg: 'DEMO\\dbs\\demo1042.dbx  (212.4 MB)' },
+        { t: '19:22:41', kind: 'error', color: RED, msg: 'DEMO\\dbs\\demo1043.dbx: in use by another process (32)' },
+        { t: '19:23:11', kind: 'retry 1', color: YELLOW, msg: 'demo1043.dbx: still locked' },
+        { t: '19:23:41', kind: 'retry 2', color: YELLOW, msg: 'demo1043.dbx: still locked' },
+        { t: '19:24:11', kind: 'retry 3', color: DIM, msg: 'scheduled' },
+      ],
+    } : {
+      title: 'site-survey.avi → test', mode: 'copy · robocopy', stalled: false, color: ORANGE,
+      steps: [step('✓', 'Scanning', GREEN, '0:01'), step('●', 'Copying', ORANGE, '0:32'), step('○', 'Finishing', DIM), step('○', 'Done', DIM, '', true)],
+      bar: bar(44, 112), pct: '44%', done: '306.12 MB', total: '700.49 MB', eta: '0:37', etaColor: FG,
+      speedNote: '10.6 MB/s now · 9.6 MB/s avg', chartStart: '−64 s',
+      stats: [
+        { k: 'Speed', v: '10.62 MB/s', note: '', color: FG },
+        { k: 'Files', v: '0 / 1', note: 'copying the only file', color: FG },
+        { k: 'Elapsed', v: '0:32', note: 'started 19:16:38', color: FG },
+        { k: 'Retries', v: '0', note: '', color: FG },
+        { k: 'Errors', v: 'none', note: '', color: GREEN },
+      ],
+      from: '\\\\nantelNAS\\Media\\Movies\\site-survey\\site-survey.avi',
+      to: 'C:\\Users\\jdoe\\Downloads\\test\\',
+      log: 'C:\\Users\\jdoe\\AppData\\Local\\sentier\\jobs\\2026-11-06_191638_40-Days-and-40-Nights.avi-test.log',
+      activity: [
+        { t: '19:16:37', kind: 'scan', color: GREEN, msg: '1 file, 700.49 MB' },
+        { t: '19:16:38', kind: 'start', color: BLUE, msg: 'robocopy → C:\\Users\\jdoe\\Downloads\\test\\' },
+        { t: '19:16:38', kind: 'copy', color: BLUE, msg: 'site-survey.avi  (700.49 MB)' },
+      ],
+    };
+    d.chart = chart(vals, 12, 4);
+
+    const hints = [
+      { k: 'j k', label: 'pick job' },
+      ...(stalled ? [{ k: 's', label: 'skip locked file' }] : []),
+      { k: 'c', label: 'cancel' },
+      { k: 'r', label: 'retry failed' },
+      { k: 'o', label: 'log' },
+      { k: '↵', label: 'dismiss' },
+      { k: 'J', label: 'close' },
+    ];
+
+    return {
+      tab2: stalled ? '2 DEMO' : '2 site-survey.avi',
+      jobCount: '4',
+      runningCount: '1',
+      running, finished, d, hints,
+      footRunning: stalled ? '1 stalled' : '1 running',
+      footColor: color,
+      footRight: stalled ? '⚠ 1 job stalled · 99%' : '⇅ 1 job · 44%',
+    };
+  }
+}
+</script>
+</body>
+</html>

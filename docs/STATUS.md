@@ -1063,3 +1063,27 @@ commands under ": GO & CONNECT", a TABS key section added).
 
 Manual check: `g?` at full width and in a small split; `/` then type; a keymap.toml remap
 shows in both the chips and the command hints.
+
+## Jobs panel redesign, slice A: layout + data (code complete 2026-11-06, manual check pending)
+
+Per docs/JOBS_PANEL_SPEC.md (user decisions: sentier's colours; sentier will own retries,
+slice B). Also: the panel now opens after 0.5 s instead of 5 s (a paste felt laggy).
+
+- Engine (`jobs/mod.rs`): when each phase began (`stage_log` → `stage_times`, Retrying
+  counted as Copying), one speed sample per second (last 64) and a ~10 s smoothed speed
+  that the ETA now uses, when bytes last moved, and an ACTIVITY tail (scan / start / copy
+  / retry n / error / done, last 50). The report keeps the source, stage times, samples
+  and activity (`serde(default)`: old reports still load).
+- Panel (`ui/jobs.rs`): list 64 cols with RUNNING cards (3 lines: title + status word,
+  40-cell bar + % + ETA, mode · engine · files · bytes · speed) and FINISHED entries
+  (✓ ✗ –, finish time, files · mode (engine) → dest); the detail pane: stepper with
+  durations, a wide eighth-block bar, bytes + ETA, THROUGHPUT chart beside STATUS
+  (stacked when narrow), PATHS (wrapped, never cut), ACTIVITY (shrinks first). Below
+  110 cols the list sits above the detail at the height it needs. The keys stay on the
+  status bar's hint row; the JOBS line colours its counts.
+- robocopy's "skipped" (already there, unchanged) shows as "unchanged", not a warning.
+- Failed files list the path, then `error 32 · <Windows message>` wrapped under it.
+
+Slice B (next): sentier owns retries (`/R:0`, locked files retried at the end), stall
+detection (> 10 s without bytes) with the banner, `s` skip / `R` retry now, `!` for jobs
+that finished with files skipped on purpose.

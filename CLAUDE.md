@@ -320,7 +320,9 @@ paths, tags are the main way to narrow things down.
     against them.
 - **Job panel shows:** source → dest, phase (`Scanning` / `Copying` / `Retrying` / `Finishing`
   / `Done` / `Failed` / `Cancelled`), **current file path**, bytes + files done/total,
-  throughput, ETA, elapsed time, and a live error list.
+  throughput, ETA, elapsed time, and a live error list. Layout per docs/JOBS_PANEL_SPEC.md:
+  RUNNING cards / FINISHED entries on the left; a stage stepper with each stage's time, a
+  wide bar, a 64 s THROUGHPUT chart beside STATUS, PATHS and the ACTIVITY tail on the right.
 - **"Finishing" is an explicit phase.** When bytes are 100 % but the process hasn't exited,
   say so (`Finishing: flushing to network…`) with an elapsed timer. This is the
   "stuck at 99 %" case. It must never look frozen.

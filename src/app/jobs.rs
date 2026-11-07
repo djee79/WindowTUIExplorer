@@ -481,8 +481,19 @@ impl App {
     // ---------------------------------------------------------------- the panel
 
     /// Newest first: this session's jobs, then the kept reports.
+    /// The panel's rows in screen order: running jobs (newest first), then finished ones
+    /// (this session's, newest first, then kept reports).
     pub fn job_rows(&self) -> Vec<JobRow> {
-        let mut rows: Vec<JobRow> = (0..self.jobs.len()).rev().map(JobRow::Live).collect();
+        let live = (0..self.jobs.len()).rev();
+        let mut rows: Vec<JobRow> = live
+            .clone()
+            .filter(|&i| !self.jobs[i].phase.is_over())
+            .map(JobRow::Live)
+            .collect();
+        rows.extend(
+            live.filter(|&i| self.jobs[i].phase.is_over())
+                .map(JobRow::Live),
+        );
         rows.extend((0..self.old_reports.len()).map(JobRow::Old));
         rows
     }

@@ -4346,7 +4346,7 @@ mod job_tests {
             "{screen}"
         );
         assert!(
-            screen.contains("Report") && screen.contains("robocopy exit 1"),
+            screen.contains("FINISHED") && screen.contains("robocopy exit 1"),
             "{screen}"
         );
         // Enter dismisses the selected (newest) one.
@@ -4414,6 +4414,80 @@ mod job_tests {
     }
 
     #[test]
+    fn jobs_panel_layout_wide_and_narrow() {
+        let (mut app, _rt) = fixture();
+        let plan = crate::jobs::Plan {
+            backend: crate::jobs::Backend::Robocopy,
+            steps: vec![crate::jobs::robocopy::Step {
+                src: r"\\srv01\p\Videos".into(),
+                dst: r"D:\local\test".into(),
+                files: vec!["site-survey.avi".into()],
+            }],
+            pairs: vec![],
+            title: "site-survey.avi → test".into(),
+        };
+        let mut job = crate::jobs::Job::new(
+            9,
+            &plan,
+            crate::jobs::Op::Copy,
+            r"D:\local\test".into(),
+            crate::jobs::robocopy::Overwrite::Never,
+            r"C:\logs\9.log".into(),
+        );
+        let t0 = Instant::now();
+        const MB: u64 = 1_000_000;
+        job.apply(
+            JobEvent::Scanned {
+                files: 1,
+                bytes: 700 * MB,
+            },
+            t0,
+        );
+        job.apply(
+            JobEvent::Output(vec![RcEvent::File {
+                class: crate::jobs::robocopy::FileClass::New,
+                size: 700 * MB,
+                path: r"\\srv01\p\Videos\site-survey.avi".into(),
+            }]),
+            t0,
+        );
+        // 30 s at about 10 MB/s.
+        for s in 1..=30u64 {
+            let pct = (s as f32 * 10.0 / 700.0 * 100.0).min(99.0);
+            job.apply(
+                JobEvent::Output(vec![RcEvent::Progress(pct)]),
+                t0 + Duration::from_secs(s),
+            );
+        }
+        app.jobs.push(job);
+        press(&mut app, "J");
+        let wide = render(&mut app, 220, 50);
+        let narrow = render(&mut app, 100, 50);
+        if std::env::var_os("SENTIER_SHOW_JOBS").is_some() {
+            eprintln!("{wide}\n{narrow}");
+        }
+        for want in [
+            "RUNNING 1",
+            "COPYING",
+            "✓ Scanning",
+            "● Copying",
+            "THROUGHPUT",
+            "STATUS",
+            "PATHS",
+            "ACTIVITY",
+            r"\\srv01\p\Videos\site-survey.avi",
+            "MB/s",
+            "█",
+        ] {
+            assert!(wide.contains(want), "{want}\n{wide}");
+        }
+        assert!(
+            narrow.contains("RUNNING 1") && narrow.contains("THROUGHPUT"),
+            "{narrow}"
+        );
+    }
+
+    #[test]
     fn finishing_failed_report_and_retry() {
         let (mut app, _rt) = fixture();
         let Ok(Loc::Fs(dest)) = Loc::parse(r"D:\local") else {
@@ -4464,9 +4538,9 @@ mod job_tests {
         press(&mut app, "J");
         let screen = render(&mut app, 140, 40);
         assert!(screen.contains("FINISHING"), "{screen}");
-        assert!(screen.contains("stuck at 99%"), "{screen}");
+        assert!(screen.contains("every byte is written"), "{screen}");
         assert!(screen.contains("● Finishing"), "{screen}");
-        assert!(render(&mut app, 140, 40).contains("⇅ 1 job 100% finishing"));
+        assert!(render(&mut app, 140, 40).contains("⇅ 1 job · 100% finishing"));
 
         // It fails on a locked file after all: the report lists it, r retries only it.
         let j = &mut app.jobs[0];
@@ -4490,10 +4564,10 @@ mod job_tests {
             "{screen}"
         );
         assert!(
-            screen.contains("hitmac\\c.pmlmac") && screen.contains("ERROR 32"),
+            screen.contains("hitmac\\c.pmlmac") && screen.contains("error 32 · The process"),
             "{screen}"
         );
-        assert!(screen.contains("r retry failed only"), "{screen}");
+        assert!(screen.contains("r retries them"), "{screen}");
         press(&mut app, "r");
         assert_eq!(app.jobs.len(), 2);
         let retry = &app.jobs[1];

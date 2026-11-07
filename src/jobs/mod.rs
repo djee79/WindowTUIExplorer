@@ -304,6 +304,61 @@ pub enum JobEvent {
     Pruned(Vec<String>),
 }
 
+/// Lines kept for the panel's ACTIVITY, and seconds of speed history for its chart.
+pub const ACTIVITY_KEEP: usize = 50;
+pub const HISTORY: usize = 64;
+
+/// One line of the panel's ACTIVITY (also kept in the report).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Activity {
+    pub at: SystemTime,
+    pub kind: ActKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ActKind {
+    Scan,
+    Start,
+    Copy,
+    /// A retry, with its attempt number.
+    Retry(u32),
+    Error,
+    Skip,
+    Done,
+}
+
+impl ActKind {
+    pub fn word(self) -> String {
+        match self {
+            ActKind::Scan => "scan".into(),
+            ActKind::Start => "start".into(),
+            ActKind::Copy => "copy".into(),
+            ActKind::Retry(n) => format!("retry {n}"),
+            ActKind::Error => "error".into(),
+            ActKind::Skip => "skip".into(),
+            ActKind::Done => "done".into(),
+        }
+    }
+}
+
+/// `1 file`, `3 files`.
+pub fn files_word(n: u64) -> String {
+    if n == 1 {
+        "1 file".to_string()
+    } else {
+        format!("{n} files")
+    }
+}
+
+fn file_name(path: &str) -> &str {
+    path.trim_end_matches('\\')
+        .rsplit('\\')
+        .next()
+        .unwrap_or(path)
+}
+
 #[derive(Debug, Clone)]
 pub struct Job {
     pub id: u64,
@@ -332,6 +387,19 @@ pub struct Job {
     pub preset: Option<preset::PresetRef>,
     /// A backup's steps (staging uses the robocopy tracker like any copy).
     pub backup: Option<zip::BackupState>,
+    /// When each phase began, in order (the panel's stepper shows how long each took).
+    pub stage_log: Vec<(Phase, Instant)>,
+    /// Bytes per second, one sample per second, newest last (the THROUGHPUT chart).
+    pub history: VecDeque<f64>,
+    hist_at: Option<Instant>,
+    hist_bytes: u64,
+    /// The speed smoothed over ~10 s (the ETA uses it, so it doesn't jump around).
+    pub smooth: Option<f64>,
+    /// When bytes last moved (stall detection).
+    pub last_progress_at: Instant,
+    last_bytes: u64,
+    /// What happened, newest last (ACTIVITY).
+    pub activity: VecDeque<Activity>,
 }
 
 impl Job {
@@ -367,7 +435,144 @@ impl Job {
             last_speed: None,
             preset: None,
             backup: None,
+            stage_log: vec![(Phase::Scanning, now)],
+            history: VecDeque::new(),
+            hist_at: None,
+            hist_bytes: 0,
+            smooth: None,
+            last_progress_at: now,
+            last_bytes: 0,
+            activity: VecDeque::new(),
         }
+    }
+
+    /// Adds a line to ACTIVITY.
+    pub fn note(&mut self, kind: ActKind, text: String) {
+        self.activity.push_back(Activity {
+            at: SystemTime::now(),
+            kind,
+            text,
+        });
+        while self.activity.len() > ACTIVITY_KEEP {
+            self.activity.pop_front();
+        }
+    }
+
+    /// One robocopy / native event, with its ACTIVITY line.
+    fn take_event(&mut self, e: Event) {
+        let failed_before = self.tracker.failed.len();
+        let note = match &e {
+            Event::File { class, size, path }
+                if !matches!(
+                    class,
+                    robocopy::FileClass::Same | robocopy::FileClass::Extra
+                ) =>
+            {
+                Some((
+                    ActKind::Copy,
+                    format!("{} ({})", file_name(path), human_bytes(*size)),
+                ))
+            }
+            _ => None,
+        };
+        let err = match &e {
+            Event::Error(r) => Some(r.clone()),
+            _ => None,
+        };
+        self.tracker.apply(e);
+        if let Some((k, t)) = note {
+            self.note(k, t);
+        }
+        if let Some(r) = err {
+            let what = format!(
+                "{}: {} (error {})",
+                r.path.as_deref().map_or(r.action.as_str(), file_name),
+                r.message,
+                r.code
+            );
+            let retry = r.path.as_ref().and_then(|p| {
+                self.tracker
+                    .retries
+                    .iter()
+                    .rev()
+                    .find(|x| &x.path == p && x.ok.is_none())
+                    .map(|x| x.attempts)
+            });
+            let kind = match retry {
+                Some(n) if self.tracker.failed.len() == failed_before => ActKind::Retry(n),
+                _ => ActKind::Error,
+            };
+            self.note(kind, what);
+        }
+    }
+
+    /// From the ticks: one speed sample per second once copying started, the smoothed
+    /// speed, and when bytes last moved.
+    fn tick_history(&mut self, now: Instant) {
+        let bytes = self.progress_bytes();
+        if bytes > self.last_bytes {
+            self.last_progress_at = now;
+        }
+        self.last_bytes = bytes;
+        if self.phase == Phase::Scanning {
+            return;
+        }
+        let Some(at) = self.hist_at else {
+            self.hist_at = Some(now);
+            self.hist_bytes = bytes;
+            return;
+        };
+        let dt = now.duration_since(at).as_secs_f64();
+        if dt < 1.0 {
+            return;
+        }
+        let rate = bytes.saturating_sub(self.hist_bytes) as f64 / dt;
+        // A gap (a slow tick) fills each missing second with the average over it.
+        for _ in 0..(dt.floor() as usize).clamp(1, HISTORY) {
+            self.history.push_back(rate);
+            // ~10 s smoothing: each second weighs about a tenth.
+            self.smooth = Some(match self.smooth {
+                Some(s) => s + 0.1 * (rate - s),
+                None => rate,
+            });
+        }
+        while self.history.len() > HISTORY {
+            self.history.pop_front();
+        }
+        self.hist_at = Some(now);
+        self.hist_bytes = bytes;
+    }
+
+    /// Where it copies from: the first step's source (the file itself for one file).
+    pub fn source(&self) -> String {
+        match self.steps.first() {
+            Some(s) if s.files.len() == 1 => {
+                format!("{}\\{}", s.src.trim_end_matches('\\'), s.files[0])
+            }
+            Some(s) => s.src.clone(),
+            None => String::new(),
+        }
+    }
+
+    /// Average speed since copying started (bytes/s).
+    pub fn avg_speed(&self, now: Instant) -> Option<f64> {
+        let start = self
+            .stage_log
+            .iter()
+            .find(|(p, _)| *p != Phase::Scanning)
+            .map(|(_, t)| *t)?;
+        let secs = self
+            .ended
+            .unwrap_or(now)
+            .duration_since(start)
+            .as_secs_f64();
+        (secs >= 1.0).then(|| self.progress_bytes() as f64 / secs)
+    }
+
+    /// How long each stage took (Retrying counts as Copying), in order; the last one
+    /// still running until the job ends.
+    pub fn stage_times(&self, now: Instant) -> Vec<(Phase, Duration)> {
+        stage_times(&self.stage_log, self.ended.unwrap_or(now))
     }
 
     /// The backup step past staging, if any: progress then comes from that step.
@@ -401,10 +606,14 @@ impl Job {
             JobEvent::Scanned { files, bytes } => {
                 self.total_files = Some(files);
                 self.total_bytes = Some(bytes);
+                self.note(
+                    ActKind::Scan,
+                    format!("{} to copy, {}", files_word(files), human_bytes(bytes)),
+                );
             }
             JobEvent::Output(events) => {
                 for e in events {
-                    self.tracker.apply(e);
+                    self.take_event(e);
                 }
                 self.sample(now);
             }
@@ -414,6 +623,9 @@ impl Job {
                 (b.done, b.total, b.current) = (0, 0, None);
                 self.samples.clear();
                 self.last_speed = None;
+                self.hist_bytes = 0;
+                self.last_bytes = 0;
+                self.note(ActKind::Start, step.word().to_string());
             }
             JobEvent::StageProgress {
                 done,
@@ -466,6 +678,29 @@ impl Job {
                     },
                     now,
                 );
+                let took = clock(self.elapsed(now));
+                let text = match self.phase {
+                    Phase::Cancelled => format!("cancelled after {took}"),
+                    Phase::Failed => match (&self.error, self.tracker.failed.len()) {
+                        (Some(e), _) => format!("failed: {e}"),
+                        (None, n) => format!(
+                            "{} copied, {} failed, in {took}",
+                            files_word(self.tracker.files_done),
+                            n
+                        ),
+                    },
+                    _ => format!(
+                        "{} copied ({}) in {took}",
+                        files_word(self.tracker.files_done),
+                        human_bytes(self.tracker.bytes_done)
+                    ),
+                };
+                let kind = if self.phase == Phase::Done {
+                    ActKind::Done
+                } else {
+                    ActKind::Error
+                };
+                self.note(kind, text);
                 return;
             }
         }
@@ -476,6 +711,7 @@ impl Job {
         if self.phase != p {
             self.phase = p;
             self.phase_since = now;
+            self.stage_log.push((p, now));
         }
     }
 
@@ -497,6 +733,7 @@ impl Job {
             Phase::Copying
         };
         self.set_phase(p, now);
+        self.tick_history(now);
         if let Some(s) = self.speed(now)
             && s > 0.0
         {
@@ -549,7 +786,10 @@ impl Job {
             Some(b) => b.total,
             None => self.total_bytes?,
         };
-        let speed = self.speed(now).filter(|s| *s > 1.0)?;
+        let speed = self
+            .smooth
+            .filter(|s| *s > 1.0)
+            .or_else(|| self.speed(now).filter(|s| *s > 1.0))?;
         let left = total.saturating_sub(self.progress_bytes());
         Some(Duration::from_secs_f64(left as f64 / speed))
     }
@@ -611,8 +851,39 @@ impl Job {
             overwrite: self.overwrite,
             preset: self.preset.clone(),
             backup: self.backup.as_ref().and_then(|b| b.outcome.clone()),
+            source: self.source(),
+            stages: self
+                .stage_times(now)
+                .into_iter()
+                .map(|(p, d)| (p, d.as_secs()))
+                .collect(),
+            history: self.history.iter().map(|v| v.round() as u64).collect(),
+            activity: self.activity.iter().cloned().collect(),
         }
     }
+}
+
+/// How long each stage took, from when each phase began (Retrying counts as Copying,
+/// the end states take no time), up to `end`.
+pub fn stage_times(log: &[(Phase, Instant)], end: Instant) -> Vec<(Phase, Duration)> {
+    let mut out: Vec<(Phase, Duration)> = Vec::new();
+    for (i, (p, t)) in log.iter().enumerate() {
+        if p.is_over() {
+            continue;
+        }
+        let next = log.get(i + 1).map_or(end, |(_, t)| *t);
+        let p = if *p == Phase::Retrying {
+            Phase::Copying
+        } else {
+            *p
+        };
+        let d = next.saturating_duration_since(*t);
+        match out.iter_mut().find(|(q, _)| *q == p) {
+            Some((_, sum)) => *sum += d,
+            None => out.push((p, d)),
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -652,6 +923,18 @@ pub struct Report {
     /// A backup's zip, when it got that far.
     #[serde(default)]
     pub backup: Option<zip::BackupOutcome>,
+    /// Where it came from (the first source).
+    #[serde(default)]
+    pub source: String,
+    /// Seconds each stage took (the stepper).
+    #[serde(default)]
+    pub stages: Vec<(Phase, u64)>,
+    /// Bytes per second, one per second, the last [`HISTORY`] (the chart).
+    #[serde(default)]
+    pub history: Vec<u64>,
+    /// The last [`ACTIVITY_KEEP`] events.
+    #[serde(default)]
+    pub activity: Vec<Activity>,
 }
 
 impl Report {
@@ -986,9 +1269,11 @@ mod tests {
         assert_eq!(j.tracker.bytes_now(), 200);
         assert!((j.fraction() - 2.0 / 3.0).abs() < 1e-9);
         assert_eq!(j.speed(t0 + Duration::from_secs(1)), Some(100.0));
+        // The ETA uses the per-second smoothed speed: 200 B in the first second.
+        assert_eq!(j.history.iter().copied().collect::<Vec<_>>(), [200.0]);
         assert_eq!(
             j.eta(t0 + Duration::from_secs(1)),
-            Some(Duration::from_secs(1))
+            Some(Duration::from_millis(500))
         );
         let t1 = t0 + Duration::from_secs(2);
         j.apply(JobEvent::Output(vec![Event::Progress(100.0)]), t1);
@@ -1006,6 +1291,51 @@ mod tests {
         assert_eq!((r.copied, r.bytes, r.failed.len()), (2, 300, 0));
         assert_eq!(r.result_line(), "DONE robocopy exit 1  =  1 (files copied)");
         assert_eq!(clock(j.elapsed(t2)), "0:49");
+        // The stepper's times, the chart's samples and ACTIVITY, kept in the report.
+        assert_eq!(
+            r.stages,
+            [
+                (Phase::Scanning, 0),
+                (Phase::Copying, 2),
+                (Phase::Finishing, 47)
+            ]
+        );
+        assert_eq!(r.history.first(), Some(&200));
+        let kinds: Vec<ActKind> = r.activity.iter().map(|a| a.kind).collect();
+        assert_eq!(
+            kinds,
+            [ActKind::Scan, ActKind::Copy, ActKind::Copy, ActKind::Done]
+        );
+        assert_eq!(r.activity[0].text, "2 files to copy, 300 B");
+        assert_eq!(r.activity[1].text, "a (100 B)");
+        assert!(
+            r.activity[3].text.starts_with("2 files copied"),
+            "{:?}",
+            r.activity[3]
+        );
+        assert_eq!(files_word(1), "1 file");
+    }
+
+    #[test]
+    fn stage_times_merge_retrying_and_stop_at_the_end() {
+        let t = Instant::now();
+        let s = |n: u64| t + Duration::from_secs(n);
+        let log = [
+            (Phase::Scanning, s(0)),
+            (Phase::Copying, s(1)),
+            (Phase::Retrying, s(5)),
+            (Phase::Copying, s(8)),
+            (Phase::Finishing, s(20)),
+            (Phase::Done, s(22)),
+        ];
+        assert_eq!(
+            stage_times(&log, s(22)),
+            [
+                (Phase::Scanning, Duration::from_secs(1)),
+                (Phase::Copying, Duration::from_secs(19)),
+                (Phase::Finishing, Duration::from_secs(2)),
+            ]
+        );
     }
 
     #[test]

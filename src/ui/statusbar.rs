@@ -399,12 +399,7 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
                 theme::fg(if s.is_error { ERR } else { FG }),
             )),
             None => {
-                let s = super::jobs::summary(app);
-                left.push(Span::raw(if s.is_empty() {
-                    "no jobs".to_string()
-                } else {
-                    s
-                }));
+                left.extend(super::jobs::summary_spans(app));
                 left.push(Span::styled(
                     r"  ·  reports stay in %LOCALAPPDATA%\sentier\jobs\ until dismissed",
                     theme::dim(),
