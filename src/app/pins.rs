@@ -26,6 +26,9 @@ pub struct PinDraft {
     reopen: Option<Reopen>,
     /// A sync / backup preset's fields still to ask, between the name and the tags.
     fields: Vec<PresetField>,
+    /// A new preset: its folders are picked first, the name asked after them (with a
+    /// suggestion from both folders).
+    name_last: bool,
 }
 
 impl PinDraft {
@@ -38,6 +41,7 @@ impl PinDraft {
             single: false,
             reopen: None,
             fields: Vec::new(),
+            name_last: false,
         }
     }
 }
@@ -331,6 +335,7 @@ impl App {
             ask_key: true,
             single: false,
             reopen,
+            name_last: false,
         })
     }
 
@@ -452,7 +457,12 @@ impl App {
                             self.pin_draft = Some(d);
                             return Err(e);
                         }
-                        Some(PromptKind::PinTags)
+                        if std::mem::take(&mut d.name_last) {
+                            d.pin.name = suggested_name(&d.pin);
+                            Some(PromptKind::PinName)
+                        } else {
+                            Some(PromptKind::PinTags)
+                        }
                     }
                 }
             }
@@ -494,8 +504,18 @@ impl App {
                     PromptKind::PinTags => d.pin.tags.join(" "),
                     PromptKind::PinKey => d.key.map(String::from).unwrap_or_default(),
                     PromptKind::Preset(f) => preset_value(&d.pin, f),
+                    PromptKind::PinName => d.pin.name.clone(),
                     _ => String::new(),
                 };
+                // A folder field: go there and press p, rather than type it.
+                if let PromptKind::Preset(f) = next
+                    && super::pick::is_pick_field(f)
+                {
+                    let start = Loc::parse(&prefill).ok().filter(|l| l.as_fs().is_some());
+                    self.pin_draft = Some(d);
+                    self.start_pick(f, start);
+                    return Ok(());
+                }
                 self.pin_draft = Some(d);
                 self.open_prompt_with(next, &prefill);
             }
@@ -650,36 +670,96 @@ impl App {
         self.start_draft(d);
     }
 
-    /// `:sync new` / `:backup new`: a preset whose source is the current folder, through
-    /// prompts: name → source → dest (mode | zips folder, keep, engine) → tags → key.
+    /// `Space n s` / `:sync new` / `Space n b` / `:backup new`: a preset whose source is the
+    /// folder you're in (for a sync, only what's selected there, if anything). Then you
+    /// go to the destination (pick mode, `p`), answer the short questions (mode | keep,
+    /// engine), and name it last: name → tags → key.
     pub(super) fn new_preset(&mut self, kind: PinKind) {
         if !self.pins_ready() {
             return;
         }
+        if self.pick.is_some() {
+            return self.set_status(
+                "finish the folder you're picking first (p, or Esc)".into(),
+                false,
+            );
+        }
         let Some(src) = self.cwd.real().as_fs().cloned() else {
             return self.set_status(format!("go to the folder to {} first", kind.label()), true);
         };
-        let name = match kind {
-            PinKind::Sync => format!("{} → local", src.name()),
-            _ => format!("{} backup", src.name()),
-        };
-        let mut pin = Pin::blank(kind, &name);
+        let selected = self.selected_for_include();
+        let mut pin = Pin::blank(kind, &src.name());
         pin.extra
             .insert("source".into(), toml::Value::String(src.display()));
+        let mut note = None;
         match kind {
             PinKind::Sync => {
                 pin.extra
                     .insert("mode".into(), toml::Value::String("update".into()));
+                if !selected.is_empty() {
+                    pin.extra.insert(
+                        "include".into(),
+                        toml::Value::Array(selected.into_iter().map(toml::Value::String).collect()),
+                    );
+                }
             }
             _ => {
                 pin.extra.insert("keep".into(), toml::Value::Integer(10));
+                if !selected.is_empty() {
+                    note = Some("a backup zips the whole folder (the selection is for syncs)");
+                }
             }
         }
+        self.visual = None;
+        self.marked.clear();
         let mut d = PinDraft::new(pin, None, true);
-        d.fields = self.preset_fields(&d.pin);
-        self.start_draft(d);
+        // The source is where you are.
+        d.fields = self
+            .preset_fields(&d.pin)
+            .into_iter()
+            .filter(|f| *f != PresetField::Source)
+            .collect();
+        d.name_last = true;
+        let first = d.fields.first().copied();
+        self.pin_draft = Some(d);
+        match first {
+            Some(f) if super::pick::is_pick_field(f) => self.start_pick(f, None),
+            Some(f) => {
+                let prefill = self
+                    .pin_draft
+                    .as_ref()
+                    .map(|d| preset_value(&d.pin, f))
+                    .unwrap_or_default();
+                self.open_prompt_with(PromptKind::Preset(f), &prefill);
+            }
+            None => {}
+        }
+        if let Some(n) = note {
+            self.set_status(n.into(), false);
+        }
     }
 
+    /// The selected (or visual-range) items here, as `include` names: `DEMO\`, `a.txt`.
+    fn selected_for_include(&self) -> Vec<String> {
+        if self.visual.is_none() && self.marked.is_empty() {
+            return Vec::new();
+        }
+        let Some(listing) = self.view_listing.as_ref() else {
+            return Vec::new();
+        };
+        self.operand(1)
+            .into_iter()
+            .filter_map(|i| listing.entries.get(i))
+            .filter(|e| matches!(e.kind, EntryKind::File | EntryKind::Dir))
+            .map(|e| {
+                if e.kind == EntryKind::Dir {
+                    format!("{}\\", e.name)
+                } else {
+                    e.name.clone()
+                }
+            })
+            .collect()
+    }
     /// A folder typed in a preset field: `~`, relative to the cwd, any path form.
     fn preset_path(&self, text: &str) -> Result<crate::fs::path::FsPath, String> {
         let t = super::keys::expand_home(text)?;
@@ -868,5 +948,23 @@ fn pinned_message(c: char, name: &str, moved: Option<&str>) -> String {
     match moved {
         Some(old) if old != name => format!("'{c} → {name} (was {old})"),
         _ => format!("'{c} → {name}"),
+    }
+}
+
+/// A new preset's name from its folders: `HIT → HIT-local`, `HIT backup`.
+fn suggested_name(pin: &Pin) -> String {
+    let last = |k: &str| {
+        pin.extra.get(k).and_then(|v| v.as_str()).map(|s| {
+            s.trim_end_matches('\\')
+                .rsplit('\\')
+                .next()
+                .unwrap_or(s)
+                .to_string()
+        })
+    };
+    match (pin.kind, last("source"), last("dest")) {
+        (PinKind::Sync, Some(s), Some(d)) => format!("{s} → {d}"),
+        (PinKind::Backup, Some(s), _) => format!("{s} backup"),
+        _ => pin.name.clone(),
     }
 }

@@ -53,6 +53,9 @@ pub struct SyncPreset {
     pub exclude_dirs: Vec<String>,
     /// robocopy `/XF`.
     pub exclude_files: Vec<String>,
+    /// Only these, if any (names in the source, folders ending in ``): what was
+    /// selected when the preset was made. Each folder is its own step; the files one more.
+    pub include: Vec<String>,
 }
 
 fn fs_path(field: &str, text: &str) -> Result<FsPath, String> {
@@ -78,6 +81,20 @@ fn strings(pin: &Pin, key: &str) -> Result<Vec<String>, String> {
             .collect(),
         Some(_) => Err(format!("{key} must be a list of strings")),
     }
+}
+
+/// `include`: names directly in the source (a folder ends in `\`), no paths, no `..`.
+fn includes(pin: &Pin) -> Result<Vec<String>, String> {
+    let list = strings(pin, "include")?;
+    for i in &list {
+        let name = i.strip_suffix('\\').unwrap_or(i);
+        if name.is_empty() || name == "." || name == ".." || name.contains(['\\', '/']) {
+            return Err(format!(
+                "include {i:?}: names in the source folder (a folder ends in \\)"
+            ));
+        }
+    }
+    Ok(list)
 }
 
 /// Refuses a preset whose folders are the same or nest: a sync must never be able to
@@ -119,6 +136,7 @@ impl SyncPreset {
             mode,
             exclude_dirs: strings(pin, "exclude_dirs")?,
             exclude_files: strings(pin, "exclude_files")?,
+            include: includes(pin)?,
         })
     }
 
@@ -128,12 +146,45 @@ impl SyncPreset {
         format!("sync|{}|{}", self.source.display(), self.dest.display()).to_lowercase()
     }
 
+    /// The whole source to the whole dest (also how preview paths are shown).
     pub fn step(&self) -> Step {
         Step {
             src: self.source.display(),
             dst: self.dest.display(),
             files: Vec::new(),
         }
+    }
+
+    /// The robocopy steps: the whole folder, or with `include`, one per included folder
+    /// (mirrored within itself in mirror mode) and one for the included files (copied,
+    /// never a purge: robocopy only mirrors whole folders).
+    pub fn steps(&self) -> Vec<Step> {
+        if self.include.is_empty() {
+            return vec![self.step()];
+        }
+        let src = self.source.display();
+        let dst = self.dest.display();
+        let join = |base: &str, name: &str| format!("{}\\{name}", base.trim_end_matches('\\'));
+        let mut steps: Vec<Step> = self
+            .include
+            .iter()
+            .filter_map(|i| i.strip_suffix('\\'))
+            .map(|dir| Step {
+                src: join(&src, dir),
+                dst: join(&dst, dir),
+                files: Vec::new(),
+            })
+            .collect();
+        let files: Vec<String> = self
+            .include
+            .iter()
+            .filter(|i| !i.ends_with('\\'))
+            .cloned()
+            .collect();
+        if !files.is_empty() {
+            steps.push(Step { src, dst, files });
+        }
+        steps
     }
 
     /// `sync · mirror`, for the job list.

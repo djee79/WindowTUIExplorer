@@ -222,6 +222,22 @@ impl App {
             return;
         }
         let key = Key::from_event(&ev);
+        // Pick mode: `p` takes this folder; `Esc` cancels, once nothing else (a filter, a
+        // selection, a count) is there for it to clear.
+        if self.pick.is_some() && self.keys_pending.is_empty() && self.count.is_none() {
+            if key == Key::plain(KeyCode::Char('p')) {
+                return self.choose_pick();
+            }
+            if key.code == KeyCode::Esc
+                && !key.ctrl
+                && !key.alt
+                && self.filter.is_empty()
+                && self.marked.is_empty()
+                && !(self.search_hl && self.search.is_some())
+            {
+                return self.cancel_pick();
+            }
+        }
         // In a machine view a template's key jumps there, and `u` picks the user.
         if self.keys_pending.is_empty()
             && self.count.is_none()

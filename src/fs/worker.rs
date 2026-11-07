@@ -1020,14 +1020,14 @@ impl Worker {
     pub fn sync_preview(
         &self,
         token: u64,
-        step: crate::jobs::robocopy::Step,
+        steps: Vec<crate::jobs::robocopy::Step>,
         opts: crate::jobs::robocopy::Options,
     ) -> CancelToken {
         let cancel = CancelToken::default();
         let (tx, c) = (self.tx.clone(), cancel.clone());
         self.rt.spawn_blocking(move || {
-            let result =
-                crate::jobs::run::dry_run(&step, &opts, &c).map(|(t, code)| (Box::new(t), code));
+            let result = crate::jobs::run::dry_run_steps(&steps, &opts, &c)
+                .map(|(t, code)| (Box::new(t), code));
             if !c.is_cancelled() {
                 let _ = tx.send(AppEvent::SyncPreviewed { token, result });
             }

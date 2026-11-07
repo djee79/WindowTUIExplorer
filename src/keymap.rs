@@ -755,7 +755,7 @@ pub const COMMANDS: &[Command] = {
         cmd(
             "sync new",
             "",
-            "new sync preset from this folder",
+            "new sync from here (or the selection), then go to the destination",
             SyncBackup,
             Same,
         ),
@@ -763,7 +763,7 @@ pub const COMMANDS: &[Command] = {
         cmd(
             "backup new",
             "",
-            "new backup preset from this folder",
+            "new backup of this folder, then go to where the zips go",
             SyncBackup,
             Same,
         ),
@@ -1154,12 +1154,12 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         (
             "<leader>ns",
             Sync("new".to_string(), false),
-            "new sync preset from this folder",
+            "new sync from here (or the selection), then go to the destination",
         ),
         (
             "<leader>nb",
             Backup("new".to_string()),
-            "new backup preset from this folder",
+            "new backup of this folder, then go to where the zips go",
         ),
         ("<leader>ni", ImportWtm, "import wtm's launcher entries"),
         ("<leader>t", TagPicker, "tags: pick, filter, rename"),

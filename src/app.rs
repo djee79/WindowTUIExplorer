@@ -17,6 +17,7 @@ pub(crate) mod launcher;
 mod machines;
 mod open;
 pub use open::OpenMenu;
+mod pick;
 mod picker;
 mod pins;
 mod rename;
@@ -229,6 +230,8 @@ pub struct App {
     pins_loaded: bool,
     /// A pin being made or edited through prompts.
     pin_draft: Option<pins::PinDraft>,
+    /// Pick mode: a preset folder chosen by going there (`p` takes it).
+    pub pick: Option<pick::Pick>,
     /// The open picker, its pending count and keys (normal mode).
     pub picker: Option<crate::picker::Picker>,
     picker_count: Option<usize>,
@@ -410,6 +413,7 @@ impl App {
             pins: crate::pins::PinStore::default(),
             pins_loaded: false,
             pin_draft: None,
+            pick: None,
             picker: None,
             picker_count: None,
             picker_pending: None,
@@ -4989,6 +4993,125 @@ mod job_tests {
             .is_some_and(|s| !matches!(s.status, PreviewStatus::Running))
     }
 
+    /// In the preview, `x` leaves a file out, `X` its folder, and on a local-only file `x`
+    /// keeps mirror from deleting it: saved in the pin (full paths), the dry run redone,
+    /// honoured by the real run (robocopy); `E` brings everything back.
+    #[test]
+    fn sync_preview_leaves_files_out() {
+        use crate::jobs::preset::SyncPreset;
+        let dir = temp_tree();
+        let local = dir.join("dst");
+        let _ = std::fs::write(local.join("stale.txt"), "old");
+        let mut l = Live::new(&dir);
+        l.until(|a| a.pins_loaded);
+        let text = format!(
+            "[[pin]]\nkind = 'sync'\nname = 'proj sync'\nsource = '{}'\ndest = '{}'\nmode = 'mirror'\n",
+            dir.join("src").display(),
+            local.display()
+        );
+        let Ok((store, _)) = crate::pins::parse(&text) else {
+            panic!("{text}")
+        };
+        l.app.pins = store;
+        let rows = |a: &App| -> Vec<String> {
+            a.sync_preview
+                .as_ref()
+                .map(|s| s.listed().1.iter().map(|r| r.rel.clone()).collect())
+                .unwrap_or_default()
+        };
+        let goto_row = |a: &mut App, rel: &str| {
+            let i = rows(a).iter().position(|r| r == rel);
+            if let (Some(sp), Some(i)) = (a.sync_preview.as_mut(), i) {
+                sp.scroll = i;
+            }
+            i.is_some()
+        };
+        press(&mut l.app, ":sync proj<CR>");
+        l.until(preview_done);
+        // Mirror's short list: the deletion. x keeps stale.txt.
+        assert!(goto_row(&mut l.app, "stale.txt"), "{:?}", rows(&l.app));
+        let screen = render(&mut l.app, 140, 40);
+        assert!(
+            screen.contains("x / X") && screen.contains("Leave out"),
+            "{screen}"
+        );
+        press(&mut l.app, "x");
+        l.until(preview_done);
+        assert!(
+            l.app.pins.pins[0]
+                .extra
+                .get("exclude_files")
+                .and_then(|v| v.as_array())
+                .is_some_and(|a| a
+                    .iter()
+                    .any(|v| v.as_str().is_some_and(|s| s.ends_with(r"dst\stale.txt")))),
+            "{:?}",
+            l.app.pins.pins[0].extra
+        );
+        // Every change (the list and row stay across the redone dry runs): x on a.txt,
+        // X on proj\sub\c.txt (its folder).
+        press(&mut l.app, "<Tab>");
+        assert!(goto_row(&mut l.app, "a.txt"), "{:?}", rows(&l.app));
+        press(&mut l.app, "x");
+        l.until(preview_done);
+        assert!(
+            l.app.sync_preview.as_ref().is_some_and(|s| s.show_all),
+            "still every change"
+        );
+        assert!(
+            goto_row(&mut l.app, r"proj\sub\c.txt"),
+            "{:?}",
+            rows(&l.app)
+        );
+        press(&mut l.app, "X");
+        l.until(preview_done);
+        assert_eq!(rows(&l.app), ["b.txt"], "only b.txt still syncs");
+        let screen = render(&mut l.app, 140, 40);
+        assert!(screen.contains("Bring back 3 left out"), "{screen}");
+        let Ok(p) = SyncPreset::from_pin(&l.app.pins.pins[0]) else {
+            panic!()
+        };
+        assert_eq!(p.exclude_files.len(), 2);
+        assert_eq!(
+            p.exclude_dirs,
+            [dir.join("src")
+                .join("proj")
+                .join("sub")
+                .display()
+                .to_string()]
+        );
+        // The real run honours it.
+        press(&mut l.app, "<CR>");
+        l.until(|a| a.jobs.first().is_some_and(|j| j.phase.is_over()));
+        assert!(local.join("b.txt").exists());
+        assert!(!local.join("a.txt").exists(), "left out");
+        assert!(
+            !local.join("proj").join("sub").join("c.txt").exists(),
+            "folder left out"
+        );
+        assert!(
+            local.join("stale.txt").exists(),
+            "kept from the mirror's delete"
+        );
+        // E: everything back.
+        press(&mut l.app, ":sync proj<CR>");
+        l.until(preview_done);
+        press(&mut l.app, "E");
+        l.until(preview_done);
+        let Ok(p) = SyncPreset::from_pin(&l.app.pins.pins[0]) else {
+            panic!()
+        };
+        assert!(p.exclude_files.is_empty() && p.exclude_dirs.is_empty());
+        press(&mut l.app, "<Tab>");
+        assert!(
+            rows(&l.app).contains(&"a.txt".to_string()),
+            "{:?}",
+            rows(&l.app)
+        );
+        press(&mut l.app, "<Esc>");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A sync preset end to end with real robocopy: dry run, nothing touched, `u` to
     /// update (keeps the local-only file), then mirror (deletes it), last runs kept.
     #[test]
@@ -5192,42 +5315,53 @@ mod job_tests {
             .unwrap_or_default()
     }
 
-    /// `:sync new` / `:backup new` and `^e` build presets in the app: every field is
-    /// checked as it's typed, and what's saved loads as a preset.
+    /// `:sync new` / `:backup new` and `^e` build presets in the app. Folders are chosen
+    /// by going there (pick mode, `p`), refused when they nest; the short questions are
+    /// prompts; the name comes last, suggested from the folders. A selection becomes
+    /// `include`; Esc drops it all.
     #[test]
     fn presets_are_made_and_edited_in_the_app() {
         use crate::jobs::preset::{SyncMode, SyncPreset};
         use crate::jobs::zip::{BackupPreset, Engine};
         let dir = temp_tree();
+        let _ = std::fs::create_dir_all(dir.join("zips"));
         let mut l = Live::new(&dir);
         l.until(|a| a.pins_loaded);
         l.app.pins = crate::pins::PinStore::default();
         l.cd(&dir.join("src"));
 
-        // A sync from here.
+        // A sync from here: straight into picking the destination.
         press(&mut l.app, ":sync new<CR>");
-        assert_eq!(line_now(&l.app), "src → local");
-        press(&mut l.app, "<CR>");
-        assert_eq!(line_now(&l.app), dir.join("src").display().to_string());
-        press(&mut l.app, "<CR>");
-        // dest inside the source: refused, the prompt stays.
-        type_text(&mut l.app, r"proj");
-        press(&mut l.app, "<CR>");
+        assert!(l.app.pick.is_some());
+        assert!(l.app.prompt.is_none(), "nothing to type");
+        let screen = render(&mut l.app, 160, 20);
         assert!(
-            prompt_note(&l.app).contains("dest is inside source"),
-            "{}",
-            prompt_note(&l.app)
+            screen.contains("PICK  sync src → ?") && screen.contains("then p"),
+            "{screen}"
         );
-        // Tab completes folders.
-        press(&mut l.app, "<C-u>");
-        type_text(&mut l.app, &format!(r"{}\d", dir.display()));
-        press(&mut l.app, "<Tab>");
-        l.until(|a| line_now(a).ends_with(r"dst\"));
-        press(&mut l.app, "<CR>");
+        assert!(screen.contains("use this folder"), "the hint row: {screen}");
+        // Here, or inside the source: refused, still picking.
+        press(&mut l.app, "p");
+        assert!(status(&l.app).contains("same folder"), "{}", status(&l.app));
+        l.cd(&dir.join("src").join("proj"));
+        press(&mut l.app, "p");
+        assert!(
+            status(&l.app).contains("inside source"),
+            "{}",
+            status(&l.app)
+        );
+        assert!(l.app.pick.is_some());
+        // The destination: go there, p.
+        l.cd(&dir.join("dst"));
+        press(&mut l.app, "p");
+        assert!(l.app.pick.is_none());
         assert_eq!(line_now(&l.app), "update");
         press(&mut l.app, "<C-u>");
         type_text(&mut l.app, "mirror");
         assert!(prompt_note(&l.app).contains("DELETED"));
+        press(&mut l.app, "<CR>");
+        // The name comes last, from both folders.
+        assert_eq!(line_now(&l.app), "src → dst");
         press(&mut l.app, "<CR>");
         type_text(&mut l.app, "aveva");
         press(&mut l.app, "<CR>");
@@ -5240,17 +5374,22 @@ mod job_tests {
             panic!("{pin:?}")
         };
         assert_eq!(
-            (p.mode, p.dest.name()),
-            (SyncMode::Mirror, "dst".to_string())
+            (p.mode, p.source.name(), p.dest.name()),
+            (SyncMode::Mirror, "src".to_string(), "dst".to_string())
         );
+        assert!(p.include.is_empty(), "nothing selected: the whole folder");
         assert_eq!(
-            (pin.key_char(), pin.tags.clone()),
-            (Some('z'), vec!["aveva".to_string()])
+            (pin.name.as_str(), pin.key_char(), pin.tags.clone()),
+            ("src → dst", Some('z'), vec!["aveva".to_string()])
         );
 
-        // ^e walks the same fields, prefilled.
+        // ^e: the name, then each folder by going there (it starts where it was).
         l.app.edit_pin(0, false, None);
-        press(&mut l.app, "<CR><CR><CR>");
+        press(&mut l.app, "<CR>");
+        l.until(|a| a.pick.is_some() && a.cwd.name() == "src");
+        press(&mut l.app, "p");
+        l.until(|a| a.pick.is_some() && a.cwd.name() == "dst");
+        press(&mut l.app, "p");
         assert_eq!(line_now(&l.app), "mirror");
         press(&mut l.app, "<C-u>");
         type_text(&mut l.app, "u");
@@ -5262,19 +5401,18 @@ mod job_tests {
 
         // A backup, with the engine offered because 7-Zip is "installed".
         l.app.seven_zip = Some(r"C:\Program Files\7-Zip\7z.exe".into());
+        l.cd(&dir.join("src"));
         press(&mut l.app, ":backup new<CR>");
-        assert_eq!(line_now(&l.app), "src backup");
-        press(&mut l.app, "<CR><CR>");
-        type_text(&mut l.app, "zips");
-        press(&mut l.app, "<CR>");
+        let screen = render(&mut l.app, 160, 20);
+        assert!(screen.contains("PICK  backup src → ?"), "{screen}");
+        press(&mut l.app, "p");
         assert!(
-            prompt_note(&l.app).contains("zips can't go into"),
+            status(&l.app).contains("zips can't go into"),
             "{}",
-            prompt_note(&l.app)
+            status(&l.app)
         );
-        press(&mut l.app, "<C-u>");
-        type_text(&mut l.app, &dir.join("zips").display().to_string());
-        press(&mut l.app, "<CR>");
+        l.cd(&dir.join("zips"));
+        press(&mut l.app, "p");
         assert_eq!(line_now(&l.app), "10");
         press(&mut l.app, "<C-u>");
         type_text(&mut l.app, "x");
@@ -5287,6 +5425,8 @@ mod job_tests {
         assert!(prompt_note(&l.app).contains("7zip: faster"));
         press(&mut l.app, "<C-u>");
         type_text(&mut l.app, "7zip");
+        press(&mut l.app, "<CR>");
+        assert_eq!(line_now(&l.app), "src backup");
         press(&mut l.app, "<CR><CR><CR>");
         assert_eq!(l.app.pins.pins.len(), 2);
         let Ok(b) = BackupPreset::from_pin(&l.app.pins.pins[1]) else {
@@ -5294,9 +5434,38 @@ mod job_tests {
         };
         assert_eq!((b.keep, b.engine), (3, Engine::SevenZip));
 
-        // Esc at any step saves nothing; Locations isn't a folder to sync.
-        press(&mut l.app, ":sync new<CR><CR><Esc><Esc>");
-        assert_eq!(l.app.pins.pins.len(), 2);
+        // A selection: only those are synced (a folder is its own step, files one more).
+        l.cd(&dir.join("src"));
+        l.goto("proj");
+        press(&mut l.app, "<Tab>");
+        l.goto("b.txt");
+        press(&mut l.app, "<Tab>");
+        press(&mut l.app, ":sync new<CR>");
+        let screen = render(&mut l.app, 160, 20);
+        assert!(
+            screen.contains("PICK  sync src (2 selected) → ?"),
+            "{screen}"
+        );
+        l.cd(&dir.join("dst"));
+        press(&mut l.app, "p<CR><CR><CR><CR>");
+        assert_eq!(l.app.pins.pins.len(), 3);
+        let Ok(p) = SyncPreset::from_pin(&l.app.pins.pins[2]) else {
+            panic!("{:?}", l.app.pins.pins[2])
+        };
+        assert_eq!(p.include, [r"proj\", "b.txt"]);
+        let steps = p.steps();
+        assert_eq!(steps.len(), 2);
+        assert!(steps[0].src.ends_with(r"src\proj") && steps[0].dst.ends_with(r"dst\proj"));
+        assert_eq!(steps[1].files, ["b.txt"]);
+
+        // Esc while picking saves nothing; Locations isn't a folder to sync.
+        l.cd(&dir.join("src"));
+        press(&mut l.app, ":sync new<CR>");
+        assert!(l.app.pick.is_some());
+        press(&mut l.app, "<Esc>");
+        assert!(l.app.pick.is_none());
+        assert_eq!(l.app.pins.pins.len(), 3);
+        assert!(status(&l.app).contains("not pinned"), "{}", status(&l.app));
         press(&mut l.app, "gl");
         press(&mut l.app, ":sync new<CR>");
         assert!(

@@ -162,7 +162,7 @@ fn prepare_sync(preset: SyncPreset, args: &RunArgs, out: &mut dyn Write) -> (Job
     let id = new_id();
     let plan = Plan {
         backend: Backend::Robocopy,
-        steps: vec![preset.step()],
+        steps: preset.steps(),
         pairs: Vec::new(),
         title: preset.name.clone(),
     };

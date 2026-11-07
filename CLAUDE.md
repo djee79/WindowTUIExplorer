@@ -448,6 +448,7 @@ dest    = 'D:\aveva\local\HIT'
 mode    = "mirror"            # mirror | update
 exclude_dirs  = []            # robocopy /XD
 exclude_files = []            # robocopy /XF
+include       = []            # only these names in source (folders end in \): the selection
 check_in_use  = true          # see "In-use check" below
 ```
 
@@ -461,6 +462,18 @@ check_in_use  = true          # see "In-use check" below
   server · 6 local files will be DELETED (mirror)`. The list can be expanded per category.
   Then `Enter` runs it, `Esc` cancels. `Shift-Enter` (or `:sync! <preset>`) skips the preview for `update` mode
   only; mirror never skips it.
+  In the list, `x` leaves the file under the cursor out from now on and `X` its folder
+  (`/XF` / `/XD` with the full path, so it's neither copied nor, in mirror mode, deleted);
+  the dry run is redone at once, on the same list and row. `E` brings everything back.
+- **Making one, by going there (pick mode):** `Space n s` / `:sync new` in the source
+  folder; with a selection (`Tab` / `v`), only those are synced (`include`: each folder its
+  own robocopy step, mirrored within itself; the files one more step, copied). Then the
+  header turns into a `PICK` banner: move around as usual (`hjkl`, `'` jumps, `gl`, `:cd`,
+  `A` for a new folder) and press `p` in the destination ("paste the sync here"); a folder
+  inside the source (or vice versa) is refused there and then. The short questions follow
+  (mode), the name last, suggested from both folders (`HIT → HIT-local`), then tags and
+  key. `Esc` while picking saves nothing. `Ctrl-e` on a preset picks its folders the same
+  way, starting where they are. Backups: the zips folder is picked the same way.
 - The real run is a normal job (section 4): same panel, Finishing phase, report, log.
 - **Last-run state** is stored in `%LOCALAPPDATA%\sentier\presets.json`: time, outcome,
   bytes, duration. The pin row shows `last: today 08:12 ✓ 3.8 GB in 2m41s` or

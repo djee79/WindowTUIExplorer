@@ -122,9 +122,9 @@ impl App {
         }
         self.sync_token += 1;
         let token = self.sync_token;
-        let cancel = self
-            .worker
-            .sync_preview(token, preset.step(), Self::dry_run_options(&preset));
+        let cancel =
+            self.worker
+                .sync_preview(token, preset.steps(), Self::dry_run_options(&preset));
         self.sync_preview = Some(SyncPreviewState {
             preset,
             mode,
@@ -218,9 +218,136 @@ impl App {
                 let (preset, mode) = (sp.preset.clone(), sp.mode);
                 self.start_dry_run(preset, mode);
             }
+            KeyCode::Char('x') if !ctrl => self.exclude_row(false),
+            KeyCode::Char('X') => self.exclude_row(true),
+            KeyCode::Char('E') => self.clear_exclusions(),
             KeyCode::Enter => self.confirm_sync(),
             _ => {}
         }
+    }
+
+    /// The dry run again (the preset changed), on the same list and row.
+    fn redo_dry_run(&mut self, preset: SyncPreset, mode: SyncMode) {
+        let (show_all, row) = self
+            .sync_preview
+            .as_ref()
+            .map_or((false, 0), |s| (s.show_all, s.scroll));
+        self.start_dry_run(preset, mode);
+        if let Some(sp) = self.sync_preview.as_mut() {
+            sp.show_all = show_all;
+            sp.scroll = row;
+        }
+    }
+
+    /// The pin a preview's preset came from (found by its folders: names can repeat).
+    fn preset_pin_index(&self, preset: &SyncPreset) -> Option<usize> {
+        let key = preset.key();
+        self.pins
+            .pins
+            .iter()
+            .position(|p| SyncPreset::from_pin(p).is_ok_and(|s| s.key() == key))
+    }
+
+    /// `x` / `X` in the preview: leave the file under the cursor (or, `X`, the folder it's
+    /// in) out of this preset from now on: robocopy `/XF` / `/XD` with its full path, so
+    /// it's neither copied nor, in mirror mode, deleted. Saved, and the dry run redone.
+    fn exclude_row(&mut self, folder: bool) {
+        let Some(sp) = self.sync_preview.as_ref() else {
+            return;
+        };
+        let (_, rows) = sp.listed();
+        let Some(row) = rows.get(sp.scroll).copied().cloned() else {
+            return self.set_status("nothing under the cursor to leave out".into(), false);
+        };
+        let base = if row.change == Change::Extra {
+            sp.preset.dest.display()
+        } else {
+            sp.preset.source.display()
+        };
+        let base = base.trim_end_matches('\\').to_string();
+        let (key, path, what) = if folder {
+            let Some((parent, _)) = row.rel.rsplit_once('\\') else {
+                return self.set_status(
+                    "it's in the top folder: x leaves the file out".into(),
+                    false,
+                );
+            };
+            (
+                "exclude_dirs",
+                format!("{base}\\{parent}"),
+                format!("{parent}\\"),
+            )
+        } else {
+            (
+                "exclude_files",
+                format!("{base}\\{}", row.rel),
+                row.rel.clone(),
+            )
+        };
+        let (preset, mode) = (sp.preset.clone(), sp.mode);
+        let Some(idx) = self.preset_pin_index(&preset) else {
+            return self.set_status("this preset isn't a pin any more".into(), true);
+        };
+        let Some(pin) = self.pins.pins.get_mut(idx) else {
+            return;
+        };
+        let mut list: Vec<String> = pin
+            .extra
+            .get(key)
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !list.iter().any(|p| p.eq_ignore_ascii_case(&path)) {
+            list.push(path);
+        }
+        pin.extra.insert(
+            key.into(),
+            toml::Value::Array(list.into_iter().map(toml::Value::String).collect()),
+        );
+        let Ok(preset2) = SyncPreset::from_pin(pin) else {
+            return;
+        };
+        self.save_pins();
+        self.redo_dry_run(preset2, mode);
+        self.set_status(
+            format!(
+                "{what} left out of {} from now on (E brings everything back)",
+                preset.name
+            ),
+            false,
+        );
+    }
+
+    /// `E` in the preview: no exclusions any more (made with `x` / `X`, or in pins.toml).
+    fn clear_exclusions(&mut self) {
+        let Some(sp) = self.sync_preview.as_ref() else {
+            return;
+        };
+        if sp.preset.exclude_dirs.is_empty() && sp.preset.exclude_files.is_empty() {
+            return self.set_status("nothing is left out of this preset".into(), false);
+        }
+        let (preset, mode) = (sp.preset.clone(), sp.mode);
+        let Some(idx) = self.preset_pin_index(&preset) else {
+            return self.set_status("this preset isn't a pin any more".into(), true);
+        };
+        let Some(pin) = self.pins.pins.get_mut(idx) else {
+            return;
+        };
+        pin.extra.remove("exclude_dirs");
+        pin.extra.remove("exclude_files");
+        let Ok(preset2) = SyncPreset::from_pin(pin) else {
+            return;
+        };
+        self.save_pins();
+        self.redo_dry_run(preset2, mode);
+        self.set_status(
+            "nothing left out any more: everything is synced".into(),
+            false,
+        );
     }
 
     /// Enter in the preview: run it, unless there's nothing to do or the dry run failed.
@@ -260,7 +387,7 @@ impl App {
         let id = self.new_job_id();
         let plan = Plan {
             backend: Backend::Robocopy,
-            steps: vec![preset.step()],
+            steps: preset.steps(),
             pairs: Vec::new(),
             title: preset.name.clone(),
         };

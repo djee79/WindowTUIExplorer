@@ -189,8 +189,10 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
                     theme::fg(BORDER),
                 )));
                 let room = (inner.height as usize).saturating_sub(lines.len() + FOOTER);
-                let start = sp.scroll.min(rows.len().saturating_sub(room.max(1)));
-                for row in rows.iter().skip(start).take(room) {
+                // `scroll` is the cursor (x / X act on that row); the window follows it.
+                let cursor = sp.scroll.min(rows.len().saturating_sub(1));
+                let start = (cursor + 1).saturating_sub(room.max(1));
+                for (i, row) in rows.iter().enumerate().skip(start).take(room) {
                     let style = match (row.change, sp.mode) {
                         (Change::Extra, SyncMode::Mirror) => theme::fg(ERR),
                         (Change::Extra, SyncMode::Update) => theme::dim(),
@@ -201,17 +203,22 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
                     let pw = iw.saturating_sub(width(&size) + 8);
                     let path = truncate_left(&row.rel, pw);
                     let pad = iw.saturating_sub(4 + width(&path) + width(&size) + 3);
-                    lines.push(Line::from(vec![
+                    let line = Line::from(vec![
                         Span::styled(format!("  {} ", row.change.sign()), style),
                         Span::styled(path, style),
                         Span::raw(" ".repeat(pad)),
                         Span::styled(size, theme::fg(DIM)),
-                    ]));
+                    ]);
+                    lines.push(if i == cursor {
+                        line.style(ratatui::style::Style::new().bg(theme::SEL_BG))
+                    } else {
+                        line
+                    });
                 }
                 if rows.len() > room {
                     lines.push(Line::from(Span::styled(
                         format!(
-                            "  {}–{} of {}  (j/k ^d/^u scroll)",
+                            "  {}–{} of {}  (j/k ^d/^u move · x leave this file out · X its folder)",
                             start + 1,
                             (start + room).min(rows.len()),
                             rows.len()
@@ -225,7 +232,7 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
             } else {
                 format!("Run {}", sp.mode.word())
             };
-            vec![
+            let mut keys = vec![
                 ("Enter", run),
                 ("u", format!("Switch to {}", sp.mode.flip().word())),
                 (
@@ -236,8 +243,15 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
                         format!("Show all {}", pv.rows.len())
                     },
                 ),
-                ("Esc", "Cancel".into()),
-            ]
+                ("x / X", "Leave out file / folder".into()),
+            ];
+            // What `x` / `X` (or pins.toml) left out, and how to bring it back.
+            let left_out = sp.preset.exclude_dirs.len() + sp.preset.exclude_files.len();
+            if left_out > 0 {
+                keys.push(("E", format!("Bring back {left_out} left out")));
+            }
+            keys.push(("Esc", "Cancel".into()));
+            keys
         }
     };
 
@@ -248,15 +262,31 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
     }
     lines.truncate(footer_at);
     lines.push(Line::default());
-    let mut spans = vec![Span::raw("  ")];
+    // The keys, on a second line when they don't fit on one (it takes the blank's place).
+    let mut rows: Vec<Vec<Span>> = vec![vec![Span::raw("  ")]];
+    let mut used = 2;
     for (k, what) in keys {
+        let w = width(k) + width(&what) + 8;
+        if used + w > iw && rows.len() < 2 && used > 2 {
+            rows.push(vec![Span::raw("  ")]);
+            used = 2;
+        }
+        used += w;
+        let Some(spans) = rows.last_mut() else {
+            break;
+        };
         spans.push(Span::styled("[ ", theme::fg(BORDER)));
         spans.push(Span::styled(k, theme::bold(ACCENT)));
         spans.push(Span::styled(format!(" {what}"), theme::fg(FG)));
         spans.push(Span::styled(" ]   ", theme::fg(BORDER)));
     }
-    lines.push(Line::from(spans));
-    lines.push(Line::default());
+    let two = rows.len() > 1;
+    for spans in rows {
+        lines.push(Line::from(spans));
+    }
+    if !two {
+        lines.push(Line::default());
+    }
     lines.push(Line::from(Span::styled(
         "  Mirror always previews first. A preset can't push local → server.",
         theme::dim(),

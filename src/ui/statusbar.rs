@@ -1,7 +1,7 @@
 //! Top bar (badge + path) and the two-line footer (status, key hints),
 //! per docs/screens/01-main.txt. The jobs line joins the footer in M4.
 
-use super::theme::{self, ACCENT, BAR_BG, ERR, FG, NET, OK, ON_ACCENT};
+use super::theme::{self, ACCENT, BAR_BG, ERR, FG, NET, OK, ON_ACCENT, WARN};
 use super::{human_size, spinner, thousands, truncate_left, width};
 use crate::app::{App, Mode, Prompt, PromptKind, SearchState};
 use std::time::Duration;
@@ -56,6 +56,17 @@ const OPEN_HINTS: &[(&str, &str)] = &[
     ("Esc", "close"),
     ("gR", "reveal"),
     ("yP", "copy UNC path"),
+];
+
+/// Pick mode (a preset's folder chosen by going there).
+const PICK_HINTS: &[(&str, &str)] = &[
+    ("p", "use this folder"),
+    ("Esc", "cancel"),
+    ("hjkl", "move"),
+    ("'", "pin jump"),
+    ("gl", "Locations"),
+    (":cd", "type a path"),
+    ("A", "new folder"),
 ];
 
 const VISUAL_HINTS: &[(&str, &str)] = &[
@@ -243,6 +254,20 @@ pub fn draw_header(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ));
         left.push(Span::raw("  "));
+    }
+    // Pick mode: what is being picked, in front of the path you're in.
+    if let Some(p) = &app.pick {
+        let head = format!(" PICK  {}  ", p.title);
+        let ask = format!("{}, then p  ", p.ask());
+        used += width(&head) + width(&ask) + 2;
+        left.push(Span::styled(
+            head,
+            Style::new()
+                .bg(WARN)
+                .fg(ON_ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ));
+        left.push(Span::styled(format!("  {ask}"), theme::bold(WARN)));
     }
     let path = truncate_left(
         &app.cwd.display(),
@@ -544,6 +569,8 @@ pub fn draw_hints(f: &mut Frame, area: Rect, app: &App) {
         OPEN_HINTS
     } else if app.mode == Mode::SyncPreview {
         SYNC_HINTS
+    } else if app.pick.is_some() && app.mode == Mode::Normal {
+        PICK_HINTS
     } else if app.visual.is_some() {
         VISUAL_HINTS
     } else if app.at_root() {

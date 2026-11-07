@@ -466,6 +466,55 @@ pub fn dry_run(
     Ok((t, code))
 }
 
+/// [`dry_run`] over several steps (a preset with `include`) into one tracker: what each
+/// would do, the summaries added up, the exit codes OR'd.
+pub fn dry_run_steps(
+    steps: &[robocopy::Step],
+    opts: &Options,
+    cancel: &CancelToken,
+) -> Result<(Tracker, i32), String> {
+    let opts = Options {
+        list_only: true,
+        threads: 0,
+        log: None,
+        ..opts.clone()
+    };
+    let mut t = Tracker::new(true);
+    let mut code = 0;
+    let mut sum = Summary::default();
+    let add = |a: &mut Row, b: &Row| {
+        a.total += b.total;
+        a.copied += b.copied;
+        a.skipped += b.skipped;
+        a.mismatch += b.mismatch;
+        a.failed += b.failed;
+        a.extras += b.extras;
+    };
+    for step in steps {
+        let (c, _) = robocopy_once(
+            &robocopy::args(step, &opts),
+            &|| cancel.is_cancelled(),
+            &mut |evs| {
+                for e in evs {
+                    t.apply(e);
+                }
+            },
+        )?;
+        code |= c.max(0);
+        if let Some(s) = t.summary.take() {
+            add(&mut sum.dirs, &s.dirs);
+            add(&mut sum.files, &s.files);
+            add(&mut sum.bytes, &s.bytes);
+        }
+        if cancel.is_cancelled() {
+            break;
+        }
+    }
+    t.finish();
+    t.summary = Some(sum);
+    Ok((t, code))
+}
+
 fn quote_args(args: &[String]) -> String {
     args.iter()
         .map(|a| {

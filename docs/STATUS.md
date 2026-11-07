@@ -1147,3 +1147,32 @@ first thing in `main` (inherited by everything it starts: VS Code, Teams, Slack�
 new: `Ctrl-L` / `:redraw` clears and redraws the whole screen, for anything else that
 writes on the terminal. Manual check: `O` on a .txt → Visual Studio Code (Windows
 suggests), close VS Code, the screen stays clean.
+
+## Presets made by going there; only the selection; leave files out in the preview (code complete 2026-11-06, manual check pending)
+
+User's ask: "we're in a file explorer: I should navigate to the source and destination
+and the files to sync, not paste paths."
+
+- Pick mode (`app/pick.rs`): the wizard's folder fields (Source, Dest, zips folder) no
+  longer open a text prompt; the explorer works as usual under a `PICK  sync HIT → ?`
+  banner (header, yellow) with a hint row (`p use this folder · Esc cancel · hjkl ' gl :cd
+  A`). `p` takes the folder you're in and runs the same checks as before (same folder,
+  nested folders, zips into what they back up), refusing in place; `Esc` (once there's no
+  filter / selection / search highlight to clear) drops the preset.
+- New presets: the source is where you are; the destination is picked first; mode (or
+  keep / engine) next; the name last, suggested from both folders; tags; key. `Ctrl-e`
+  picks each folder starting where it is (`p` keeps it).
+- A selection makes `include` (folders end in `\`): `SyncPreset::steps()` gives one robocopy
+  step per folder (mirror stays within it) plus one for the files (a file filter: copied,
+  never purged). The dry run runs every step into one tracker (`run::dry_run_steps`,
+  summaries added up); the real run and `sentier run` use the same steps.
+- Preview: the list has a cursor (highlighted); `x` leaves that file out, `X` its folder,
+  as full-path `/XF` / `/XD` in the pin (verified with a robocopy probe: full paths
+  exclude a source file / folder and keep a dest-only file / folder from `/MIR`'s purge);
+  the dry run is redone on the same list and row; `E` brings everything back. The key row
+  wraps onto two lines when it's long.
+- Tests: the whole wizard by navigation (refusals, edit, backup, include, Esc), and `x`
+  / `X` / `E` with a real robocopy run honouring them.
+
+Manual check: in a project folder, `Tab` two folders, `Space n s`, go to a local folder,
+`p`, Enter ×4; Enter on the pin → preview lists only those; `Tab`, `x` a file, run.
