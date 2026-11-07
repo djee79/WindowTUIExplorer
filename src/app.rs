@@ -4444,7 +4444,7 @@ mod job_tests {
             app.register.as_ref().map(|r| r.op),
             Some(crate::jobs::Op::Move)
         );
-        // Pasting where they are is refused.
+        // A cut pasted where it is: nothing to do.
         press(&mut app, "p");
         assert!(
             status(&app).contains("already in this folder"),
@@ -4461,6 +4461,52 @@ mod job_tests {
         // Nothing to select in Locations.
         press(&mut app, "gl<Tab>");
         assert!(app.marked.is_empty());
+    }
+
+    /// `yy` then `p` in the same folder: a copy beside the original, numbered like Yazi
+    /// (`a_1.txt`, then `a_2.txt`), folders too; files and folders together are two jobs.
+    #[test]
+    fn paste_where_the_original_is_makes_a_numbered_copy() {
+        let dir = temp_tree();
+        let src = dir.join("src");
+        let mut l = Live::new(&src);
+        let has = |name: &'static str| {
+            move |a: &App| {
+                a.view_listing
+                    .as_ref()
+                    .is_some_and(|li| li.entries.iter().any(|e| e.name == name))
+            }
+        };
+        l.goto("a.txt");
+        press(&mut l.app, "yyp");
+        l.until(|a| a.jobs.first().is_some_and(|j| j.phase.is_over()));
+        assert_eq!(
+            l.app.jobs[0].phase,
+            Phase::Done,
+            "{:?}",
+            l.app.jobs[0].error
+        );
+        assert_eq!(
+            std::fs::read_to_string(src.join("a_1.txt")).ok().as_deref(),
+            Some("a")
+        );
+        // The listing refreshes, so the next one takes the next number.
+        l.until(has("a_1.txt"));
+        press(&mut l.app, "p");
+        l.until(|a| a.jobs.len() == 2 && a.jobs[1].phase.is_over());
+        assert!(src.join("a_2.txt").exists());
+
+        // A folder and a file at once: proj_1 (robocopy) and b_1.txt (native).
+        l.until(has("a_2.txt"));
+        l.goto("proj");
+        press(&mut l.app, "<Tab>");
+        l.goto("b.txt");
+        press(&mut l.app, "<Tab>yyp");
+        l.until(|a| a.jobs.len() == 4 && a.jobs.iter().all(|j| j.phase.is_over()));
+        assert!(src.join("proj_1").join("sub").join("c.txt").exists());
+        assert!(src.join("b_1.txt").exists());
+        assert!(src.join("proj").exists() && src.join("b.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

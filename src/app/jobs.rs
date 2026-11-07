@@ -238,34 +238,53 @@ impl App {
             self.set_status("paste into a folder".into(), false);
             return;
         };
-        let req = Request {
-            op: reg.op,
-            items: reg.items,
-            dest,
-            overwrite: if overwrite {
-                Overwrite::Always
-            } else {
-                Overwrite::Never
-            },
+        if reg.op == Op::Copy {
+            self.last_paste = Some((reg.clone(), overwrite));
+        }
+        // A copy pasted beside its original gets a free name (`report_1.pdf`). Such files
+        // go natively and folders through robocopy, so a mix is two jobs.
+        let in_place = |i: &Item| !i.is_dir && jobs::in_folder(i, &dest);
+        let groups: Vec<Vec<Item>> = if reg.op == Op::Copy
+            && reg.items.iter().any(in_place)
+            && reg.items.iter().any(|i| i.is_dir)
+        {
+            let (files, dirs): (Vec<Item>, Vec<Item>) =
+                reg.items.into_iter().partition(|i| !i.is_dir);
+            vec![dirs, files]
+        } else {
+            vec![reg.items]
         };
+        let taken: Vec<String> = self
+            .view_listing
+            .as_ref()
+            .map(|l| l.entries.iter().map(|e| e.name.clone()).collect())
+            .unwrap_or_default();
+        for items in groups {
+            let req = Request {
+                op: reg.op,
+                items,
+                dest: dest.clone(),
+                overwrite: if overwrite {
+                    Overwrite::Always
+                } else {
+                    Overwrite::Never
+                },
+            };
+            self.paste_request(req, &taken);
+        }
+    }
+
+    /// Plans one paste, checks its folders for AVEVA projects, then asks or starts.
+    fn paste_request(&mut self, req: Request, taken: &[String]) {
         let native_max = self
             .config
             .jobs
             .native_max_bytes
             .unwrap_or(jobs::NATIVE_MAX_BYTES);
-        let plan = match jobs::plan(&req, native_max) {
+        let plan = match jobs::plan(&req, native_max, taken) {
             Ok(p) => p,
             Err(e) => return self.set_status(e, true),
         };
-        if reg.op == Op::Copy {
-            self.last_paste = Some((
-                Register {
-                    op: reg.op,
-                    items: req.items.clone(),
-                },
-                overwrite,
-            ));
-        }
         // Folders: is one an AVEVA project? The answer comes back as `AvevaChecked`.
         let dirs: Vec<String> = req
             .items

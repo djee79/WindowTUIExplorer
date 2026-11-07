@@ -308,6 +308,10 @@ paths, tags are the main way to narrow things down.
   enter visual mode (range select with motions), `Esc` clears. Operators work on the
   selection, or on the cursor item when nothing is selected. `.` repeats the last paste in
   another directory.
+- **A copy pasted where its original is** gets a free name, like Yazi: `report.pdf` →
+  `report_1.pdf`, then `_2`; folders too (`HIT_1`). Such files copy natively at any size
+  (robocopy can't rename a file); with folders in the same paste, that's two jobs. A cut
+  pasted where it is does nothing.
 - Every paste creates a **Job**, shown in the job panel (`J` toggles it; it opens
   automatically for jobs > 0.5 s).
 - **Backend choice:** any directory, or any file ≥ 256 MB → robocopy. Small file-only

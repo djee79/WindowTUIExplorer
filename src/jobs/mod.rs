@@ -102,8 +102,30 @@ fn parent(p: &FsPath) -> Option<FsPath> {
     Loc::Fs(p.clone()).parent()?.as_fs().cloned()
 }
 
-/// Works out how to paste: refuses a folder into itself and a paste where it already is.
-pub fn plan(req: &Request, native_max: u64) -> Result<Plan, String> {
+/// True when `it` sits right in `dest` (a paste there makes a copy beside it).
+pub fn in_folder(it: &Item, dest: &FsPath) -> bool {
+    parent(&it.path).is_some_and(|p| p.display().eq_ignore_ascii_case(&dest.display()))
+}
+
+/// `report.pdf` → `report_1.pdf`, then `_2`…: the first name not in `taken` (lowercased).
+/// Yazi's naming for a copy pasted where its original is. A folder keeps its dots.
+pub fn free_name(name: &str, is_dir: bool, taken: &std::collections::HashSet<String>) -> String {
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 && !is_dir => name.split_at(i),
+        _ => (name, ""),
+    };
+    (1u32..)
+        .map(|n| format!("{stem}_{n}{ext}"))
+        .find(|c| !taken.contains(&c.to_lowercase()))
+        .unwrap_or_else(|| format!("{stem}_copy{ext}"))
+}
+
+/// Works out how to paste: refuses a folder into itself. A copy pasted where its original
+/// is gets a free name (`report_1.pdf`, see [`free_name`]); `taken` is what the
+/// destination already holds. Such files go through the native backend whatever their
+/// size (robocopy can't rename a file), so the caller pastes copied-in-place files and
+/// folders as separate jobs.
+pub fn plan(req: &Request, native_max: u64, taken: &[String]) -> Result<Plan, String> {
     if req.items.is_empty() {
         return Err("nothing to paste".into());
     }
@@ -115,45 +137,73 @@ pub fn plan(req: &Request, native_max: u64) -> Result<Plan, String> {
                 it.path.name()
             ));
         }
-        if parent(&it.path).is_some_and(|p| p.display().eq_ignore_ascii_case(&req.dest.display())) {
+        if req.op == Op::Move && in_folder(it, &req.dest) {
             return Err(format!("{} is already in this folder", it.path.name()));
         }
     }
-    let title = title(&req.items, &req.dest);
-    let pair = |it: &Item| -> Result<Pair, String> {
+    let dup_files = req
+        .items
+        .iter()
+        .any(|i| !i.is_dir && in_folder(i, &req.dest));
+    if dup_files && req.items.iter().any(|i| i.is_dir) {
+        return Err("copy the folders and the files here separately".into());
+    }
+    // The names things get in `dest`: their own, or a free one beside the original.
+    let mut used: std::collections::HashSet<String> =
+        taken.iter().map(|t| t.to_lowercase()).collect();
+    let names: Vec<String> = req
+        .items
+        .iter()
+        .map(|it| {
+            let name = it.path.name();
+            if !in_folder(it, &req.dest) {
+                return name;
+            }
+            let free = free_name(&name, it.is_dir, &used);
+            used.insert(free.to_lowercase());
+            free
+        })
+        .collect();
+    let title = match (&req.items[..], &names[..]) {
+        ([one], [new]) if in_folder(one, &req.dest) => format!("{} → {new}", one.path.name()),
+        _ => title(&req.items, &req.dest),
+    };
+    let pair = |i: usize| -> Result<Pair, String> {
+        let it = &req.items[i];
         Ok(Pair {
             src: it.path.display(),
             dst: req
                 .dest
-                .join(&it.path.name())
+                .join(&names[i])
                 .map_err(|e| e.to_string())?
                 .display(),
             size: it.size,
             is_dir: it.is_dir,
         })
     };
+    let pairs = || (0..req.items.len()).map(pair).collect::<Result<_, _>>();
     if req.op == Op::Move && req.items.iter().all(|i| same_volume(&i.path, &req.dest)) {
         return Ok(Plan {
             backend: Backend::Rename,
             steps: Vec::new(),
-            pairs: req.items.iter().map(pair).collect::<Result<_, _>>()?,
+            pairs: pairs()?,
             title,
         });
     }
-    if req.items.iter().all(|i| !i.is_dir && i.size < native_max) {
+    if dup_files || req.items.iter().all(|i| !i.is_dir && i.size < native_max) {
         return Ok(Plan {
             backend: Backend::Native,
             steps: Vec::new(),
-            pairs: req.items.iter().map(pair).collect::<Result<_, _>>()?,
+            pairs: pairs()?,
             title,
         });
     }
     // robocopy: one run per folder, and one per source folder for the files.
     let mut steps: Vec<Step> = Vec::new();
-    for it in req.items.iter().filter(|i| i.is_dir) {
+    for (i, it) in req.items.iter().enumerate().filter(|(_, i)| i.is_dir) {
         steps.push(Step {
             src: it.path.display(),
-            dst: pair(it)?.dst,
+            dst: pair(i)?.dst,
             files: Vec::new(),
         });
     }
@@ -1324,7 +1374,7 @@ mod tests {
             ],
             r"D:\b",
         );
-        let Ok(pl) = plan(&r, NATIVE_MAX_BYTES) else {
+        let Ok(pl) = plan(&r, NATIVE_MAX_BYTES, &[]) else {
             panic!()
         };
         assert_eq!(pl.backend, Backend::Native);
@@ -1341,7 +1391,7 @@ mod tests {
             ],
             r"D:\local",
         );
-        let Ok(pl) = plan(&r, NATIVE_MAX_BYTES) else {
+        let Ok(pl) = plan(&r, NATIVE_MAX_BYTES, &[]) else {
             panic!()
         };
         assert_eq!(pl.backend, Backend::Robocopy);
@@ -1357,12 +1407,12 @@ mod tests {
         // A move on one volume: rename. Across volumes: robocopy / native.
         let r = req(Op::Move, vec![item(r"C:\a\big", true, 0)], r"C:\b");
         assert_eq!(
-            plan(&r, NATIVE_MAX_BYTES).map(|p| p.backend),
+            plan(&r, NATIVE_MAX_BYTES, &[]).map(|p| p.backend),
             Ok(Backend::Rename)
         );
         let r = req(Op::Move, vec![item(r"C:\a\big", true, 0)], r"D:\b");
         assert_eq!(
-            plan(&r, NATIVE_MAX_BYTES).map(|p| p.backend),
+            plan(&r, NATIVE_MAX_BYTES, &[]).map(|p| p.backend),
             Ok(Backend::Robocopy)
         );
         let r = req(
@@ -1371,16 +1421,83 @@ mod tests {
             r"\\SRV01\P\b",
         );
         assert_eq!(
-            plan(&r, NATIVE_MAX_BYTES).map(|p| p.backend),
+            plan(&r, NATIVE_MAX_BYTES, &[]).map(|p| p.backend),
             Ok(Backend::Rename)
         );
 
         // Refusals.
         let r = req(Op::Copy, vec![item(r"C:\a", true, 0)], r"C:\a\b");
-        assert!(plan(&r, NATIVE_MAX_BYTES).is_err_and(|e| e.contains("into itself")));
-        let r = req(Op::Copy, vec![item(r"C:\a\x.txt", false, 1)], r"C:\A");
-        assert!(plan(&r, NATIVE_MAX_BYTES).is_err_and(|e| e.contains("already in this folder")));
-        assert!(plan(&req(Op::Copy, vec![], r"C:\a"), NATIVE_MAX_BYTES).is_err());
+        assert!(plan(&r, NATIVE_MAX_BYTES, &[]).is_err_and(|e| e.contains("into itself")));
+        let r = req(Op::Move, vec![item(r"C:\a\x.txt", false, 1)], r"C:\A");
+        assert!(
+            plan(&r, NATIVE_MAX_BYTES, &[]).is_err_and(|e| e.contains("already in this folder"))
+        );
+        assert!(plan(&req(Op::Copy, vec![], r"C:\a"), NATIVE_MAX_BYTES, &[]).is_err());
+        let r = req(
+            Op::Copy,
+            vec![item(r"C:\a\x.txt", false, 1), item(r"C:\a\d", true, 0)],
+            r"C:\a",
+        );
+        assert!(plan(&r, NATIVE_MAX_BYTES, &[]).is_err_and(|e| e.contains("separately")));
+    }
+
+    #[test]
+    fn free_names_like_yazi() {
+        let taken: std::collections::HashSet<String> =
+            ["report.pdf", "report_1.pdf", "v1.2", ".env"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+        assert_eq!(free_name("report.pdf", false, &taken), "report_2.pdf");
+        assert_eq!(free_name("notes.txt", false, &taken), "notes_1.txt");
+        assert_eq!(
+            free_name("v1.2", true, &taken),
+            "v1.2_1",
+            "a folder keeps its dots"
+        );
+        assert_eq!(free_name(".env", false, &taken), ".env_1");
+        assert_eq!(free_name("Makefile", false, &taken), "Makefile_1");
+    }
+
+    /// A copy pasted where its original is: a free name beside it, native for files
+    /// (any size), robocopy into the new name for folders.
+    #[test]
+    fn copy_in_place_gets_a_free_name() {
+        let taken = [
+            "A.pdf".to_string(),
+            "a_1.pdf".into(),
+            "big.bin".into(),
+            "HIT".into(),
+        ];
+        let r = req(
+            Op::Copy,
+            vec![
+                item(r"C:\w\a.pdf", false, 1),
+                item(r"C:\w\big.bin", false, NATIVE_MAX_BYTES * 4),
+                item(r"D:\elsewhere\c.txt", false, 1),
+            ],
+            r"C:\W",
+        );
+        let pl = plan(&r, NATIVE_MAX_BYTES, &taken).expect("plan");
+        assert_eq!(pl.backend, Backend::Native);
+        let dsts: Vec<&str> = pl.pairs.iter().map(|p| p.dst.as_str()).collect();
+        assert_eq!(dsts, [r"C:\W\a_2.pdf", r"C:\W\big_1.bin", r"C:\W\c.txt"]);
+
+        let r = req(Op::Copy, vec![item(r"C:\w\HIT", true, 0)], r"C:\w");
+        let pl = plan(&r, NATIVE_MAX_BYTES, &taken).expect("plan");
+        assert_eq!(pl.backend, Backend::Robocopy);
+        assert_eq!(pl.steps[0].dst, r"C:\w\HIT_1");
+        assert_eq!(pl.title, "HIT → HIT_1");
+
+        // Two copies of the same name in one paste don't collide either.
+        let r = req(
+            Op::Copy,
+            vec![item(r"C:\w\x.txt", false, 1), item(r"C:\w\x.txt", false, 1)],
+            r"C:\w",
+        );
+        let pl = plan(&r, NATIVE_MAX_BYTES, &["x.txt".to_string()]).expect("plan");
+        let dsts: Vec<&str> = pl.pairs.iter().map(|p| p.dst.as_str()).collect();
+        assert_eq!(dsts, [r"C:\w\x_1.txt", r"C:\w\x_2.txt"]);
     }
 
     #[test]

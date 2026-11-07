@@ -1257,3 +1257,12 @@ menu with the preset's two folders (`app/places.rs`): in sentier (Source, Destin
 Both: the source here and the destination in a new tab), in Explorer (either, or two
 windows), or copy either path. A backup's destination is its zips folder; a job's source
 is its first robocopy step's folder (small native copies keep none: destination only).
+
+### Paste beside the original
+
+`yy` then `p` in the same folder no longer refuses: the copy gets a free name, Yazi's way
+(`report_1.pdf`, `_2`…; a folder keeps its dots: `v1.2_1`). `jobs::plan` takes the names
+the destination holds (the listing on screen) and `free_name` picks the first free one,
+also between items of the same paste. In-place files go through the native backend at
+any size (robocopy can't rename a file); folders through robocopy into the new name; a
+paste with both is split into two jobs. A cut pasted where it is still says so.
