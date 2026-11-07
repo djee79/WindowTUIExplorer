@@ -499,7 +499,7 @@ impl Worker {
                 Ok(Err(e)) => Err(e.to_string()),
                 Err(_) => Err("config.toml: timed out reading %APPDATA%".to_string()),
             };
-            let _ = tx.send(AppEvent::ConfigLoaded(result));
+            let _ = tx.send(AppEvent::ConfigLoaded(result.map(Box::new)));
         });
     }
 

@@ -35,3 +35,15 @@ pub fn dim() -> Style {
 pub fn bold(c: Color) -> Style {
     fg(c).add_modifier(Modifier::BOLD)
 }
+
+/// `:` commands (the `g?` command column).
+pub const CMD: Color = rgb(0xb89af0);
+
+/// `"#e3a857"` / `"e3a857"` → a colour; anything else → None.
+pub fn parse_hex(s: &str) -> Option<Color> {
+    let h = s.trim().trim_start_matches('#');
+    if h.len() != 6 {
+        return None;
+    }
+    u32::from_str_radix(h, 16).ok().map(rgb)
+}

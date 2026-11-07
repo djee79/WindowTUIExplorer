@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>sentier help overlay</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,600;0,700;1,400&amp;display=swap">
+<style>
+body{margin:0;background:#16161e}
+a{color:#7aa2f7}a:hover{color:#7dcfff}
+input::placeholder{color:#828bb8}
+</style>
+</helmet>
+<div style="width: 1760px; height: 1040px; box-sizing: border-box; background: #1a1b26; color: #c0caf5; font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace; font-size: 13px; line-height: 20px; display: flex; flex-direction: column; padding: 8px 16px 20px">
+
+<div style="display: flex; justify-content: space-between; align-items: center; height: 20px; padding: 0 1ch; margin-bottom: 14px">
+<span><span style="color: #828bb8">C:\Users\jdoe\</span><span style="color: #7aa2f7; font-weight: 600">tests\</span></span>
+<span style="color: #828bb8">2026-11-06 10:50</span>
+</div>
+
+<div style="position: relative; flex: 1; min-height: 0; border: 1px solid #3b4261; border-radius: 6px; padding: 22px 3ch 18px; display: flex; flex-direction: column; gap: 18px">
+
+<div style="position: absolute; top: -11px; left: 2ch; background: #1a1b26; padding: 0 1ch; display: flex; gap: 1ch; align-items: center">
+<span style="color: {{headerColor}}; font-weight: 700">help</span>
+<span style="color: #3b4261">·</span>
+<span style="color: #828bb8">{{keyCount}} keys, {{cmdCount}} commands</span>
+</div>
+<div style="position: absolute; top: -11px; right: 2ch; background: #1a1b26; padding: 0 1ch; color: #828bb8">sentier</div>
+
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 4ch; flex-wrap: wrap">
+<label style="display: flex; align-items: center; gap: 1ch; flex: 0 1 60ch; background: #16161e; border: 1px solid #292e42; border-radius: 4px; padding: 6px 1.5ch">
+<span style="color: {{keyColor}}; font-weight: 700">/</span>
+<input type="text" placeholder="type to filter keys and commands" aria-label="Filter keys and commands" style="flex: 1; min-width: 0; background: transparent; border: 0; outline: none; color: #c0caf5; font: inherit; padding: 0">
+</label>
+<div style="display: flex; gap: 3ch; color: #828bb8; flex-wrap: wrap">
+<span><span style="display: inline-block; padding: 0 0.5ch; border-radius: 3px; background: #24283b; color: #7dcfff">␣</span> leader (Space)</span>
+<span><span style="display: inline-block; padding: 0 0.5ch; border-radius: 3px; background: #24283b; color: {{keyColor}}">C-</span> Ctrl</span>
+<span><span style="display: inline-block; padding: 0 0.5ch; border-radius: 3px; background: #24283b; color: {{keyColor}}">A-</span> Alt</span>
+<span><span style="display: inline-block; padding: 0 0.5ch; border-radius: 3px; background: #24283b; color: {{keyColor}}">↵</span> Enter</span>
+<span><span style="display: inline-block; padding: 0 0.5ch; border-radius: 3px; background: #24283b; color: {{keyColor}}">⌫</span> Backspace</span>
+</div>
+</div>
+
+<div style="display: grid; grid-template-columns: 46ch 46ch 46ch minmax(0, 1fr); column-gap: 4ch; align-items: start">
+
+<sc-for list="{{cols}}" as="col" hint-placeholder-count="3">
+<div style="display: flex; flex-direction: column; gap: 20px">
+<sc-for list="{{col.sections}}" as="sec" hint-placeholder-count="3">
+<section style="display: flex; flex-direction: column">
+<div style="display: flex; align-items: center; gap: 1ch; margin-bottom: 4px">
+<span style="color: {{headerColor}}; font-weight: 700">{{sec.title}}</span>
+<span style="flex: 1; border-top: 1px solid #292e42"></span>
+</div>
+<sc-for list="{{sec.rows}}" as="row" hint-placeholder-count="6">
+<div style="display: grid; grid-template-columns: 14ch minmax(0, 1fr); min-height: 22px; align-items: baseline">
+<div style="display: flex; gap: 0.5ch; flex-wrap: wrap">
+<sc-for list="{{row.keys}}" as="k" hint-placeholder-count="1">
+<span style="display: inline-block; padding: 0 0.5ch; border-radius: 3px; background: #24283b; color: {{keyColor}}; font-weight: 600; white-space: pre"><span style="color: #7dcfff">{{k.lead}}</span>{{k.rest}}</span>
+</sc-for>
+</div>
+<div style="color: #a9b1d6">{{row.main}} <span style="color: #828bb8">{{row.note}}</span></div>
+</div>
+</sc-for>
+</section>
+</sc-for>
+</div>
+</sc-for>
+
+<div style="display: flex; flex-direction: column; gap: 20px; padding-left: 4ch; border-left: 1px solid #292e42">
+<sc-for list="{{cmdSections}}" as="sec" hint-placeholder-count="5">
+<section style="display: flex; flex-direction: column">
+<div style="display: flex; align-items: center; gap: 1ch; margin-bottom: 4px">
+<span style="color: #bb9af7; font-weight: 700">{{sec.title}}</span>
+<span style="flex: 1; border-top: 1px solid #292e42"></span>
+</div>
+<sc-for list="{{sec.rows}}" as="row" hint-placeholder-count="5">
+<div style="display: grid; grid-template-columns: 25ch minmax(0, 1fr) 6ch; column-gap: 1ch; min-height: 22px; align-items: baseline">
+<div style="white-space: pre"><span style="color: #bb9af7; font-weight: 600">{{row.cmd}}</span> <span style="color: #7dcfff; font-style: italic">{{row.arg}}</span></div>
+<div style="color: #a9b1d6">{{row.main}} <span style="color: #828bb8">{{row.note}}</span></div>
+<div style="text-align: right; color: #828bb8; white-space: pre">{{row.hint}}</div>
+</div>
+</sc-for>
+</section>
+</sc-for>
+</div>
+
+</div>
+
+<div style="position: absolute; bottom: -11px; left: 2ch; background: #1a1b26; padding: 0 1ch; color: #828bb8">
+<span style="color: {{keyColor}}">Esc</span> or any key closes <span style="color: #3b4261">·</span> <span style="color: {{keyColor}}">/</span> filter <span style="color: #3b4261">·</span> <span style="color: {{keyColor}}">C-n C-p</span> move
+</div>
+<div style="position: absolute; bottom: -11px; right: 2ch; background: #1a1b26; padding: 0 1ch; color: #828bb8">remap in <span style="color: #9ece6a">%APPDATA%\sentier\keymap.toml</span></div>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"keyColor":{"editor":"color","default":"#ff9e64","options":["#ff9e64","#e0af68","#9ece6a","#7aa2f7"]},"headerColor":{"editor":"color","default":"#7aa2f7","options":["#7aa2f7","#7dcfff","#bb9af7","#e0af68"]},"$preview":{"width":1760,"height":1040}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const split = (d) => {
+      const m = d.match(/^(.*?)\s*(\(.*\))$/);
+      return m ? { main: m[1], note: m[2] } : { main: d, note: '' };
+    };
+    const key = (k) => (k.length > 1 && k[0] === '␣') ? { lead: '␣', rest: k.slice(1) } : { lead: '', rest: k };
+    const S = (title, rows) => ({ title, rows: rows.map(([keys, d]) => ({ keys: keys.map(key), ...split(d) })) });
+    const C = (title, rows) => ({ title, rows: rows.map(([cmd, arg, d, hint]) => ({ cmd, arg, hint: hint || '', ...split(d) })) });
+
+    const cols = [
+      { sections: [
+        S('MOVE', [
+          [['j', '↓'], 'down'],
+          [['k', '↑'], 'up'],
+          [['h', '←', '⌫'], 'parent directory'],
+          [['l', '→', '↵'], 'open (enter dir / run file)'],
+          [['gg', 'Home'], 'top (or line n)'],
+          [['G', 'End'], 'bottom (or line n)'],
+          [['C-d'], 'half page down'],
+          [['C-u'], 'half page up'],
+          [['C-f', 'PgDn'], 'page down'],
+          [['C-b', 'PgUp'], 'page up'],
+          [['zz', 'zt', 'zb'], 'cursor line to middle / top / bottom'],
+        ]),
+        S('HISTORY', [
+          [['H', 'C-o'], 'back in history'],
+          [['L'], 'forward in history'],
+          [["''"], 'previous directory'],
+        ]),
+        S('SEARCH & FILTER', [
+          [['/'], 'search forward'],
+          [['?'], 'search backward'],
+          [['n', 'N'], 'next / previous match'],
+          [['f'], 'filter this directory'],
+          [['s'], 'search names below here'],
+          [['S'], 'search contents below here'],
+          [['gr'], 'go to the result\u2019s folder'],
+          [[',s'], 'cycle results sort'],
+          [['Esc'], 'clear filter / search'],
+        ]),
+        S('PREVIEW', [
+          [['zp'], 'full-screen preview'],
+          [[']p', '[p'], 'next / previous PDF page'],
+          [['gP'], 'go to PDF page'],
+          [[']m', '[m'], 'next / previous match in the preview'],
+        ]),
+      ] },
+      { sections: [
+        S('SELECT & EDIT', [
+          [['Tab'], 'select + down'],
+          [['v', 'V'], 'visual (range select)'],
+          [['yy'], 'yank (copy)'],
+          [['x'], 'cut'],
+          [['p'], 'paste here'],
+          [['P'], 'paste, replacing (asks)'],
+          [['.'], 'repeat the last paste here'],
+          [['a'], 'new file (end in \\ for a folder)'],
+          [['A'], 'new folder'],
+          [['r', 'cw'], 'rename (Locations: a pin)'],
+          [['u'], 'undo the last bulk rename here'],
+          [['dd'], 'delete to the Recycle Bin (Locations: the pin)'],
+          [['D'], 'delete permanently (type yes)'],
+        ]),
+        S('PATHS & WINDOWS', [
+          [['yp'], 'copy path'],
+          [['yP'], 'copy UNC path (mapped drives resolved)'],
+          [['yn'], 'copy name'],
+          [['O'], 'open with\u2026 (menu)'],
+          [['gR'], 'reveal in Explorer'],
+          [['gx'], 'this folder in Explorer'],
+          [['A-↵'], 'Windows Properties'],
+          [['gw'], 'new WezTerm tab here'],
+          [['␣e', 'go'], 'this folder in the editor (Neovim)'],
+        ]),
+        S('PINS & TAGS', [
+          [["'‹c›"], 'jump to a pin'],
+          [['m‹c›'], 'pin this folder under a key'],
+          [['M'], 'pin the item under the cursor'],
+          [['T'], 'edit a pin\u2019s tags (Locations)'],
+          [['␣p'], 'pins picker'],
+          [['␣t'], 'tags (pick, filter, rename)'],
+          [['␣nu'], 'new web app pin (a URL)'],
+        ]),
+      ] },
+      { sections: [
+        S('GO TO', [
+          [['gl', '␣l'], 'Locations'],
+          [['gm'], 'Machines (user PCs)'],
+          [['gd'], 'Downloads'],
+          [['~'], 'home'],
+          [['g\\'], 'root of this drive or share'],
+          [['g Space'], 'a path (any form, UNC too)'],
+          [['g.'], 'toggle hidden / system files'],
+          [['g?'], 'this help'],
+        ]),
+        S('PICKERS', [
+          [['␣␣'], 'launcher (apps, web apps, pins)'],
+          [['␣ff'], 'find files below here'],
+          [['␣fr'], 'recent folders'],
+          [['␣/'], 'grep file contents below here'],
+          [['␣:'], 'commands (every action, searchable)'],
+          [['␣sk'], 'search the key bindings'],
+          [['␣m'], 'machines picker'],
+        ]),
+        S('SYNC & BACKUP', [
+          [['␣j', 'J'], 'jobs panel'],
+          [['␣ns'], 'new sync preset from this folder'],
+          [['␣nb'], 'new backup preset from this folder'],
+          [['␣rs'], 'run a sync preset'],
+          [['␣rb'], 'run a backup preset'],
+          [['␣ni'], 'import wtm\u2019s launcher entries'],
+        ]),
+        S('SESSION', [
+          [['R'], 'retry / refresh / re-probe'],
+          [[':'], 'command line'],
+          [['q'], 'quit'],
+          [['ZZ', 'Q'], 'quit and cd the shell here'],
+          [['ZQ'], 'quit without writing the cwd'],
+          [['C-c'], 'quit at once'],
+          [['Esc'], 'in a prompt: back to normal'],
+          [['Esc Esc'], 'in a prompt: cancel'],
+        ]),
+      ] },
+    ];
+
+    const cmdSections = [
+      C(': GO & CONNECT', [
+        [':cd', '<path>', 'go to a folder (any form, UNC too)', 'g␣'],
+        [':connect', '[path]', 'log in to a share (the one here)'],
+        [':net list', '', 'live network connections'],
+        [':net drop', '<server>', 'disconnect from a server'],
+        [':machines', '', 'user PCs', 'gm'],
+      ]),
+      C(': PINS & TAGS', [
+        [':pin', '', 'pin this folder (name, tags, key)'],
+        [':pin url', '[URL]', 'pin a web app (opens as its own window)', '␣nu'],
+        [':import-wtm', '', 'import wtm\u2019s launcher entries as pins', '␣ni'],
+        [':tags', '', 'the tag picker', '␣t'],
+        [':tag rename', '<old> <new>', 'rename a tag on every pin'],
+        [':tag delete', '<tag>', 'remove a tag from every pin'],
+        [':view save', '<name>', 'save the last pin-picker filter'],
+      ]),
+      C(': PICKERS', [
+        [':launcher', '', 'the launcher', '␣␣'],
+        [':picker files', '', 'find files below here', '␣ff'],
+        [':picker dirs', '', 'recent folders', '␣fr'],
+        [':picker grep', '', 'search file contents below here', '␣/'],
+        [':picker commands', '', 'every action, searchable', '␣:'],
+      ]),
+      C(': SYNC & BACKUP', [
+        [':sync', '[name]', 'run a sync preset (dry run first)', '␣rs'],
+        [':sync!', '[name]', 'run an update sync without the dry run'],
+        [':sync new', '', 'new sync preset from this folder', '␣ns'],
+        [':backup', '[name]', 'run a backup preset', '␣rb'],
+        [':backup new', '', 'new backup preset from this folder', '␣nb'],
+      ]),
+      C(': RENAME & OPTIONS', [
+        [':rename', '', 'bulk rename panel (PowerRename-style)'],
+        [':rename-edit', '', 'bulk rename the names in $EDITOR'],
+        [':undo-rename', '[n]', 'undo the last n bulk renames', 'u'],
+        [':set', 'rnu nornu nu nonu', 'line numbers'],
+        [':q', '', 'quit (:wq also cds the shell here)', 'q'],
+      ]),
+    ];
+
+    let keyCount = 0;
+    cols.forEach((c) => c.sections.forEach((s) => { keyCount += s.rows.length; }));
+    let cmdCount = 0;
+    cmdSections.forEach((s) => { cmdCount += s.rows.length; });
+
+    return {
+      cols,
+      cmdSections,
+      keyCount,
+      cmdCount,
+      keyColor: this.props.keyColor ?? '#ff9e64',
+      headerColor: this.props.headerColor ?? '#7aa2f7',
+    };
+  }
+}
+</script>
+</body>
+</html>

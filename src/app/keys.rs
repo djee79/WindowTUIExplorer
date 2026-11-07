@@ -171,7 +171,7 @@ fn command_note(text: &str) -> String {
     if text.trim().is_empty() {
         let mut heads: Vec<&str> = crate::keymap::COMMANDS
             .iter()
-            .map(|(c, _, _)| c.split(' ').next().unwrap_or(c))
+            .map(|c| c.name.split(' ').next().unwrap_or(c.name))
             .collect();
         heads.dedup();
         return format!("{} · g? lists them all", heads.join(" · "));
@@ -201,7 +201,7 @@ impl App {
             return;
         }
         match self.mode {
-            Mode::Help => self.mode = Mode::Normal,
+            Mode::Help => self.on_help_key(key),
             Mode::Prompt => self.on_prompt_key(key),
             Mode::Picker => self.on_picker_key(key),
             Mode::Preview => self.on_preview_key(key),
@@ -415,7 +415,7 @@ impl App {
             Action::TagDelete(tag) => self.tag_delete(&tag, None),
             Action::ViewSave(name) => self.view_save(&name),
             Action::ViewDelete(name) => self.view_delete(&name),
-            Action::Help => self.mode = Mode::Help,
+            Action::Help => self.open_help(),
             Action::Quit => {
                 if !self.close_tab() {
                     self.quit = Some(Quit::Plain);

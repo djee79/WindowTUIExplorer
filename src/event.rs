@@ -183,7 +183,7 @@ pub enum AppEvent {
     /// The recent machines were read.
     RecentMachines(Result<Vec<crate::machines::Recent>, String>),
     /// config.toml was read (or why not).
-    ConfigLoaded(Result<crate::config::Config, String>),
+    ConfigLoaded(Result<Box<crate::config::Config>, String>),
     /// A connection with credentials finished: `target` is where it went (an alias for
     /// the 1219 fix), the Win32 code on failure, whether the credential was remembered
     /// when asked, and what was disconnected first.

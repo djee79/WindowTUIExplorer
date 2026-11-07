@@ -11,6 +11,7 @@ pub use fileops::Suspend;
 mod jobs;
 pub use jobs::JobRow;
 mod backup;
+mod help;
 mod keys;
 pub(crate) mod launcher;
 mod machines;
@@ -314,6 +315,8 @@ pub struct App {
     pub open_menu: Option<OpenMenu>,
     /// The bulk rename panel (M4c), its options as last used, and month / day names.
     pub rename_panel: Option<RenamePanel>,
+    /// The `g?` overlay (its filter and scroll).
+    pub help: Option<help::HelpState>,
     pub rename_state: crate::rename::presets::State,
     pub rename_presets: Vec<crate::rename::presets::Preset>,
     /// Bumped each time the panel opens: walk / metadata results for an older one drop.
@@ -460,6 +463,7 @@ impl App {
             open_last: Default::default(),
             open_menu: None,
             rename_panel: None,
+            help: None,
             rename_state: Default::default(),
             rename_presets: Vec::new(),
             rename_gen: 0,
@@ -1081,7 +1085,7 @@ impl App {
             AppEvent::Wake => {}
             AppEvent::ConfigLoaded(result) => match result {
                 Ok(config) => {
-                    self.config = config;
+                    self.config = *config;
                     self.apply_recent_days();
                     self.apply_config();
                 }
@@ -1591,6 +1595,53 @@ mod tests {
         app.selected().map(|e| e.name.as_str())
     }
 
+    /// `g?`: generated from the keymap, grouped, chips, commands with their keys; `/`
+    /// filters; j/k scroll; any other key closes.
+    #[test]
+    fn help_overlay_groups_filters_and_closes() {
+        let (mut app, _rt) = fixture();
+        press(&mut app, "g?");
+        assert_eq!(app.mode, Mode::Help);
+        let wide = render(&mut app, 220, 60);
+        if std::env::var_os("SENTIER_SHOW_HELP").is_some() {
+            eprintln!("{wide}");
+            eprintln!("{}", render(&mut app, 150, 45));
+        }
+        for want in [
+            "help · ",
+            "MOVE",
+            "SELECT & EDIT",
+            ": GO & CONNECT",
+            " ␣ff ",
+            ":picker files",
+            "type to filter keys and commands",
+            "remap in",
+        ] {
+            assert!(wide.contains(want), "{want}\n{wide}");
+        }
+        // Small terminals: one column, scrolled, nothing cut mid-row.
+        let small = render(&mut app, 80, 24);
+        assert!(
+            small.contains("MOVE") && small.contains("help · "),
+            "{small}"
+        );
+        if std::env::var_os("SENTIER_SHOW_HELP").is_some() {
+            eprintln!("{small}");
+        }
+        let _ = render(&mut app, 40, 12);
+        // Filter: only matching sections stay.
+        press(&mut app, "/pdf");
+        let f = render(&mut app, 220, 60);
+        assert!(f.contains("PREVIEW") && !f.contains("MOVE"), "{f}");
+        press(&mut app, "<Esc>");
+        assert_eq!(app.mode, Mode::Help, "Esc leaves the filter first");
+        press(&mut app, "j");
+        assert_eq!(app.mode, Mode::Help, "j scrolls");
+        press(&mut app, "x");
+        assert_eq!(app.mode, Mode::Normal, "any other key closes");
+        assert!(app.help.is_none());
+    }
+
     #[test]
     fn keys_navigate_filter_and_toggle_hidden() {
         let (mut app, _rt) = fixture();
@@ -1717,13 +1768,13 @@ mod tests {
         let (mut app, _rt) = fixture();
         press(&mut app, ":");
         let screen = render(&mut app, 200, 30);
-        assert!(screen.contains("cd · pin · import-wtm"), "{screen}");
+        assert!(screen.contains("cd · connect · net · machines"), "{screen}");
         press(&mut app, "pin u");
         let screen = render(&mut app, 200, 30);
         assert!(screen.contains("pin url [URL] — pin a web app"), "{screen}");
         press(&mut app, "<Esc><Esc>g?");
         let screen = render(&mut app, 220, 60);
-        assert!(screen.contains(": commands"), "{screen}");
+        assert!(screen.contains(": GO & CONNECT"), "{screen}");
         assert!(screen.contains(":pin url"), "{screen}");
     }
 

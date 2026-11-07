@@ -40,12 +40,23 @@ pub struct Config {
     pub preview: PreviewSection,
     /// The editor for `go`, `<leader>e` and `:rename` (else $VISUAL, $EDITOR, nvim).
     pub editor: Option<String>,
+    /// `[theme]`: `key` and `header` colours of the `g?` overlay (`"#rrggbb"`).
+    #[serde(default)]
+    pub theme: ThemeSection,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct TimeoutsSection {
     pub local_ms: Option<u64>,
     pub network_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct ThemeSection {
+    /// Key chips in `g?` (default: the accent, amber).
+    pub key: Option<String>,
+    /// Section headers in `g?` (default: folder blue).
+    pub header: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]

@@ -420,6 +420,8 @@ pub enum Action {
 }
 
 /// (name, action) for every argument-less action, for keymap.toml and `:`.
+pub const NAMED_ACTIONS: &[(&str, Action)] = NAMED;
+
 const NAMED: &[(&str, Action)] = &[
     ("down", Action::Down),
     ("up", Action::Up),
@@ -527,77 +529,278 @@ const NAMED: &[(&str, Action)] = &[
 /// yet" instead of "unknown".
 const LATER: &[(&str, &str)] = &[];
 
-/// The `:` commands worth knowing, for the hint under the command line and `g?`:
-/// (command, its arguments, what it does). Keep in step with [`Action::parse`].
-pub const COMMANDS: &[(&str, &str, &str)] = &[
-    (
-        "cd",
-        "<path>",
-        "go to a folder (any form, UNC too; Tab completes)",
-    ),
-    ("pin", "", "pin this folder (name, tags, key)"),
-    (
-        "pin url",
-        "[URL]",
-        "pin a web app (opens as its own window)",
-    ),
-    ("import-wtm", "", "import wtm's launcher entries as pins"),
-    ("launcher", "", "the launcher (also Space Space)"),
-    ("picker files", "", "find files below here (also Space f f)"),
-    ("picker dirs", "", "recent folders (also Space f r)"),
-    (
-        "picker grep",
-        "",
-        "search file contents below here (also Space /)",
-    ),
-    (
-        "picker commands",
-        "",
-        "every action, searchable (also Space :)",
-    ),
-    ("sync", "[name]", "run a sync preset (dry run first)"),
-    ("sync!", "[name]", "run an update sync without the preview"),
-    ("sync new", "", "new sync preset from this folder"),
-    ("backup", "[name]", "run a backup preset"),
-    ("backup new", "", "new backup preset from this folder"),
-    (
-        "connect",
-        "[path]",
-        "log in to a share (the one under the cursor)",
-    ),
-    ("net list", "", "live network connections"),
-    ("net drop", "<server>", "disconnect from a server"),
-    ("tags", "", "the tag picker"),
-    ("tag rename", "<old> <new>", "rename a tag on every pin"),
-    ("tag delete", "<tag>", "remove a tag from every pin"),
-    (
-        "view save",
-        "<name>",
-        "save the last pin-picker query as a view",
-    ),
-    (
-        "rename",
-        "",
-        "bulk rename panel, PowerRename-style (also r on a selection)",
-    ),
-    (
-        "rename-edit",
-        "",
-        "bulk rename the names in $EDITOR (Neovim)",
-    ),
-    (
-        "undo-rename",
-        "[n]",
-        "rename the last n bulk renames back (also u)",
-    ),
-    ("machines", "", "user PCs (also gm)"),
-    ("tabnew", "[path]", "a new tab, here or at path (also t)"),
-    ("tabnext", "[n]", "next tab, or tab n (also gt, Alt-1…9)"),
-    ("tabprevious", "", "previous tab (also gT)"),
-    ("tabclose", "", "close this tab (also q with several tabs)"),
-    ("set", "rnu nornu nu nonu", "line numbers"),
-    ("q", "", "quit (wq: and cd the shell here)"),
-];
+/// Where a `:` command is listed in `g?` (the fourth column).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CmdGroup {
+    GoConnect,
+    PinsTags,
+    Pickers,
+    SyncBackup,
+    RenameOptions,
+}
+
+impl CmdGroup {
+    pub const ALL: [CmdGroup; 5] = [
+        CmdGroup::GoConnect,
+        CmdGroup::PinsTags,
+        CmdGroup::Pickers,
+        CmdGroup::SyncBackup,
+        CmdGroup::RenameOptions,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            CmdGroup::GoConnect => ": GO & CONNECT",
+            CmdGroup::PinsTags => ": PINS & TAGS",
+            CmdGroup::Pickers => ": PICKERS",
+            CmdGroup::SyncBackup => ": SYNC & BACKUP",
+            CmdGroup::RenameOptions => ": RENAME & OPTIONS",
+        }
+    }
+}
+
+/// Which key does the same as a command (shown beside it in `g?`, looked up in the live
+/// keymap, so remaps show).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyHint {
+    /// The action the command itself parses to (`picker files` → `Space f f`).
+    Same,
+    /// Another action, by its `run` name (`cd <path>` → `goto-path`, `g Space`).
+    Via(&'static str),
+    None,
+}
+
+/// One `:` command: for the hint under the command line, `g?` and the commands picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Command {
+    pub name: &'static str,
+    /// `<path>` required, `[name]` optional.
+    pub args: &'static str,
+    pub desc: &'static str,
+    pub group: CmdGroup,
+    pub key: KeyHint,
+}
+
+impl Command {
+    /// `cd <path>`, `pin`.
+    pub fn line(&self) -> String {
+        if self.args.is_empty() {
+            self.name.to_string()
+        } else {
+            format!("{} {}", self.name, self.args)
+        }
+    }
+
+    /// The action whose key is shown beside it.
+    pub fn hint_action(&self) -> Option<Action> {
+        match self.key {
+            KeyHint::Same => Action::parse(self.name).ok(),
+            KeyHint::Via(id) => NAMED.iter().find(|(n, _)| *n == id).map(|(_, a)| a.clone()),
+            KeyHint::None => None,
+        }
+    }
+}
+
+const fn cmd(
+    name: &'static str,
+    args: &'static str,
+    desc: &'static str,
+    group: CmdGroup,
+    key: KeyHint,
+) -> Command {
+    Command {
+        name,
+        args,
+        desc,
+        group,
+        key,
+    }
+}
+
+/// The `:` commands worth knowing, in `g?` order per group. Keep in step with
+/// [`Action::parse`] (a test parses every one).
+pub const COMMANDS: &[Command] = {
+    use CmdGroup::*;
+    use KeyHint::{None as NoKey, Same, Via};
+    &[
+        cmd(
+            "cd",
+            "<path>",
+            "go to a folder (any form, UNC too; Tab completes)",
+            GoConnect,
+            Via("goto-path"),
+        ),
+        cmd(
+            "connect",
+            "[path]",
+            "log in to a share (the one under the cursor)",
+            GoConnect,
+            NoKey,
+        ),
+        cmd("net list", "", "live network connections", GoConnect, NoKey),
+        cmd(
+            "net drop",
+            "<server>",
+            "disconnect from a server",
+            GoConnect,
+            NoKey,
+        ),
+        cmd("machines", "", "user PCs", GoConnect, Same),
+        cmd(
+            "tabnew",
+            "[path]",
+            "a new tab, here or at path",
+            GoConnect,
+            Via("tab-new"),
+        ),
+        cmd(
+            "tabnext",
+            "[n]",
+            "next tab, or tab n",
+            GoConnect,
+            Via("tab-next"),
+        ),
+        cmd("tabprevious", "", "previous tab", GoConnect, Same),
+        cmd(
+            "tabclose",
+            "",
+            "close this tab (q too, with several tabs)",
+            GoConnect,
+            NoKey,
+        ),
+        cmd(
+            "pin",
+            "",
+            "pin this folder (name, tags, key)",
+            PinsTags,
+            NoKey,
+        ),
+        cmd(
+            "pin url",
+            "[URL]",
+            "pin a web app (opens as its own window)",
+            PinsTags,
+            Same,
+        ),
+        cmd(
+            "import-wtm",
+            "",
+            "import wtm's launcher entries as pins",
+            PinsTags,
+            Same,
+        ),
+        cmd("tags", "", "the tag picker", PinsTags, Same),
+        cmd(
+            "tag rename",
+            "<old> <new>",
+            "rename a tag on every pin",
+            PinsTags,
+            NoKey,
+        ),
+        cmd(
+            "tag delete",
+            "<tag>",
+            "remove a tag from every pin",
+            PinsTags,
+            NoKey,
+        ),
+        cmd(
+            "view save",
+            "<name>",
+            "save the last pin-picker query as a view",
+            PinsTags,
+            NoKey,
+        ),
+        cmd("launcher", "", "the launcher", Pickers, Same),
+        cmd("picker files", "", "find files below here", Pickers, Same),
+        cmd("picker dirs", "", "recent folders", Pickers, Same),
+        cmd(
+            "picker grep",
+            "",
+            "search file contents below here",
+            Pickers,
+            Same,
+        ),
+        cmd(
+            "picker commands",
+            "",
+            "every action, searchable",
+            Pickers,
+            Same,
+        ),
+        cmd(
+            "picker keymaps",
+            "",
+            "search the key bindings",
+            Pickers,
+            Same,
+        ),
+        cmd(
+            "sync",
+            "[name]",
+            "run a sync preset (dry run first)",
+            SyncBackup,
+            Via("sync-picker"),
+        ),
+        cmd(
+            "sync!",
+            "[name]",
+            "run an update sync without the preview",
+            SyncBackup,
+            NoKey,
+        ),
+        cmd(
+            "sync new",
+            "",
+            "new sync preset from this folder",
+            SyncBackup,
+            Same,
+        ),
+        cmd("backup", "[name]", "run a backup preset", SyncBackup, Same),
+        cmd(
+            "backup new",
+            "",
+            "new backup preset from this folder",
+            SyncBackup,
+            Same,
+        ),
+        cmd(
+            "rename",
+            "",
+            "bulk rename panel, PowerRename-style (r on a selection)",
+            RenameOptions,
+            Same,
+        ),
+        cmd(
+            "rename-edit",
+            "",
+            "bulk rename the names in $EDITOR (Neovim)",
+            RenameOptions,
+            NoKey,
+        ),
+        cmd(
+            "undo-rename",
+            "[n]",
+            "rename the last n bulk renames back",
+            RenameOptions,
+            Via("undo-rename-here"),
+        ),
+        cmd(
+            "set",
+            "rnu nornu nu nonu",
+            "line numbers",
+            RenameOptions,
+            NoKey,
+        ),
+        cmd(
+            "q",
+            "",
+            "quit (wq: and cd the shell here)",
+            RenameOptions,
+            Via("quit"),
+        ),
+    ]
+};
 
 /// The commands that start with what's typed (else with its first word, so `sync HIT`
 /// still shows the sync ones), as `name args — what it does`.
@@ -607,18 +810,105 @@ pub fn command_hints(typed: &str) -> Vec<String> {
     let pick = |prefix: &str| -> Vec<String> {
         COMMANDS
             .iter()
-            .filter(|(c, a, _)| format!("{c} {a}").starts_with(prefix))
-            .map(|(c, a, d)| {
-                if a.is_empty() {
-                    format!("{c} — {d}")
-                } else {
-                    format!("{c} {a} — {d}")
-                }
-            })
+            .filter(|c| format!("{} {}", c.name, c.args).starts_with(prefix))
+            .map(|c| format!("{} — {}", c.line(), c.desc))
             .collect()
     };
     let exact = pick(&t);
     if exact.is_empty() { pick(word) } else { exact }
+}
+
+/// Where a binding is listed in `g?`. It follows the action, not the key, so remaps and
+/// keymap.toml additions land in the right section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Group {
+    Move,
+    History,
+    Tabs,
+    SearchFilter,
+    Preview,
+    SelectEdit,
+    PathsWindows,
+    PinsTags,
+    GoTo,
+    Pickers,
+    SyncBackup,
+    Session,
+}
+
+impl Group {
+    /// The order of the sections in `g?`.
+    pub const ALL: [Group; 12] = [
+        Group::Move,
+        Group::History,
+        Group::Tabs,
+        Group::SearchFilter,
+        Group::Preview,
+        Group::SelectEdit,
+        Group::PathsWindows,
+        Group::PinsTags,
+        Group::GoTo,
+        Group::Pickers,
+        Group::SyncBackup,
+        Group::Session,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Group::Move => "MOVE",
+            Group::History => "HISTORY",
+            Group::Tabs => "TABS",
+            Group::SearchFilter => "SEARCH & FILTER",
+            Group::Preview => "PREVIEW",
+            Group::SelectEdit => "SELECT & EDIT",
+            Group::PathsWindows => "PATHS & WINDOWS",
+            Group::PinsTags => "PINS & TAGS",
+            Group::GoTo => "GO TO",
+            Group::Pickers => "PICKERS",
+            Group::SyncBackup => "SYNC & BACKUP",
+            Group::Session => "SESSION",
+        }
+    }
+}
+
+/// Keys that aren't remappable (handled before the keymap), listed in `g?` all the same:
+/// (keys as shown, what they do, section).
+pub const FIXED: &[(&str, &str, Group)] = &[
+    ("C-c", "quit at once", Group::Session),
+    ("Esc", "in a prompt: back to normal", Group::Session),
+    ("Esc Esc", "in a prompt: cancel", Group::Session),
+];
+
+impl Action {
+    /// Its `g?` section. No catch-all: a new action has to be given one.
+    pub fn group(&self) -> Group {
+        use Action::*;
+        match self {
+            Down | Up | Parent | Open | Top | Bottom | HalfPageDown | HalfPageUp | PageDown
+            | PageUp | ScrollMiddle | ScrollTop | ScrollBottom | GotoLine(_) => Group::Move,
+            Back | Forward | PreviousDir => Group::History,
+            NewTab(_) | CloseTab | NextTab | PrevTab | GotoTab(_) => Group::Tabs,
+            SearchForward | SearchBackward | SearchNext | SearchPrev | Filter | NameSearch
+            | ContentSearch | GotoResultFolder | CycleSort | Escape => Group::SearchFilter,
+            FullPreview | NextPage | PrevPage | GotoPage | NextMatch | PrevMatch => Group::Preview,
+            ToggleMark | Visual | Yank | Cut | Paste | PasteOverwrite | RepeatPaste | NewFile
+            | NewDir | Rename | UndoRenameHere | UndoRename(_) | RenamePanel | BulkRename
+            | Delete | DeletePermanent => Group::SelectEdit,
+            CopyPath | CopyUnc | CopyName | OpenWith | Reveal | ExplorerHere | Properties
+            | TerminalHere | EditHere => Group::PathsWindows,
+            JumpMark(_) | SetMark(_) | PinItem | EditPinTags | PinPicker | TagPicker
+            | PinUrl(_) | PinCwd | TagRename(..) | TagDelete(_) | ViewSave(_) | ViewDelete(_) => {
+                Group::PinsTags
+            }
+            Locations | Machines | Downloads | Cd(_) | VolumeRoot | GotoPath | ToggleHidden
+            | Help | Net(_) | Connect(_) => Group::GoTo,
+            Launcher | FilesPicker | DirsPicker | GrepPicker | CommandsPicker | KeymapsPicker
+            | MachinePicker => Group::Pickers,
+            Jobs | Sync(..) | Backup(_) | SyncPicker | ImportWtm => Group::SyncBackup,
+            Refresh | CommandLine | Quit | QuitWriteCwd | QuitNoWrite | SetNumber(_)
+            | SetRelativeNumber(_) => Group::Session,
+        }
+    }
 }
 
 impl Action {
@@ -818,7 +1108,7 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("u", UndoRenameHere, "undo the last bulk rename here"),
         ("a", NewFile, "new file (end in \\ for a folder)"),
         ("A", NewDir, "new folder"),
-        ("D", DeletePermanent, "delete permanently (type yes)"),
+        ("D", DeletePermanent, "delete permanently (asks)"),
         ("~", Cd("~".to_string()), "home"),
         ("gl", Locations, "Locations"),
         ("gm", Machines, "Machines (user PCs)"),
@@ -1023,35 +1313,25 @@ impl Keymap {
         out
     }
 
-    /// Help rows: (keys, desc) for every described binding, aliases folded into the
-    /// row of the action they share.
-    pub fn help_rows(&self) -> Vec<(String, String)> {
-        self.action_rows()
-            .into_iter()
-            .map(|(_, keys, desc)| (keys, desc))
-            .collect()
-    }
-
-    /// One row per described action: (the action, all its keys, what it does). The
-    /// commands picker runs the action.
-    pub fn action_rows(&self) -> Vec<(Action, String, String)> {
-        let mut rows: Vec<(Action, Vec<String>, String)> = Vec::new();
-        for b in &self.normal {
-            let keys = fmt_keys(&b.keys, self.leader);
-            match rows.iter_mut().find(|(a, _, _)| *a == b.action) {
-                Some((_, ks, desc)) => {
-                    ks.push(keys);
-                    if desc.is_empty() {
-                        desc.clone_from(&b.desc);
-                    }
-                }
-                None => rows.push((b.action.clone(), vec![keys], b.desc.clone())),
-            }
-        }
-        rows.into_iter()
-            .filter(|(_, _, d)| !d.is_empty())
-            .map(|(a, ks, d)| (a, ks.join(" "), d))
-            .collect()
+    /// The key sequence to show for `action`: a described binding before an alias, then
+    /// the fewest keys, then the fewest modifiers, then the first in the table. Shown
+    /// beside a command in `g?`.
+    pub fn shortest(&self, action: &Action) -> Option<Vec<Key>> {
+        self.normal
+            .iter()
+            .filter(|b| b.action == *action)
+            .min_by_key(|b| {
+                (
+                    // An undescribed alias (`C-Space`, arrows) only if nothing else.
+                    b.desc.is_empty(),
+                    b.keys.len(),
+                    b.keys
+                        .iter()
+                        .filter(|k| k.ctrl || k.alt || !matches!(k.code, KeyCode::Char(_)))
+                        .count(),
+                )
+            })
+            .map(|b| b.keys.clone())
     }
 }
 
@@ -1335,7 +1615,7 @@ mod tests {
             ["pin url [URL] — pin a web app (opens as its own window)"]
         );
         assert_eq!(command_hints("pin").len(), 2, "pin and pin url");
-        assert_eq!(command_hints("pi").len(), 6, "and the 4 pickers");
+        assert_eq!(command_hints("pi").len(), 7, "and the 5 pickers");
         // A name typed after the command still shows its family.
         assert!(
             command_hints("sync HIT")
@@ -1344,8 +1624,9 @@ mod tests {
         );
         assert!(command_hints("zzz").is_empty());
         // Every listed command parses (arguments filled in where needed).
-        for (c, a, _) in COMMANDS {
-            let line = match *a {
+        for cmd in COMMANDS {
+            let (c, a) = (cmd.name, cmd.args);
+            let line = match a {
                 "" => c.to_string(),
                 "<path>" => format!("{c} C:\\"),
                 "<old> <new>" => format!("{c} a b"),
@@ -1413,15 +1694,6 @@ mod tests {
     fn defaults_have_no_shadowing() {
         assert_eq!(shadow_warnings(&Keymap::default()), Vec::<String>::new());
         assert!(build_defaults(SPACE).len() == defaults().len(), "all parse");
-    }
-
-    #[test]
-    fn help_folds_aliases() {
-        let rows = Keymap::default().help_rows();
-        let down = rows.iter().find(|(_, d)| d == "down");
-        assert_eq!(down.map(|(k, _)| k.as_str()), Some("j <Down>"));
-        let quit_cd = rows.iter().find(|(_, d)| d.starts_with("quit and cd"));
-        assert_eq!(quit_cd.map(|(k, _)| k.as_str()), Some("ZZ Q"));
     }
 
     #[test]

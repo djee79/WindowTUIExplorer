@@ -7,6 +7,7 @@ mod config;
 mod event;
 mod frecency;
 mod fs;
+mod help;
 mod jobs;
 mod keymap;
 mod launcher;

@@ -181,24 +181,41 @@ impl App {
     pub(super) fn open_commands_picker(&mut self, keys_only: bool) {
         self.picker_actions = Vec::new();
         let mut items = Vec::new();
-        for (action, keys, desc) in self.keymap.action_rows() {
-            items.push(row(
-                self.picker_actions.len(),
-                desc,
-                keys,
-                ItemKind::Binding,
-                0,
-            ));
-            self.picker_actions.push(action);
+        // The same rows as `g?` (crate::help): its notation (`␣ff`), its sections.
+        let help = crate::help::HelpData::build(&self.keymap);
+        for s in &help.sections {
+            let crate::help::Rows::Keys(rows) = &s.rows else {
+                continue;
+            };
+            for r in rows {
+                // The fixed keys (C-c, prompt Esc) aren't actions to run.
+                let Some(action) = r.action.clone() else {
+                    continue;
+                };
+                let keys: Vec<String> = r.chips.iter().map(crate::help::Chip::plain).collect();
+                let desc = match &r.note {
+                    Some(n) => format!("{} {n}", r.desc),
+                    None => r.desc.clone(),
+                };
+                items.push(row(
+                    self.picker_actions.len(),
+                    desc,
+                    format!("{}   · {}", keys.join(" "), s.title.to_lowercase()),
+                    ItemKind::Binding,
+                    0,
+                ));
+                self.picker_actions.push(action);
+            }
         }
         if !keys_only {
-            for (i, (cmd, args, what)) in crate::keymap::COMMANDS.iter().enumerate() {
-                let line = if args.is_empty() {
-                    format!(":{cmd}")
-                } else {
-                    format!(":{cmd} {args}")
-                };
-                items.push(row(i, what.to_string(), line, ItemKind::Command, 0));
+            for (i, c) in crate::keymap::COMMANDS.iter().enumerate() {
+                items.push(row(
+                    i,
+                    c.desc.to_string(),
+                    format!(":{}", c.line()),
+                    ItemKind::Command,
+                    0,
+                ));
             }
         }
         let (title, source) = if keys_only {
@@ -397,7 +414,10 @@ impl App {
                 }
             }
             ItemKind::Command => {
-                let Some((cmd, args, _)) = crate::keymap::COMMANDS.get(id) else {
+                let Some(&crate::keymap::Command {
+                    name: cmd, args, ..
+                }) = crate::keymap::COMMANDS.get(id)
+                else {
                     return;
                 };
                 if args.is_empty() || args.starts_with('[') {

@@ -126,6 +126,7 @@ src/
     results.rs       virtual results folder: batching, live re-filter, sort modes
     index.rs         optional per-share listing index (stretch)
   frecency.rs        shared frecency store for dirs + launcher entries
+  help.rs            g? content from the live keymap: sections, chips, filter, column layout
   jobs/
     mod.rs           Job model, JobManager, job events
     robocopy.rs      robocopy backend: spawn, parse output, exit-code mapping
@@ -1044,7 +1045,7 @@ filters) · `dialog` (confirmations, sync preview).
 | `:` | command line (`:cd`, `:e`, `:pin`, `:sync <preset>`, `:backup <preset>`, `:rename`, `:import-wtm`, `:q`) |
 | `t` · `Alt-1`…`9` / `{n}gt` · `gt` `gT` | new tab here · go to tab n · next / previous tab |
 | `q` / `:q` · `ZZ` · `ZQ` | quit (with several tabs: close this one) · quit writing cwd (for the shell wrapper) · quit without writing |
-| `g?` | help overlay (`?` stays vim's backward search). `<leader>sk` searches every keymap. |
+| `g?` | help overlay (`?` stays vim's backward search), generated from the live keymap (docs/HELP_OVERLAY_SPEC.md): sections by task, key chips, the `:` commands with their keys, `/` filters. `<leader>sk` searches the same rows. |
 
 ### Leader (Space), LazyVim-style
 
@@ -1112,7 +1113,8 @@ reported in the status bar at startup, never a crash.
 `%APPDATA%\sentier\config.toml`, every field optional with defaults:
 `show_hidden`, `numbers` (hybrid | relative | absolute | off), `timeouts.local_ms`, `timeouts.network_ms`, `jobs.robocopy_threads`,
 `jobs.native_max_bytes`, `aveva.project_markers`, `preview.protocol` (auto | kitty | sixel |
-iterm2 | halfblocks), `preview.cell_px`, `preview.max_network_mb`, `preview.cache_mb`.
+iterm2 | halfblocks), `preview.cell_px`, `preview.max_network_mb`, `preview.cache_mb`,
+`theme.key` / `theme.header` (`"#rrggbb"`: key chips and section headers in `g?`).
 
 ## Milestones
 

@@ -1040,3 +1040,26 @@ in `g?`, which-key (`g`), and the `:` hints.
 
 Manual check: `Alt-1…9` must arrive as Alt+digit under WezTerm / ConPTY
 (`cargo run --example probe_keys`); `gt` / `3gt` always work if not.
+
+## `g?` help overlay redesign (code complete 2026-11-06, manual check pending)
+
+Per docs/HELP_OVERLAY_SPEC.md (user decisions: sentier's own colours, not Tokyo Night; tab
+commands under ": GO & CONNECT", a TABS key section added).
+
+- Data: every action has a `g?` section (`Action::group()`, an exhaustive match, so a new
+  action must pick one; remaps and keymap.toml additions follow their action). `:` commands
+  are structs (`keymap::Command`: name, args, desc, `CmdGroup`, `KeyHint`); the key beside a
+  command comes from the live keymap (`Keymap::shortest`: described binding first, then
+  fewest keys), so remaps show. Non-remappable keys (`C-c`, prompt `Esc`) are `FIXED`.
+- `src/help.rs` (pure, tested): sections, chips (`␣ff`, `↵`, `C-d`, `g Space`, `'‹c›`,
+  `A-1…9`), joined rows (`zz zt zb`, `n N`…), the filter, wrapping with a hanging indent,
+  and the layout (3 binding columns of 46 + commands when ≥ ~200 wide, then 2, 1, then
+  one stacked column; sections balanced, never split).
+- `ui/help.rs` draws it; `app/help.rs` handles `/` filter, `j k C-n C-p C-d C-u` scroll,
+  any other key closes. `<leader>sk` / `<leader>:` list the same rows (with their section).
+- `[theme] key` / `header` in config.toml recolour chips and headers.
+- `D`'s description no longer says "type yes" (it's a popup now). The `:` commands list
+  gained `:picker keymaps`; "(also …)" suffixes are gone (the key column says it).
+
+Manual check: `g?` at full width and in a small split; `/` then type; a keymap.toml remap
+shows in both the chips and the command hints.
