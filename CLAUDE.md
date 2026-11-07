@@ -614,7 +614,8 @@ enters the result's folder, `gx`.
 - The prompt accepts:
   - **fuzzy** text (default; nucleo, smart-case): `b1001 iso` matches
     `hitiso\B-1001_rev3.pdf`, so related files are found from fragments in any order
-  - **glob**, when the query has `*` `?` `[`: `*.pdf`, `B-10??_rev*`
+  - **glob**, when the query has `*` `?` `[`: `*.pdf`, `B-10??_rev*`; commas mean "or":
+    `*.pdf, *.txt` (also `ext:pdf, txt`)
   - **regex**, with a leading `re:` prefix
 - Filters can be mixed in:
   - `ext:pdf,dwg`, `type:d` / `type:f`
@@ -1054,7 +1055,7 @@ filters) · `dialog` (confirmations, sync preview).
 | `Ctrl-d` `Ctrl-u` / `Ctrl-f` `Ctrl-b` | half page / full page down · up |
 | `zz` `zt` `zb` | scroll cursor to middle · top · bottom |
 | `/` `?` then `n` `N` | incremental search in the current dir (forward/backward), next/prev match |
-| `f` | filter the current dir (live, `Esc` clears): plain text, or the search language: `*.pdf`, `ext:pdf,dwg`, `size:>10mb`, `mtime:<7d`, `type:d`, `!old`, `re:…` |
+| `f` | filter the current dir (live, `Esc` clears): plain text, or the search language: `*.pdf`, `*.pdf, *.txt` (commas = or), `ext:pdf,dwg`, `size:>10mb`, `mtime:<7d`, `type:d`, `!old`, `re:…` |
 | `s` · `S` | recursive name search · content search; results stream in as a folder (section 12) |
 | `gr` · `,s` | (in results) go to the result's real folder · cycle sort |
 | `H` `L` / `Ctrl-o` | back / forward in directory history (`Ctrl-o` = back) |

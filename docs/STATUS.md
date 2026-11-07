@@ -1185,3 +1185,9 @@ text (`ext:pdf rev3`). Plain text keeps its old meaning (a substring of the name
 search's fuzzy match). A half-typed query (`size:>`) says why under the prompt and
 filters as plain text meanwhile; the empty prompt lists what it understands.
 `search/filter.rs` (pure, reuses the search's parser and name matcher).
+
+## Commas mean "or" (2026-11-06)
+
+In `f` and in `s` / `S`: `*pdf, *txt` (glob patterns → a glob alternation `{*pdf,*txt}`),
+`ext:pdf, txt` (a list that goes on after a trailing comma), and in `f` plain words
+`rev3, plan` (any of them). Braces written by hand are left alone.

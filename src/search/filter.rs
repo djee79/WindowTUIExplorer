@@ -16,8 +16,9 @@ use crate::fs::{Entry, EntryKind};
 use std::time::SystemTime;
 
 pub struct DirFilter {
-    /// Plain text: a case-insensitive substring of the name (lowercase).
-    text: Option<String>,
+    /// Plain text: case-insensitive substrings of the name (lowercase); commas mean
+    /// "or" (`pdf, dwg`). Empty: no text to match.
+    text: Vec<String>,
     /// Everything else: glob / regex and the filters.
     matcher: NameMatcher,
     /// `hidden:yes`: show hidden / system items while filtering.
@@ -36,10 +37,10 @@ impl DirFilter {
             Err(e) => return (plain_filter(text), Some(e.to_string())),
         };
         let words = match std::mem::replace(&mut q.pattern, Pattern::All) {
-            Pattern::Fuzzy(t) => Some(t.to_lowercase()),
+            Pattern::Fuzzy(t) => alternatives(&t),
             other => {
                 q.pattern = other;
-                None
+                Vec::new()
             }
         };
         let hidden = q.hidden;
@@ -58,10 +59,11 @@ impl DirFilter {
 
     /// Whether `e` stays in the view.
     pub fn keeps(&self, e: &Entry, now: SystemTime, scratch: &mut Scratch) -> bool {
-        if let Some(t) = &self.text
-            && !e.name.to_lowercase().contains(t.as_str())
-        {
-            return false;
+        if !self.text.is_empty() {
+            let name = e.name.to_lowercase();
+            if !self.text.iter().any(|t| name.contains(t.as_str())) {
+                return false;
+            }
         }
         let c = Candidate {
             rel: &e.name,
@@ -72,6 +74,14 @@ impl DirFilter {
         };
         self.matcher.score(&c, now, scratch).is_some()
     }
+}
+
+/// `pdf, dwg` → `pdf`, `dwg` (lowercase): any of them.
+fn alternatives(text: &str) -> Vec<String> {
+    text.split(',')
+        .map(|t| t.trim().to_lowercase())
+        .filter(|t| !t.is_empty())
+        .collect()
 }
 
 /// A query that keeps everything (only the plain text filters).
@@ -91,7 +101,7 @@ fn everything() -> Query {
 
 fn plain_filter(text: &str) -> Option<DirFilter> {
     Some(DirFilter {
-        text: Some(text.to_lowercase()),
+        text: alternatives(text),
         matcher: NameMatcher::new(&everything()).ok()?,
         hidden: false,
     })
@@ -157,6 +167,20 @@ mod tests {
         assert_eq!(kept("type:d !old"), ["pdfs"]);
         assert_eq!(kept(r"re:^B-\d{4}_rev1"), ["B-1002_rev1.PDF"]);
         assert_eq!(kept("B-10??_*"), ["B-1001_rev3.pdf", "B-1002_rev1.PDF"]);
+        // Commas: any of them, in patterns, words and extension lists.
+        assert_eq!(
+            kept("*pdf, *dwg"),
+            ["B-1001_rev3.pdf", "B-1002_rev1.PDF", "plan.dwg"]
+        );
+        assert_eq!(
+            kept("*.pdf,*.bak"),
+            ["B-1001_rev3.pdf", "B-1002_rev1.PDF", "report.pdf.bak"]
+        );
+        assert_eq!(kept("rev3, plan"), ["B-1001_rev3.pdf", "plan.dwg"]);
+        assert_eq!(
+            kept("ext:pdf, dwg"),
+            ["B-1001_rev3.pdf", "B-1002_rev1.PDF", "plan.dwg"]
+        );
     }
 
     #[test]

@@ -748,7 +748,7 @@ impl App {
                 p.note = match crate::search::filter::DirFilter::new(&text).1 {
                     Some(problem) => problem,
                     None if text.is_empty() => {
-                        "text · *.pdf · ext:pdf,dwg · size:>10mb · mtime:<7d · type:d · !old · re:…"
+                        "text · *.pdf, *.txt · ext:pdf,dwg · size:>10mb · mtime:<7d · type:d · !old · re:…"
                             .to_string()
                     }
                     None => String::new(),

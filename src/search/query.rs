@@ -88,7 +88,15 @@ impl Query {
         };
         let mut text: Vec<&str> = Vec::new();
         let mut regex: Option<Vec<&str>> = None;
+        // `ext:pdf, txt`: after a trailing comma the next words are more extensions.
+        let mut more_ext = false;
         for tok in input.split_whitespace() {
+            if more_ext && regex.is_none() && !tok.contains(':') {
+                more_ext = tok.ends_with(',');
+                q.ext.extend(ext_list(tok));
+                continue;
+            }
+            more_ext = false;
             // Once `re:` starts, the rest is the regex (it may contain spaces).
             if let Some(r) = regex.as_mut() {
                 r.push(tok);
@@ -107,12 +115,10 @@ impl Query {
                 continue;
             };
             match key.to_ascii_lowercase().as_str() {
-                "ext" => q.ext.extend(
-                    value
-                        .split(',')
-                        .map(|e| e.trim_start_matches('.').to_lowercase())
-                        .filter(|e| !e.is_empty()),
-                ),
+                "ext" => {
+                    more_ext = value.ends_with(',');
+                    q.ext.extend(ext_list(value));
+                }
                 "type" => {
                     q.kind = Some(match value {
                         "d" | "dir" => Kind::Dir,
@@ -147,13 +153,42 @@ impl Query {
             None => {
                 let t = text.join(" ");
                 if t.contains(['*', '?', '[']) {
-                    Pattern::Glob(t)
+                    Pattern::Glob(alternatives(&t))
                 } else {
                     Pattern::Fuzzy(t)
                 }
             }
         };
         Ok(q)
+    }
+}
+
+/// `pdf,dwg` / `.pdf,` / `*.txt` → `pdf`, `dwg`, `txt` (lowercase, no dot or star).
+fn ext_list(s: &str) -> impl Iterator<Item = String> + '_ {
+    s.split(',')
+        .map(|e| {
+            e.trim()
+                .trim_start_matches('*')
+                .trim_start_matches('.')
+                .to_lowercase()
+        })
+        .filter(|e| !e.is_empty())
+}
+
+/// `*pdf, *txt` → `{*pdf,*txt}`: commas between patterns mean "or" (a glob alternation).
+/// One already written with braces is left alone.
+fn alternatives(t: &str) -> String {
+    if !t.contains(',') || t.contains('{') {
+        return t.to_string();
+    }
+    let parts: Vec<&str> = t
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    match parts.as_slice() {
+        [one] => one.to_string(),
+        _ => format!("{{{}}}", parts.join(",")),
     }
 }
 
@@ -242,6 +277,11 @@ mod tests {
             ("ext:pdf", Pattern::All),
             ("hit ext:pdf iso", Pattern::Fuzzy("hit iso".into())),
             ("C:", Pattern::Fuzzy("C:".into())),
+            // Commas between patterns: any of them.
+            ("*pdf, *txt", Pattern::Glob("{*pdf,*txt}".into())),
+            ("*.pdf,*.dwg", Pattern::Glob("{*.pdf,*.dwg}".into())),
+            ("*.pdf,", Pattern::Glob("*.pdf".into())),
+            ("{a,b}*", Pattern::Glob("{a,b}*".into())),
         ];
         for (input, want) in cases {
             assert_eq!(p(input).pattern, *want, "{input:?}");
@@ -260,6 +300,14 @@ mod tests {
         assert_eq!(q.depth, Some(3));
         assert!(q.hidden && q.follow);
         assert_eq!(q.exclude, ["old", "archive"]);
+        // A list with spaces after the commas, stars and dots tolerated.
+        let e = p("ext:pdf, txt, *.dwg rev3");
+        assert_eq!(e.ext, ["pdf", "txt", "dwg"]);
+        assert_eq!(
+            e.pattern,
+            Pattern::Fuzzy("rev3".into()),
+            "the list ends without a comma"
+        );
 
         let d = p("type:d");
         assert_eq!(d.kind, Some(Kind::Dir));
