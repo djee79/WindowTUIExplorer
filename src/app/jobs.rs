@@ -456,7 +456,7 @@ impl App {
     }
 
     /// From `tick`: phases (Finishing shows without new output), and the panel opens by
-    /// itself for a job that runs longer than 5 s.
+    /// itself for a job that runs longer than half a second.
     pub(super) fn jobs_tick(&mut self, now: Instant) {
         let mut open = false;
         for j in self.jobs.iter_mut().filter(|j| !j.phase.is_over()) {

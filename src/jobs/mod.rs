@@ -17,8 +17,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 /// Files at or above this go through robocopy (restartable, `/Z`).
 pub const NATIVE_MAX_BYTES: u64 = 256 * 1024 * 1024;
-/// Jobs running longer than this open the panel by themselves.
-pub const AUTO_PANEL_AFTER: Duration = Duration::from_secs(5);
+/// Jobs running longer than this open the panel by themselves: long enough that a copy
+/// done in a blink doesn't flash it, short enough to feel immediate.
+pub const AUTO_PANEL_AFTER: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Op {
