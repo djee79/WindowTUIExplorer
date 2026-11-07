@@ -1204,3 +1204,11 @@ when not the default) and the message says what it means ("biggest first"). Kept
 `tick` (a burst of keys can't race parallel saves; found by the test), flushed at exit;
 a startup read never overrides a change already made. `:sort <key> [reverse]`; a SORT
 section in `g?` with `,m ,M` on one row.
+
+## Environment variables in paths (2026-11-06)
+
+`g Space` / `:cd` (and pins, presets, the CLI: every typed path goes through the two
+`expand_home`s) expand `%APPDATA%`, `%TEMP%\x`, `%ProgramFiles(x86)%` and PowerShell's
+`$env:APPDATA`, any case; an unset name stays as typed (`D:\50% off`). `%APP` + Tab
+completes the variable name (`%APPDATA%\`), Tab again lists its folders.
+`pins::expand_vars` (pure, table-tested incl. `%%`, `%NOPE%%TEMP%`, paths with `%`).

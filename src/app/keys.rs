@@ -185,7 +185,9 @@ fn command_note(text: &str) -> String {
 }
 
 pub(super) fn expand_home(text: &str) -> Result<String, String> {
-    let text = text.trim();
+    // `%APPDATA%`, `$env:TEMP`: Windows' variables, then `~`.
+    let text = crate::pins::expand_vars(text.trim());
+    let text = text.as_str();
     match text.strip_prefix('~') {
         Some("") => home(),
         Some(rest) if rest.starts_with(['\\', '/']) => Ok(format!("{}{rest}", home()?)),
@@ -955,6 +957,42 @@ impl App {
         };
         let arg = arg.trim_start();
         let head = line[..line.len() - arg.len()].to_string();
+        // `%APP` + Tab: the environment variable's name (`%APPDATA%\`); Tab again lists
+        // the folders inside.
+        if let Some(name) = arg.strip_prefix('%')
+            && !name.contains(['%', '\\', '/'])
+        {
+            let found = crate::pins::vars_starting(name);
+            match found.as_slice() {
+                [] => p.note = format!("no environment variable starts with {name:?}"),
+                [one] => {
+                    p.editor.set_text(&format!("{head}%{one}%\\"));
+                    p.note = crate::pins::expand_vars(&format!("%{one}%"));
+                }
+                many => {
+                    // As far as they all agree, then the choices.
+                    let first = many[0].to_ascii_lowercase();
+                    let common = many.iter().fold(first.len(), |n, v| {
+                        let v = v.to_ascii_lowercase();
+                        first
+                            .bytes()
+                            .zip(v.bytes())
+                            .take(n)
+                            .take_while(|(a, b)| a == b)
+                            .count()
+                    });
+                    if common > name.len() {
+                        let part = many[0].get(..common).unwrap_or(name);
+                        p.editor.set_text(&format!("{head}%{part}"));
+                    }
+                    let shown: Vec<String> =
+                        many.iter().take(8).map(|v| format!("%{v}%")).collect();
+                    let more = if many.len() > 8 { " …" } else { "" };
+                    p.note = format!("{}{more}", shown.join("  "));
+                }
+            }
+            return;
+        }
         let (dir_text, prefix) = split_for_completion(arg);
         let dir = if dir_text.is_empty() {
             Ok(self.cwd.clone())

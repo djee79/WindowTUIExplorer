@@ -5825,6 +5825,36 @@ mod job_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `g Space` / `:cd` take Windows' variables: `%TEM` + Tab completes the name,
+    /// `%TEMP%` and `$env:APPDATA` go there.
+    #[test]
+    fn cd_expands_environment_variables() {
+        let dir = temp_tree();
+        let mut l = Live::new(&dir);
+        let same = |a: &App, p: &str| {
+            a.cwd
+                .display()
+                .trim_end_matches('\\')
+                .eq_ignore_ascii_case(p.trim_end_matches('\\'))
+        };
+        let temp = std::env::var("TEMP").unwrap_or_default();
+        let appdata = std::env::var("APPDATA").unwrap_or_default();
+        press(&mut l.app, "g<Space>");
+        type_text(&mut l.app, "%TEM");
+        press(&mut l.app, "<Tab>");
+        assert_eq!(
+            l.app.prompt.as_ref().map(|p| p.editor.text()),
+            Some(r"cd %TEMP%\".to_string())
+        );
+        press(&mut l.app, "<CR>");
+        l.until(|a| same(a, &temp));
+        press(&mut l.app, ":cd $env:APPDATA<CR>");
+        l.until(|a| same(a, &appdata));
+        press(&mut l.app, r":cd %appdata%\..<CR>");
+        l.until(|a| a.cwd.name().eq_ignore_ascii_case("AppData"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `,s` `,S` `,m` `,e` `,n` order the folder (folders first, the cursor stays on its
     /// item), the status bar says how, the choice is saved for next time, and `:sort`
     /// does the same; in search results the same keys sort the results.

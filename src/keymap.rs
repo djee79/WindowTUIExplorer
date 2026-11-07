@@ -676,7 +676,7 @@ pub const COMMANDS: &[Command] = {
         cmd(
             "cd",
             "<path>",
-            "go to a folder (any form, UNC too; Tab completes)",
+            "go to a folder: any form, UNC, %APPDATA% / $env:TEMP (Tab completes)",
             GoConnect,
             Via("goto-path"),
         ),
@@ -1240,7 +1240,11 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("gm", Machines, "Machines (user PCs)"),
         ("gd", Downloads, "Downloads"),
         ("g\\", VolumeRoot, "root of this drive or share"),
-        ("g<Space>", GotoPath, "go to a path (any form, UNC too)"),
+        (
+            "g<Space>",
+            GotoPath,
+            "go to a path (UNC, %APPDATA%, Tab completes)",
+        ),
         ("g.", ToggleHidden, "toggle hidden/system files"),
         ("g?", Help, "help"),
         ("<leader>l", Locations, "Locations"),

@@ -187,8 +187,11 @@ src/
   - visual: `V4j`
   The pending count shows in the status bar (`5`), like vim's `showcmd`.
 - `Enter` / `l` opens (directory → enter, file → its first opener, section 13; `O` = open-with menu).
-- Typing a path: `:cd <path>` (or `:e <path>`) accepts any path form from rule 3, with Tab
-  completion. Completion also runs in the worker.
+- Typing a path: `:cd <path>` (or `:e <path>`, `g Space`) accepts any path form from rule 3,
+  `~`, and Windows' variables: `%APPDATA%`, `%TEMP%\x`, PowerShell's `$env:APPDATA`
+  (unset names stay as typed: `50% off` is a folder name). Tab completes folders, and
+  `%APP` + Tab the variable's name. Completion also runs in the worker. Variables work in
+  pins, presets and the CLI too.
 - Status bar: path, item count, selection count, free space (async), share reachability,
   and the sort order.
 - **Sorting** (Yazi's `,` keys): `,n` name (natural), `,m` date modified, `,c` date

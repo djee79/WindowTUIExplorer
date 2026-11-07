@@ -181,7 +181,8 @@ impl Pin {
 
 /// `~` and `~\rest` → the home folder. Reads an environment variable, no I/O.
 pub(crate) fn expand_home(text: &str) -> Option<String> {
-    let text = text.trim();
+    let text = expand_vars(text.trim());
+    let text = text.as_str();
     match text.strip_prefix('~') {
         Some("") => std::env::var("USERPROFILE").ok(),
         Some(rest) if rest.starts_with(['\\', '/']) => {
@@ -189,6 +190,88 @@ pub(crate) fn expand_home(text: &str) -> Option<String> {
         }
         _ => Some(text.to_string()),
     }
+}
+
+/// `%APPDATA%\x` and PowerShell's `$env:APPDATA\x` → the variable's value (any case, as
+/// Windows does). A name that isn't set is left as typed: `50% off` can be a real folder.
+pub fn expand_vars(text: &str) -> String {
+    expand_vars_with(text, &|name| std::env::var(name).ok())
+}
+
+/// [`expand_vars`] with the lookup given (tests).
+pub fn expand_vars_with(text: &str, var: &dyn Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    loop {
+        let pct = rest.find('%');
+        let ps = rest.to_ascii_lowercase().find("$env:");
+        match (pct, ps) {
+            // `$env:NAME`: the name runs to the first character that can't be in one.
+            (_, Some(i)) if pct.is_none_or(|p| i < p) => {
+                let after = &rest[i + 5..];
+                let len = after
+                    .find(|c: char| {
+                        !(c.is_ascii_alphanumeric() || c == '_' || c == '(' || c == ')')
+                    })
+                    .unwrap_or(after.len());
+                let name = &after[..len];
+                match var(name).filter(|_| !name.is_empty()) {
+                    Some(v) => {
+                        out.push_str(&rest[..i]);
+                        out.push_str(&v);
+                    }
+                    None => out.push_str(&rest[..i + 5 + len]),
+                }
+                rest = &after[len..];
+            }
+            (Some(i), _) => {
+                let after = &rest[i + 1..];
+                match after.find('%') {
+                    Some(j) if j > 0 && !after[..j].contains(['\\', '/']) => {
+                        let name = &after[..j];
+                        match var(name) {
+                            Some(v) => {
+                                out.push_str(&rest[..i]);
+                                out.push_str(&v);
+                                rest = &after[j + 1..];
+                            }
+                            // Not a variable: keep the first `%` and look again after it.
+                            None => {
+                                out.push_str(&rest[..=i]);
+                                rest = after;
+                            }
+                        }
+                    }
+                    // `%%` or `%a\b%`: this `%` isn't an opening one; look again after it.
+                    Some(_) => {
+                        out.push_str(&rest[..=i]);
+                        rest = after;
+                    }
+                    None => {
+                        out.push_str(rest);
+                        return out;
+                    }
+                }
+            }
+            (None, _) => {
+                out.push_str(rest);
+                return out;
+            }
+        }
+    }
+}
+
+/// The environment variables whose name starts with `prefix` (any case), sorted: what
+/// `%APP` + Tab can become.
+pub fn vars_starting(prefix: &str) -> Vec<String> {
+    let p = prefix.to_ascii_lowercase();
+    let mut v: Vec<String> = std::env::vars()
+        .map(|(k, _)| k)
+        .filter(|k| k.to_ascii_lowercase().starts_with(&p))
+        .collect();
+    v.sort_by_key(|k| k.to_ascii_lowercase());
+    v.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    v
 }
 
 /// A pin key: one ASCII letter or digit, like a vim mark.
@@ -613,6 +696,44 @@ pub fn save(path: &Path, store: &PinStore) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn environment_variables_in_paths() {
+        let var = |n: &str| match n.to_ascii_uppercase().as_str() {
+            "APPDATA" => Some(r"C:\Users\jdoe\AppData\Roaming".to_string()),
+            "TEMP" => Some(r"C:\Users\jdoe\AppData\Local\Temp".to_string()),
+            "PROGRAMFILES(X86)" => Some(r"C:\Program Files (x86)".to_string()),
+            _ => None,
+        };
+        let x = |t: &str| expand_vars_with(t, &var);
+        assert_eq!(
+            x(r"%APPDATA%\sentier"),
+            r"C:\Users\jdoe\AppData\Roaming\sentier"
+        );
+        assert_eq!(
+            x(r"%appdata%"),
+            r"C:\Users\jdoe\AppData\Roaming",
+            "any case"
+        );
+        assert_eq!(x(r"$env:TEMP\x"), r"C:\Users\jdoe\AppData\Local\Temp\x");
+        assert_eq!(x(r"$Env:appdata"), r"C:\Users\jdoe\AppData\Roaming");
+        assert_eq!(x(r"%ProgramFiles(x86)%\Foo"), r"C:\Program Files (x86)\Foo");
+        assert_eq!(
+            x(r"%TEMP%\a\%APPDATA%"),
+            r"C:\Users\jdoe\AppData\Local\Temp\a\C:\Users\jdoe\AppData\Roaming",
+            "several"
+        );
+        // Not variables: left as typed.
+        assert_eq!(x(r"D:\50% off\100%"), r"D:\50% off\100%");
+        assert_eq!(x(r"%NOPE%\x"), r"%NOPE%\x");
+        assert_eq!(
+            x(r"%NOPE%%TEMP%"),
+            r"%NOPE%C:\Users\jdoe\AppData\Local\Temp"
+        );
+        assert_eq!(x(r"$env:NOPE\x"), r"$env:NOPE\x");
+        assert_eq!(x("%"), "%");
+        assert_eq!(x(r"C:\plain"), r"C:\plain");
+    }
 
     const SAMPLE: &str = r##"
 [[pin]]
