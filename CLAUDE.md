@@ -301,7 +301,7 @@ paths, tags are the main way to narrow things down.
   selection, or on the cursor item when nothing is selected. `.` repeats the last paste in
   another directory.
 - Every paste creates a **Job**, shown in the job panel (`J` toggles it; it opens
-  automatically for jobs > 5 s).
+  automatically for jobs > 0.5 s).
 - **Backend choice:** any directory, or any file ≥ 256 MB → robocopy. Small file-only
   selections → native backend.
 - **robocopy backend** (`jobs/robocopy.rs`):
