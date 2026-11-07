@@ -254,10 +254,11 @@ impl App {
         }
         let previewable = self
             .selected()
-            .is_some_and(|e| !e.is_container() && PreviewKind::of(&e.name).is_some());
+            .is_some_and(|e| !e.is_container() && PreviewKind::of(&e.name).is_some())
+            || self.cursor_text_lines().is_some();
         if !previewable {
             self.set_status(
-                "zp: no picture, PDF or thumbnail under the cursor".into(),
+                "zp: no picture, PDF, text or thumbnail under the cursor".into(),
                 false,
             );
             return;
@@ -277,8 +278,23 @@ impl App {
 
     /// Keys in the full-screen preview.
     pub(super) fn on_preview_key(&mut self, ev: KeyEvent) {
+        let text = self.cursor_text_lines().is_some();
+        let half = (self.page.max(2) / 2) as isize;
         if ev.modifiers.contains(KeyModifiers::CONTROL) {
+            // A text file scrolls half a page; pictures have no use for these.
+            match ev.code {
+                KeyCode::Char('d') if text => self.scroll_text(half),
+                KeyCode::Char('u') if text => self.scroll_text(-half),
+                _ => {}
+            }
             return;
+        }
+        if text && self.full_pending.is_none() {
+            match ev.code {
+                KeyCode::Char('J') => return self.scroll_text(half),
+                KeyCode::Char('K') => return self.scroll_text(-half),
+                _ => {}
+            }
         }
         let pending = self.full_pending.take();
         let count = self.full_count.take();
@@ -327,5 +343,89 @@ impl App {
             self.pview = view;
             self.dirty = true;
         }
+    }
+}
+
+// ------------------------------------------------------------------ text
+
+/// The text preview of the file under the cursor: its first lines once read.
+pub struct TextState {
+    pub loc: Loc,
+    /// None while reading; Ok(None): not text after all.
+    pub result: Option<Result<Option<Box<crate::preview::text::TextPreview>>, String>>,
+    /// First line shown (the full-screen preview scrolls).
+    pub scroll: usize,
+}
+
+impl App {
+    /// When the cursor settles on a file that may be text: read its first lines.
+    pub(super) fn request_text_preview(&mut self) {
+        use crate::preview::text::{TextKind, kind};
+        let Some(e) = self.selected() else { return };
+        if e.is_container() || self.search_state(&self.cwd).is_some_and(|s| s.content) {
+            return;
+        }
+        let k = kind(&e.name);
+        if k == TextKind::Binary {
+            return;
+        }
+        let Ok(loc) = self.cwd.join(&e.name) else {
+            return;
+        };
+        if loc.as_fs().is_none() || self.text_preview.as_ref().is_some_and(|t| t.loc == loc) {
+            return;
+        }
+        self.text_preview = Some(TextState {
+            loc: loc.clone(),
+            result: None,
+            scroll: 0,
+        });
+        self.worker.text_preview(loc, k);
+    }
+
+    pub(super) fn on_text_preview(
+        &mut self,
+        loc: Loc,
+        result: Result<Option<Box<crate::preview::text::TextPreview>>, String>,
+    ) {
+        // A late answer for a file the cursor has left is dropped.
+        if let Some(t) = self.text_preview.as_mut().filter(|t| t.loc == loc) {
+            t.result = Some(result);
+            self.dirty = true;
+        }
+    }
+
+    /// The text preview of `loc`, if it's text and read.
+    pub fn text_of(&self, loc: &Loc) -> Option<(&crate::preview::text::TextPreview, usize)> {
+        let t = self.text_preview.as_ref().filter(|t| &t.loc == loc)?;
+        match &t.result {
+            Some(Ok(Some(tp))) => Some((tp, t.scroll)),
+            _ => None,
+        }
+    }
+
+    /// The text under the cursor, if it's shown as text.
+    fn cursor_text_lines(&self) -> Option<usize> {
+        let e = self.selected()?;
+        let loc = self.cwd.join(&e.name).ok()?;
+        self.text_of(&loc).map(|(tp, _)| tp.lines.len())
+    }
+
+    /// `J` / `K` / `^d` / `^u` in the full-screen text preview.
+    fn scroll_text(&mut self, by: isize) {
+        let lines = self.cursor_text_lines().unwrap_or(0);
+        let page = (self.page.max(2)) as isize;
+        if let Some(t) = self.text_preview.as_mut() {
+            let max = lines.saturating_sub(page as usize / 2);
+            t.scroll = t.scroll.saturating_add_signed(by).min(max);
+            self.dirty = true;
+        }
+    }
+}
+
+impl App {
+    /// Whether the file under the cursor shows as text (the hint row).
+    pub fn cursor_is_text(&self) -> bool {
+        self.cursor_text_lines().is_some()
     }
 }

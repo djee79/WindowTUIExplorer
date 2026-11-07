@@ -77,7 +77,10 @@ mod tests {
         };
         let st = UiState::from_sort(s);
         assert_eq!(st.sort(), s);
-        let p = path().unwrap_or_default();
+        // Its own file: the app tests use path(), and they run in parallel.
+        let p = std::env::temp_dir()
+            .join(format!("sentier-test-ui-roundtrip-{}", std::process::id()))
+            .join("ui.toml");
         assert!(save(&p, &st).is_ok());
         assert_eq!(load(&p), st);
         // Unknown or results-only: by name.
@@ -87,5 +90,8 @@ mod tests {
         };
         assert_eq!(odd.sort(), DirSort::default());
         assert_eq!(UiState::default().sort(), DirSort::default());
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }

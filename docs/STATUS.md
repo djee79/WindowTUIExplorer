@@ -1231,3 +1231,20 @@ with why), `Space m` + a name nothing matches + Enter, and a "+ Add a machine…
 a recent machine; the status says `M` / `m + a key` pin it. `gm` has its own hint row
 (`a add a machine · l open · M pin · R re-probe · Space m find one`).
 `machines::host_name` (pure, tested).
+
+## Text previews (2026-11-07)
+
+The preview column shows text and code files' first lines (`preview/text.rs`, pure):
+known text extensions (the editor list plus `.vb` `.bas` `.sln` `.csproj` `.config`…),
+never known binaries (pictures, PDFs, Office, archives, programs, CAD), and anything
+else (no or unknown extension) when it holds no zero bytes. The worker reads the first
+64 KB (match-preview timeouts; quick on a share) and decodes UTF-8 (± BOM), UTF-16 LE/BE
+(BOM, or ASCII-looking with zeros between: PowerShell 5, `.reg`), else Windows-1252
+(old `.bat`). Line numbers, tabs as 4 spaces, the encoding and line count on the last row.
+Text wins over a Windows thumbnail; content-search results keep their match preview.
+`zp` full screen; `J` / `K` / `^d` / `^u` scroll there (`j` / `k` still change file).
+No syntax colours yet: that needs `syntect`, not in the stack (ask first).
+
+Also: a startup read of the rename presets / history could overwrite a preset saved or a
+rename made before it landed (made a test flaky once); it now merges. The sort-state test
+got its own file (it shared one with an app test running in parallel).

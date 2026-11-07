@@ -368,12 +368,41 @@ impl App {
         self.dirty = true;
     }
 
+    /// rename.toml and the history, read at startup. Merged, not replaced: anything done
+    /// before the read finished (a preset saved, a rename made) stays.
     pub(super) fn on_rename_store(&mut self, presets: Result<Vec<Preset>, String>, state: State) {
         match presets {
-            Ok(list) => self.rename_presets = list,
+            Ok(list) => {
+                for p in list {
+                    if !self
+                        .rename_presets
+                        .iter()
+                        .any(|q| q.name.eq_ignore_ascii_case(&p.name))
+                    {
+                        presets::upsert(&mut self.rename_presets, p);
+                    }
+                }
+            }
             Err(e) => self.set_status(e, true),
         }
-        self.rename_state = state;
+        let touched = !self.rename_state.search.is_empty()
+            || !self.rename_state.replace.is_empty()
+            || self.rename_state.options != Options::default();
+        if !touched {
+            self.rename_state = state;
+            return;
+        }
+        // This session's entries first (newest), then the saved ones.
+        for (mine, saved) in [
+            (&mut self.rename_state.search, state.search),
+            (&mut self.rename_state.replace, state.replace),
+        ] {
+            for s in saved {
+                if !mine.contains(&s) && mine.len() < presets::HISTORY {
+                    mine.push(s);
+                }
+            }
+        }
     }
 
     pub(super) fn on_rename_key(&mut self, ev: KeyEvent) {

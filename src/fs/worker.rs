@@ -911,6 +911,44 @@ impl Worker {
         });
     }
 
+    /// The first [`crate::preview::text::READ_BYTES`] of a file, decoded for the text
+    /// preview: one `TextPreview` (None in it: not text). Same timeouts as the match
+    /// preview; only that much is read, so a big log on a share stays quick.
+    pub fn text_preview(&self, loc: Loc, kind: crate::preview::text::TextKind) {
+        let Some(path) = loc.as_fs().map(|p| p.os_string()) else {
+            return;
+        };
+        let (tx, timeouts) = (self.tx.clone(), self.timeouts);
+        self.rt.spawn(async move {
+            let t = timeout_for(&loc, timeouts).await;
+            let timeout = if t == timeouts.network {
+                t
+            } else {
+                GREP_PREVIEW_LOCAL.max(t)
+            };
+            let call = tokio::task::spawn_blocking(move || -> Result<_, String> {
+                use std::io::Read;
+                let f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+                let size = f.metadata().map(|m| m.len()).unwrap_or(0);
+                let mut buf = Vec::new();
+                f.take(crate::preview::text::READ_BYTES as u64)
+                    .read_to_end(&mut buf)
+                    .map_err(|e| e.to_string())?;
+                let whole = buf.len() as u64 >= size;
+                Ok(crate::preview::text::decode(&buf, whole, kind))
+            });
+            let result = match tokio::time::timeout(timeout, call).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(_) => Err(format!("timed out after {:.0} s", timeout.as_secs_f32())),
+            };
+            let _ = tx.send(AppEvent::TextPreview {
+                loc,
+                result: result.map(|o| o.map(Box::new)),
+            });
+        });
+    }
+
     /// Reads and encodes the picture behind `key` for the preview column. Sends one
     /// `ImagePreview`. Network files over 50 MB aren't read (mapped drives count as
     /// network). Reading the file gets 5 s locally, 15 s on the network; decoding and

@@ -118,6 +118,13 @@ const FULL_PREVIEW_HINTS: &[(&str, &str)] = &[
     ("zp/Esc", "back"),
 ];
 
+/// The full-screen preview of a text file.
+const FULL_TEXT_HINTS: &[(&str, &str)] = &[
+    ("j/k", "next / previous file"),
+    ("J/K ^d/^u", "scroll"),
+    ("zp/Esc", "back"),
+];
+
 const PICKER_NORMAL_HINTS: &[(&str, &str)] = &[
     ("j/k", "move"),
     ("Enter", "open"),
@@ -578,6 +585,8 @@ pub fn draw_hints(f: &mut Frame, area: Rect, app: &App) {
             crate::picker::PickerMode::Insert => PICKER_INSERT_HINTS,
             crate::picker::PickerMode::Normal => PICKER_NORMAL_HINTS,
         }
+    } else if app.mode == Mode::Preview && app.cursor_is_text() {
+        FULL_TEXT_HINTS
     } else if app.mode == Mode::Preview {
         FULL_PREVIEW_HINTS
     } else if app.mode == Mode::Jobs {

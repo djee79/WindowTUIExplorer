@@ -253,6 +253,13 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) -> Option<Drawn> {
     if !entry.is_container() {
         if app.search_state(&app.cwd).is_some_and(|s| s.content) {
             super::grep::draw(f, inner, app, entry);
+        } else if let Some((tp, scroll)) = app
+            .cwd
+            .join(&entry.name)
+            .ok()
+            .and_then(|loc| app.text_of(&loc))
+        {
+            draw_text(f, inner, tp, scroll);
         } else if let Some(kind) = PreviewKind::of(&entry.name) {
             // Most files have no Windows thumbnail: they show their info, also while
             // the shell is being asked (no spinner flashing on every file).
@@ -723,6 +730,54 @@ fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Drawn>
         );
     }
     drawn
+}
+
+/// A text file's first lines: line numbers (dim), the text cut at the edge, and what it
+/// is on the last row (`UTF-8 · 42 lines`, `first 2 000 lines · zp to read more`).
+fn draw_text(f: &mut Frame, area: Rect, tp: &crate::preview::text::TextPreview, scroll: usize) {
+    let h = area.height as usize;
+    let w = area.width as usize;
+    if h == 0 || w < 8 {
+        return;
+    }
+    let rows = h.saturating_sub(1);
+    let start = scroll.min(tp.lines.len().saturating_sub(1));
+    let last = (start + rows).min(tp.lines.len());
+    let nw = last.max(1).to_string().len();
+    let mut lines: Vec<Line> = tp.lines[start..last]
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            Line::from(vec![
+                Span::styled(
+                    format!(" {:>nw$} ", start + i + 1),
+                    theme::fg(theme::DIMMED),
+                ),
+                Span::styled(truncate(l, w.saturating_sub(nw + 2)), theme::fg(FG)),
+            ])
+        })
+        .collect();
+    if tp.lines.is_empty() {
+        lines.push(Line::from(Span::styled(" (empty)", theme::dim())));
+    }
+    while lines.len() < rows {
+        lines.push(Line::default());
+    }
+    let count = if tp.truncated {
+        format!("first {} lines", thousands(tp.lines.len() as u64))
+    } else {
+        format!("{} lines", thousands(tp.lines.len() as u64))
+    };
+    let more = if last < tp.lines.len() || tp.truncated {
+        "  ·  zp: full screen"
+    } else {
+        ""
+    };
+    lines.push(Line::from(Span::styled(
+        truncate(&format!(" {} · {count}{more}", tp.encoding), w),
+        theme::dim(),
+    )));
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 fn draw_file_info(f: &mut Frame, area: Rect, app: &App, e: &Entry) {

@@ -19,6 +19,7 @@
 //! an already-encoded picture.
 
 pub mod image;
+pub mod text;
 
 use crate::fs::path::Loc;
 use ratatui::layout::Rect;

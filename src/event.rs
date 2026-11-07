@@ -225,6 +225,11 @@ pub enum AppEvent {
         cancelled: bool,
     },
     /// The matching lines of a content-search result, for its preview.
+    /// The first lines of a file for the preview column (None: it isn't text).
+    TextPreview {
+        loc: crate::fs::path::Loc,
+        result: Result<Option<Box<crate::preview::text::TextPreview>>, String>,
+    },
     GrepPreview {
         loc: Loc,
         result: Result<MatchPreview, String>,

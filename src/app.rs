@@ -30,6 +30,7 @@ mod tabs;
 mod tags;
 
 pub use keys::{Prompt, PromptKind};
+pub use preview::TextState;
 pub use search::SearchState;
 
 use crate::event::{AppEvent, EventRx};
@@ -223,6 +224,8 @@ pub struct App {
     next_search_id: u64,
     /// The matches of the content-search result under the cursor (one file at a time).
     grep_preview: Option<search::GrepPreview>,
+    /// The first lines of the text file under the cursor.
+    pub text_preview: Option<TextState>,
 
     /// Saved `\\server\share` roots for the Locations root.
     pub shares: Vec<FsPath>,
@@ -414,6 +417,7 @@ impl App {
             searches: Vec::new(),
             next_search_id: 1,
             grep_preview: None,
+            text_preview: None,
             shares: Vec::new(),
             shares_loaded: false,
             pins: crate::pins::PinStore::default(),
@@ -1211,6 +1215,7 @@ impl App {
                 }
             }
             AppEvent::GrepPreview { loc, result } => self.on_grep_preview(loc, result),
+            AppEvent::TextPreview { loc, result } => self.on_text_preview(loc, result),
         }
     }
 
@@ -1330,6 +1335,7 @@ impl App {
                 self.request(p, false);
             }
             self.request_grep_preview();
+            self.request_text_preview();
             if self.mode == Mode::Picker {
                 self.probe_picked_machine();
             }
@@ -1643,6 +1649,54 @@ mod tests {
 
     fn sel(app: &App) -> Option<&str> {
         app.selected().map(|e| e.name.as_str())
+    }
+
+    /// The rename presets and history are read at startup off-thread; a read that lands
+    /// after a preset was saved or a rename made merges with them instead of erasing
+    /// them (it made a test flaky once).
+    #[test]
+    fn a_late_rename_store_read_keeps_this_sessions_work() {
+        use crate::rename::presets::{Preset, State};
+        let (mut app, _rt) = fixture();
+        app.rename_presets = vec![Preset {
+            name: "mine".into(),
+            ..Preset::default()
+        }];
+        app.rename_state.search = vec!["new".into()];
+        app.handle(AppEvent::RenameStore {
+            presets: Ok(vec![
+                Preset {
+                    name: "saved".into(),
+                    ..Preset::default()
+                },
+                Preset {
+                    name: "MINE".into(),
+                    search: "old".into(),
+                    ..Preset::default()
+                },
+            ]),
+            state: Box::new(State {
+                search: vec!["old".into(), "new".into()],
+                ..State::default()
+            }),
+        });
+        let names: Vec<&str> = app.rename_presets.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["mine", "saved"],
+            "this session's preset wins its name"
+        );
+        assert_eq!(app.rename_state.search, ["new", "old"]);
+        // Nothing done yet: the saved state is taken as is.
+        let (mut fresh, _rt2) = fixture();
+        fresh.handle(AppEvent::RenameStore {
+            presets: Ok(Vec::new()),
+            state: Box::new(State {
+                search: vec!["old".into()],
+                ..State::default()
+            }),
+        });
+        assert_eq!(fresh.rename_state.search, ["old"]);
     }
 
     /// `<C-l>` and `:redraw`: the next frame clears the terminal first.
@@ -5886,6 +5940,71 @@ mod job_tests {
         press(&mut l.app, ":rename<CR>");
         assert!(l.app.rename_panel.as_ref().is_some_and(|p| p.options.regex));
         press(&mut l.app, "<Esc>q");
+        assert_eq!(l.app.mode, Mode::Normal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Text files show their first lines in the preview column, whatever the encoding;
+    /// a binary file with an unknown extension shows its info; `zp` reads it full screen
+    /// and `J` scrolls.
+    #[test]
+    fn text_files_preview_their_lines() {
+        let dir = std::env::temp_dir().join(format!(
+            "sentier-text-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        // An old .bat in Windows-1252 (é), PowerShell 5's UTF-16 LE, no extension, binary.
+        let _ = std::fs::write(dir.join("run.bat"), b"@echo off\r\necho caf\xe9\r\n");
+        let mut ps = vec![0xFF, 0xFE];
+        for c in "Get-ChildItem C:\\\r\nWrite-Host done\r\n".encode_utf16() {
+            ps.extend(c.to_le_bytes());
+        }
+        let _ = std::fs::write(dir.join("deploy.ps1"), ps);
+        let long: String = (1..=200).map(|i| format!("line {i}\n")).collect();
+        let _ = std::fs::write(dir.join("README"), long);
+        let _ = std::fs::write(dir.join("blob.xyz"), [0u8, 1, 2, 0, 255, 0]);
+        let mut l = Live::new(&dir);
+        let shown = |l: &mut Live, name: &str| {
+            l.goto(name);
+            l.app.preview_due = Some(Instant::now());
+            l.until(|a| {
+                a.text_preview
+                    .as_ref()
+                    .is_some_and(|t| t.loc.name() == name && t.result.is_some())
+            });
+            render(&mut l.app, 160, 30)
+        };
+        let s = shown(&mut l, "run.bat");
+        if std::env::var_os("SENTIER_SHOW_TEXT").is_some() {
+            eprintln!("{s}");
+        }
+        assert!(s.contains("@echo off") && s.contains("echo café"), "{s}");
+        assert!(s.contains("Windows-1252 · 2 lines"), "{s}");
+        let s = shown(&mut l, "deploy.ps1");
+        assert!(
+            s.contains(r"Get-ChildItem C:\") && s.contains("UTF-16 LE"),
+            "{s}"
+        );
+        let s = shown(&mut l, "blob.xyz");
+        assert!(
+            s.contains("Size") && !s.contains("UTF-8"),
+            "binary: its info, {s}"
+        );
+        let s = shown(&mut l, "README");
+        assert!(s.contains("line 1") && s.contains("zp: full screen"), "{s}");
+        // Full screen, J scrolls half a page.
+        press(&mut l.app, "zp");
+        assert_eq!(l.app.mode, Mode::Preview);
+        let before = l.app.text_preview.as_ref().map_or(0, |t| t.scroll);
+        press(&mut l.app, "J");
+        let after = l.app.text_preview.as_ref().map_or(0, |t| t.scroll);
+        assert!(after > before, "{before} → {after}");
+        let s = render(&mut l.app, 160, 30);
+        assert!(s.contains("J/K ^d/^u") && s.contains("scroll"), "{s}");
+        press(&mut l.app, "<Esc>");
         assert_eq!(l.app.mode, Mode::Normal);
         let _ = std::fs::remove_dir_all(&dir);
     }

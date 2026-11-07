@@ -580,7 +580,7 @@ The preview column (and the picker preview pane) renders **real images** in the 
 | png jpg gif webp bmp tiff ico | `image` crate decode → resize to the pane | dimensions, format, size. Photos: EXIF date, camera, GPS yes/no. |
 | PDF | WinRT `Windows.Data.Pdf`: `PdfDocument::LoadFromFileAsync` → page → `RenderToStreamAsync` at the pane's pixel size | page `n / N`, page size in mm and inches **plus the named sheet size when it matches** (A0–A4, ANSI A–E, Arch C–E), PDF title |
 | anything else Windows can thumbnail (dwg, docx, xlsx, mp4, heic…) | `IShellItemImageFactory::GetImage` (thumbnail only) | "Windows thumbnail" + metadata. Depends on installed thumbnail handlers (e.g. Autodesk's for DWG). |
-| text / code | first N lines, syntax-highlighted (`syntect`, v0.2) | encoding, line count |
+| text / code (`.bat` `.ps1` `.vb` `.pmlmac` `.log`…, and files with no or an unknown extension that hold no zero bytes) | the first 64 KB as lines with numbers (UTF-8, UTF-16 with or without BOM, Windows-1252); `zp` full screen, `J`/`K` `^d`/`^u` scroll. Syntax colours: `syntect`, v0.2 | encoding, line count |
 | binary with no thumbnail | metadata only | as today |
 
 #### Keys while the cursor is on a previewable file
