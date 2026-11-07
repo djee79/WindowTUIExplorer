@@ -650,7 +650,9 @@ fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Drawn>
                     | Mode::SyncPreview
                     | Mode::OpenWith
                     | Mode::Rename
-            ) || app.which_key_visible();
+                    | Mode::Jobs
+            ) || app.rename_panel.is_some() // its confirm prompt is a Prompt
+                || app.which_key_visible();
             if !covered && size.width <= area.width && size.height <= area.height {
                 let rect = Rect {
                     width: size.width,

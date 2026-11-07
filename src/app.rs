@@ -3350,6 +3350,22 @@ mod preview_tests {
         press(&mut app, "g?");
         render(&mut app, 120, 30);
         assert!(app.image_drawn.is_none());
+        press(&mut app, "<Esc>");
+        render(&mut app, 120, 30);
+        assert!(app.image_drawn.is_some(), "back after the overlay");
+
+        // The jobs panel, the bulk rename panel and its confirm prompt cover it too.
+        press(&mut app, "J");
+        render(&mut app, 120, 30);
+        assert!(app.image_drawn.is_none(), "jobs panel");
+        press(&mut app, "J");
+        press(&mut app, ":rename<CR>");
+        assert!(app.rename_panel.is_some());
+        render(&mut app, 120, 30);
+        assert!(app.image_drawn.is_none(), "rename panel");
+        app.mode = Mode::Prompt; // "Rename 13 items?" over the panel
+        render(&mut app, 120, 30);
+        assert!(app.image_drawn.is_none(), "rename confirm");
     }
 
     #[test]
