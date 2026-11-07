@@ -540,6 +540,7 @@ impl App {
             KeyCode::Char('G') => self.jobs_cursor = n.saturating_sub(1),
             KeyCode::Char('c') => self.cancel_job(),
             KeyCode::Char('p') => self.pause_job(),
+            KeyCode::Char('O') => self.job_places(),
             KeyCode::Char('s') => self.skip_locked_file(),
             KeyCode::Char('R') => self.retry_locked_now(),
             KeyCode::Char('r') => self.retry_job(),

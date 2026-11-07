@@ -40,9 +40,25 @@ pub struct OpenMenu {
     pub cursor: usize,
     targets: Vec<OpenTarget>,
     pub ext: String,
+    /// A sync / backup preset or job: its two folders (the places menu, not openers).
+    pub places: Option<super::places::Places>,
 }
 
 impl OpenMenu {
+    /// The places menu of a sync / backup preset or a job.
+    pub(super) fn for_places(title: String, places: super::places::Places) -> OpenMenu {
+        OpenMenu {
+            title,
+            pattern: None,
+            items: super::places::menu_items(&places),
+            filter: String::new(),
+            cursor: 0,
+            targets: Vec::new(),
+            ext: String::new(),
+            places: Some(places),
+        }
+    }
+
     /// Item indices shown, after the filter.
     pub fn shown(&self) -> Vec<usize> {
         open_menu::filter(&self.items, &self.filter)
@@ -169,6 +185,7 @@ impl App {
             cursor: 0,
             targets,
             ext,
+            places: None,
         });
         self.mode = Mode::OpenWith;
         self.dirty = true;
@@ -236,6 +253,9 @@ impl App {
             return;
         };
         self.mode = Mode::Normal;
+        if let Some(p) = m.places {
+            return self.run_place(&item.id, p);
+        }
         // Remembered per extension (folders and extensionless files aren't).
         if self.open_cfg.remember && !m.ext.is_empty() {
             self.open_last.insert(m.ext.clone(), item.id.clone());

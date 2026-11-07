@@ -1311,6 +1311,7 @@ pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
         h.push(("r", "retry failed"));
         h.push(("Enter", "dismiss"));
     }
+    h.push(("O", "source / dest"));
     h.push(("o", "log"));
     h.push(("J", "close"));
     h

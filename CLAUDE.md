@@ -340,6 +340,7 @@ paths, tags are the main way to narrow things down.
 - `c` cancels a job (kills robocopy; the report says which files were done).
   `r` retries failed files only. `p` pauses (robocopy is stopped and holds no locks) and
   resumes (the step runs again with `/Z`: copied files skipped, a half-copied one resumed).
+  `O` opens the job's source / destination (the places menu, section 9).
 - **sentier owns retries** (docs/JOBS_PANEL_SPEC.md): robocopy never waits (`/R:0`), so a
   locked file (error 32/33) doesn't hold the copy up. The locked files are tried again
   after the main pass, every 10 s, up to 5 times. While it waits the panel shows a stall
@@ -483,6 +484,10 @@ check_in_use  = true          # see "In-use check" below
   key. `Esc` while picking saves nothing. `Ctrl-e` on a preset picks its folders the same
   way, starting where they are. Backups: the zips folder is picked the same way.
 - The real run is a normal job (section 4): same panel, Finishing phase, report, log.
+- **Places menu:** `O` (picker normal mode) or `Ctrl-o` on a sync / backup preset, and
+  `O` on a job in the jobs panel, open a menu of its two folders: Source, Destination, or
+  Both (source here, destination in a new tab) in sentier; the same in Explorer; or copy
+  either path. A backup's destination is its zips folder.
 - **Last-run state** is stored in `%LOCALAPPDATA%\sentier\presets.json`: time, outcome,
   bytes, duration. The pin row shows `last: today 08:12 ✓ 3.8 GB in 2m41s` or
   `last: failed (2 locked)`.

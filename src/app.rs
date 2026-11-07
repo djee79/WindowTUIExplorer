@@ -20,6 +20,7 @@ pub use open::OpenMenu;
 mod pick;
 mod picker;
 mod pins;
+mod places;
 mod rename;
 pub use rename::{Field as RenameField, RenamePanel};
 mod preview;
@@ -5147,6 +5148,102 @@ mod job_tests {
         a.sync_preview
             .as_ref()
             .is_some_and(|s| !matches!(s.status, PreviewStatus::Running))
+    }
+
+    /// `^o` / `O` on a sync preset in a picker: a menu with its two folders. "Both" goes to
+    /// the source and opens the destination in a new tab; `O` in the jobs panel offers a
+    /// job's folders.
+    #[test]
+    fn a_presets_folders_open_from_the_picker_and_the_jobs_panel() {
+        let dir = temp_tree();
+        let mut l = Live::new(&dir);
+        l.until(|a| a.pins_loaded);
+        let (src, dst) = (dir.join("src"), dir.join("dst"));
+        let text = format!(
+            "[[pin]]\nkind = 'sync'\nname = 'proj sync'\nsource = '{}'\ndest = '{}'\n",
+            src.display(),
+            dst.display()
+        );
+        let Ok((store, _)) = crate::pins::parse(&text) else {
+            panic!("{text}")
+        };
+        l.app.pins = store;
+        let ids = |a: &App| -> Vec<String> {
+            a.open_menu
+                .as_ref()
+                .map(|m| m.items.iter().map(|i| i.id.clone()).collect())
+                .unwrap_or_default()
+        };
+        press(&mut l.app, "<Space>rs");
+        l.until(|a| a.picker.as_ref().is_some_and(|p| !p.view.is_empty()));
+        press(&mut l.app, "<C-o>");
+        assert_eq!(l.app.mode, Mode::OpenWith);
+        assert_eq!(
+            ids(&l.app),
+            [
+                "go-src", "go-dst", "both", "x-src", "x-dst", "x-both", "c-src", "c-dst"
+            ]
+        );
+        let screen = render(&mut l.app, 140, 40);
+        for want in [
+            "Open proj sync",
+            "in sentier",
+            "in Explorer",
+            "copy the path",
+        ] {
+            assert!(screen.contains(want), "{want}\n{screen}");
+        }
+        assert!(
+            !screen.contains(" with "),
+            "not an open-with menu: {screen}"
+        );
+        // 3: both, the destination in a new tab.
+        press(&mut l.app, "3");
+        l.until(|a| {
+            a.cwd
+                .display()
+                .eq_ignore_ascii_case(&dst.display().to_string())
+        });
+        assert_eq!(l.app.tabs.len(), 2);
+        press(&mut l.app, "<A-1>");
+        l.until(|a| {
+            a.cwd
+                .display()
+                .eq_ignore_ascii_case(&src.display().to_string())
+        });
+
+        // The jobs panel: O on a job offers its folders.
+        let plan = crate::jobs::Plan {
+            backend: crate::jobs::Backend::Robocopy,
+            steps: vec![crate::jobs::robocopy::Step {
+                src: src.display().to_string(),
+                dst: dst.join("src").display().to_string(),
+                files: vec![],
+            }],
+            pairs: vec![],
+            title: "src → dst".into(),
+        };
+        let job = crate::jobs::Job::new(
+            42,
+            &plan,
+            crate::jobs::Op::Copy,
+            dst.join("src").display().to_string(),
+            crate::jobs::robocopy::Overwrite::Never,
+            "x.log".into(),
+        );
+        l.app.jobs.push(job);
+        press(&mut l.app, "J");
+        press(&mut l.app, "O");
+        assert_eq!(l.app.mode, Mode::OpenWith);
+        assert_eq!(
+            l.app.open_menu.as_ref().and_then(|m| m.places.clone()),
+            Some(super::places::Places {
+                source: src.display().to_string(),
+                dest: dst.join("src").display().to_string(),
+            })
+        );
+        press(&mut l.app, "<Esc>");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// In the preview, `x` leaves a file out, `X` its folder, and on a local-only file `x`

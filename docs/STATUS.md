@@ -1248,3 +1248,12 @@ No syntax colours yet: that needs `syntect`, not in the stack (ask first).
 Also: a startup read of the rename presets / history could overwrite a preset saved or a
 rename made before it landed (made a test flaky once); it now merges. The sort-state test
 got its own file (it shared one with an app test running in parallel).
+
+### Places menu: a preset's source and destination
+
+`O` (picker normal mode) or `Ctrl-o` on a sync / backup preset row (`Space r s`,
+`Space r b`, `Space p`, the launcher), and `O` on a job in the jobs panel, open the `O`
+menu with the preset's two folders (`app/places.rs`): in sentier (Source, Destination,
+Both: the source here and the destination in a new tab), in Explorer (either, or two
+windows), or copy either path. A backup's destination is its zips folder; a job's source
+is its first robocopy step's folder (small native copies keep none: destination only).

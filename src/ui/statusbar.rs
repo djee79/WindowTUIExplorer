@@ -128,6 +128,7 @@ const FULL_TEXT_HINTS: &[(&str, &str)] = &[
 const PICKER_NORMAL_HINTS: &[(&str, &str)] = &[
     ("j/k", "move"),
     ("Enter", "open"),
+    ("O", "a preset's folders"),
     ("]t/[t", "cycle tag"),
     ("i", "type"),
     ("^e/^t/^x", "edit · tags · delete"),

@@ -277,7 +277,10 @@ impl App {
             (KeyCode::Char('s'), true) => return self.toggle_start_menu(),
             // File / folder rows: open-with, reveal, copy the path.
             (KeyCode::Char(c @ ('o' | 'v' | 'y')), true) => {
-                self.picked_action(c);
+                // A sync / backup preset: its two folders (the places menu).
+                if !self.picked_action(c) && c == 'o' {
+                    self.picker_places();
+                }
                 return;
             }
             // Files picker on a share: walk the whole tree.
@@ -329,6 +332,10 @@ impl App {
         let count = self.picker_count.take();
         let n = count.unwrap_or(1).max(1) as isize;
         let half = self.picker.as_ref().map_or(5, |p| (p.page / 2).max(1)) as isize;
+        // `O` on a sync / backup preset: its source and destination.
+        if pending.is_none() && ev.code == KeyCode::Char('O') && !ctrl && self.picker_places() {
+            return;
+        }
         match (pending, ev.code, ctrl) {
             (Some(PickerPending::G), KeyCode::Char('g'), false) => {
                 let row = count.map_or(0, |c| c.saturating_sub(1));

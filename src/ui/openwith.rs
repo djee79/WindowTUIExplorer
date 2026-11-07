@@ -35,7 +35,10 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
             Span::styled("─ ", theme::fg(BORDER)),
             Span::styled("Open ", theme::dim()),
             Span::styled(m.title.clone(), theme::bold(ACCENT)),
-            Span::styled(" with ", theme::dim()),
+            Span::styled(
+                if m.places.is_some() { " " } else { " with " },
+                theme::dim(),
+            ),
         ]))
         .title_bottom(Line::from(Span::styled(
             " 1-9 pick · j/k Enter · type to filter · Esc ",
@@ -63,14 +66,20 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
                     theme::fg(BORDER),
                 )));
             }
-            if item.section == Section::Configured {
+            if let Some(head) = m.places.as_ref().map(|_| match item.section {
+                Section::Configured => "in sentier",
+                Section::Windows => "in Explorer",
+                Section::System => "copy the path",
+            }) {
+                lines.push(Line::from(Span::styled(format!("  {head}"), theme::dim())));
+            } else if item.section == Section::Configured {
                 let from = m
                     .pattern
                     .as_deref()
                     .map_or_else(|| "configured".to_string(), |p| format!("configured ({p})"));
                 lines.push(Line::from(Span::styled(format!("  {from}"), theme::dim())));
             }
-            if item.section == Section::Windows {
+            if item.section == Section::Windows && m.places.is_none() {
                 lines.push(Line::from(Span::styled(
                     format!("  Windows suggests (registered for .{})", m.ext),
                     theme::dim(),
