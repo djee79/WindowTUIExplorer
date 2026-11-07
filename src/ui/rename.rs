@@ -42,7 +42,8 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
     f.render_widget(block, body);
     let w = inner.width as usize;
 
-    let field = |label: &str, text: String, active: bool, hint: &str| {
+    let field = |label: &str, ed: &crate::prompt::LineEditor, active: bool, hint: &str| {
+        let text = ed.text();
         let mut spans = vec![Span::styled(
             format!("  {label:<14}"),
             if active {
@@ -51,9 +52,13 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
                 theme::dim()
             },
         )];
-        spans.push(Span::styled(text.clone(), theme::fg(FG)));
         if active {
+            let (before, after) = split_at_cursor(ed);
+            spans.push(Span::styled(before, theme::fg(FG)));
             spans.push(Span::styled("▏", theme::fg(ACCENT)));
+            spans.push(Span::styled(after, theme::fg(FG)));
+        } else {
+            spans.push(Span::styled(text.clone(), theme::fg(FG)));
         }
         let pad = w.saturating_sub(16 + width(&text) + 1 + width(hint) + 2);
         spans.push(Span::raw(" ".repeat(pad)));
@@ -65,14 +70,14 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
         Line::default(),
         field(
             "Search for",
-            p.search.text(),
+            &p.search,
             typing && p.field == RenameField::Search,
             "Tab switches field · ^p/^n history",
         ),
         Line::default(),
         field(
             "Replace with",
-            p.replace.text(),
+            &p.replace,
             typing && p.field == RenameField::Replace,
             "${ and $ tokens below",
         ),
@@ -110,8 +115,9 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
     match &p.naming {
         Some(ed) => lines.push(Line::from(vec![
             Span::styled("  Save preset as  ", theme::bold(ACCENT)),
-            Span::styled(ed.text(), theme::fg(FG)),
+            Span::styled(split_at_cursor(ed).0, theme::fg(FG)),
             Span::styled("▏", theme::fg(ACCENT)),
+            Span::styled(split_at_cursor(ed).1, theme::fg(FG)),
             Span::styled("   Enter saves (same name replaces) · Esc", theme::dim()),
         ])),
         None => lines.push(Line::default()),
@@ -311,4 +317,14 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
         f.render_widget(block, area);
         f.render_widget(Paragraph::new(items), pin);
     }
+}
+
+/// The line before and after the cursor: the `▏` goes between, where typing lands.
+fn split_at_cursor(ed: &crate::prompt::LineEditor) -> (String, String) {
+    let text = ed.text();
+    let at = ed.cursor();
+    (
+        text.chars().take(at).collect(),
+        text.chars().skip(at).collect(),
+    )
 }

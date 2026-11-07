@@ -6061,6 +6061,14 @@ mod job_tests {
 
         type_text(&mut l.app, r"(B-\d{4})_rev(\d+)");
         press(&mut l.app, "<Tab>");
+        // The arrows move in the field, and the bar is drawn where typing lands.
+        type_text(&mut l.app, "$YYYY-$MM");
+        press(&mut l.app, "<Left><Left><BS>");
+        let screen = render(&mut l.app, 120, 30);
+        assert!(screen.contains("$YYYY-▏MM"), "{screen}");
+        press(&mut l.app, "<Right><Right><BS><BS><BS><BS><BS><BS><BS><BS>");
+        let replace = l.app.rename_panel.as_ref().map(|p| p.replace.text());
+        assert_eq!(replace.as_deref(), Some(""), "all of it can go");
         type_text(&mut l.app, "HIT_$1_R$2");
         press(&mut l.app, "<Esc>r");
         let rows = l_plan(&l.app);
