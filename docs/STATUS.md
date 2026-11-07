@@ -1176,3 +1176,12 @@ and the files to sync, not paste paths."
 
 Manual check: in a project folder, `Tab` two folders, `Space n s`, go to a local folder,
 `p`, Enter ×4; Enter on the pin → preview lists only those; `Tab`, `x` a file, run.
+
+## `f` speaks the search language (code complete 2026-11-06, manual check pending)
+
+`f` (filter this folder) now understands what `s` does, in place: `*.pdf`, `ext:pdf,dwg`,
+`size:>10mb`, `mtime:<7d`, `type:d` / `type:f`, `!old`, `re:…`, `hidden:yes`, combined with
+text (`ext:pdf rev3`). Plain text keeps its old meaning (a substring of the name, not the
+search's fuzzy match). A half-typed query (`size:>`) says why under the prompt and
+filters as plain text meanwhile; the empty prompt lists what it understands.
+`search/filter.rs` (pure, reuses the search's parser and name matcher).

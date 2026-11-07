@@ -1093,7 +1093,11 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("?", SearchBackward, "search backward"),
         ("n", SearchNext, "next match"),
         ("N", SearchPrev, "previous match"),
-        ("f", Filter, "filter this directory"),
+        (
+            "f",
+            Filter,
+            "filter this directory (text, *.pdf, ext:pdf, size:>10mb…)",
+        ),
         ("s", NameSearch, "search names below here"),
         ("S", ContentSearch, "search contents below here"),
         ("]p", NextPage, "next PDF page"),

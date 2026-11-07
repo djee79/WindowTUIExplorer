@@ -8,6 +8,7 @@
 //! The results folder itself (state, sorting, history) lives in `app::search`.
 
 pub mod content;
+pub mod filter;
 pub mod name;
 pub mod query;
 pub mod walk;

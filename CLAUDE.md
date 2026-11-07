@@ -1054,7 +1054,7 @@ filters) · `dialog` (confirmations, sync preview).
 | `Ctrl-d` `Ctrl-u` / `Ctrl-f` `Ctrl-b` | half page / full page down · up |
 | `zz` `zt` `zb` | scroll cursor to middle · top · bottom |
 | `/` `?` then `n` `N` | incremental search in the current dir (forward/backward), next/prev match |
-| `f` | filter the current dir (live, `Esc` clears) |
+| `f` | filter the current dir (live, `Esc` clears): plain text, or the search language: `*.pdf`, `ext:pdf,dwg`, `size:>10mb`, `mtime:<7d`, `type:d`, `!old`, `re:…` |
 | `s` · `S` | recursive name search · content search; results stream in as a folder (section 12) |
 | `gr` · `,s` | (in results) go to the result's real folder · cycle sort |
 | `H` `L` / `Ctrl-o` | back / forward in directory history (`Ctrl-o` = back) |

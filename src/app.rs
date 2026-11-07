@@ -1341,16 +1341,24 @@ impl App {
     }
 }
 
-/// Indices of the entries to show, after the hidden toggle and a case-insensitive
-/// substring filter.
+/// Indices of the entries to show, after the hidden toggle and the `f` filter, which
+/// speaks the search's language (`*.pdf`, `ext:pdf`, `size:>10mb`, plain text = a
+/// substring of the name; see `search::filter`).
 pub fn visible_indices(listing: &Listing, show_hidden: bool, filter: &str) -> Vec<usize> {
-    let needle = filter.to_lowercase();
+    let shown = |e: &&crate::fs::Entry, hidden: bool| hidden || !e.is_hidden();
+    let (Some(f), _) = crate::search::filter::DirFilter::new(filter) else {
+        return (0..listing.entries.len())
+            .filter(|&i| shown(&&listing.entries[i], show_hidden))
+            .collect();
+    };
+    let show_hidden = show_hidden || f.hidden;
+    let now = std::time::SystemTime::now();
+    let mut scratch = crate::search::name::Scratch::default();
     listing
         .entries
         .iter()
         .enumerate()
-        .filter(|(_, e)| show_hidden || !e.is_hidden())
-        .filter(|(_, e)| needle.is_empty() || e.name.to_lowercase().contains(&needle))
+        .filter(|(_, e)| shown(e, show_hidden) && f.keeps(e, now, &mut scratch))
         .map(|(i, _)| i)
         .collect()
 }
@@ -5785,6 +5793,62 @@ mod job_tests {
         assert!(l.app.rename_panel.as_ref().is_some_and(|p| p.options.regex));
         press(&mut l.app, "<Esc>q");
         assert_eq!(l.app.mode, Mode::Normal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `f` filters this folder with the search's language: the hint says so, `ext:pdf`
+    /// keeps PDFs only (not `.pdf.bak`, not a `pdfs` folder), a half-typed query says
+    /// why and filters as plain text meanwhile, `Esc` clears.
+    #[test]
+    fn f_filters_by_extension_glob_and_size() {
+        let dir = std::env::temp_dir().join(format!(
+            "sentier-filter-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(dir.join("pdfs"));
+        for (f, n) in [
+            ("B-1001_rev3.pdf", 10),
+            ("B-1002_rev1.PDF", 3000),
+            ("report.pdf.bak", 1),
+            ("plan.dwg", 2000),
+        ] {
+            let _ = std::fs::write(dir.join(f), "x".repeat(n));
+        }
+        let mut l = Live::new(&dir);
+        press(&mut l.app, "f");
+        assert!(
+            l.app
+                .prompt
+                .as_ref()
+                .is_some_and(|p| p.note.contains("ext:pdf") && p.note.contains("*.pdf")),
+            "the hint shows what it understands"
+        );
+        type_text(&mut l.app, "ext:pdf");
+        assert_eq!(l.names(), ["B-1001_rev3.pdf", "B-1002_rev1.PDF"]);
+        press(&mut l.app, "<C-u>");
+        type_text(&mut l.app, "*.pdf size:>1kb");
+        assert_eq!(l.names(), ["B-1002_rev1.PDF"]);
+        press(&mut l.app, "<C-u>");
+        type_text(&mut l.app, "pdf");
+        assert_eq!(l.names().len(), 4, "plain text: a substring, as always");
+        press(&mut l.app, "<C-u>");
+        type_text(&mut l.app, "size:>");
+        assert!(
+            l.app
+                .prompt
+                .as_ref()
+                .is_some_and(|p| p.note.contains("not a size")),
+            "a half-typed filter says why"
+        );
+        // Enter keeps it; Esc clears it.
+        press(&mut l.app, "<C-u>");
+        type_text(&mut l.app, "ext:dwg");
+        press(&mut l.app, "<CR>");
+        assert_eq!(l.names(), ["plan.dwg"]);
+        press(&mut l.app, "<Esc>");
+        assert_eq!(l.names().len(), 5);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

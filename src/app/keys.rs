@@ -618,6 +618,7 @@ impl App {
             PromptKind::Command
             | PromptKind::PinTags
             | PromptKind::MachineUser
+            | PromptKind::Filter
             | PromptKind::Preset(_) => self.prompt_changed(&mut p),
             _ => {}
         }
@@ -743,6 +744,15 @@ impl App {
         let text = p.editor.text();
         match p.kind {
             PromptKind::Filter => {
+                // What it understands, or why the query isn't one yet (plain text meanwhile).
+                p.note = match crate::search::filter::DirFilter::new(&text).1 {
+                    Some(problem) => problem,
+                    None if text.is_empty() => {
+                        "text · *.pdf · ext:pdf,dwg · size:>10mb · mtime:<7d · type:d · !old · re:…"
+                            .to_string()
+                    }
+                    None => String::new(),
+                };
                 self.filter = text;
                 self.rebuild_view();
             }
