@@ -100,6 +100,7 @@ impl App {
             self.open_last.get(ext).map(String::as_str),
             &self.open_resolved,
             self.open_registered.get(ext),
+            &self.config.editor(),
         )
     }
 
@@ -275,6 +276,7 @@ impl App {
                     self.set_status(format!("opening {}…", first.name), false);
                 }
             }
+            "editor" => self.open_in_editor(paths),
             "reveal" => self.worker.reveal(first.path.clone()),
             "explorer" => self.worker.run_detached(
                 format!("Explorer: {}", folder(&first)),
@@ -388,6 +390,36 @@ impl App {
                     );
                 }
             }
+        }
+    }
+
+    /// The editor (config.toml `editor`, else `$VISUAL` / `$EDITOR`, else Neovim) on
+    /// these files or folders: in this terminal for a terminal editor (sentier steps
+    /// aside until you quit it), started on its own for a GUI one (VS Code, Notepad++).
+    pub(super) fn open_in_editor(&mut self, paths: Vec<String>) {
+        let editor = self.config.editor();
+        // `code --wait`-style editors come with their own arguments.
+        let mut parts = rules::split_args(&editor);
+        if parts.is_empty() || paths.is_empty() {
+            return;
+        }
+        let program = parts.remove(0);
+        let cwd = paths
+            .first()
+            .and_then(|p| crate::jobs::parent_of(p).map(str::to_string));
+        parts.extend(paths);
+        // `code --wait` asks to be waited for, like a terminal editor.
+        let waits = parts.iter().any(|a| a == "--wait" || a == "-w");
+        if rules::terminal_editor(&program) || waits {
+            self.inline = Some(super::fileops::Inline {
+                program: program.clone(),
+                args: parts,
+                file: None,
+                then: super::fileops::InlineThen::Refresh { what: program },
+            });
+        } else {
+            self.worker
+                .run_detached(format!("started {program}"), program, parts, cwd);
         }
     }
 

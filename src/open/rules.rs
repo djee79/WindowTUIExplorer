@@ -29,6 +29,7 @@ use std::collections::BTreeMap;
 
 pub const BUILTINS: &[(&str, &str)] = &[
     ("default", "Default app"),
+    ("editor", "Editor"),
     ("reveal", "Reveal in Explorer"),
     ("openwith", "Open with… (Windows dialog)"),
     ("properties", "Properties"),
@@ -92,11 +93,17 @@ pub struct OpenConfig {
     pub rules: Vec<Rule>,
     pub remember: bool,
     pub o_uses_last: bool,
+    /// Built-in openers shown only when their program is installed (Notepad++, VS Code);
+    /// one open.toml defines itself is shown either way (greyed if missing).
+    pub optional: Vec<String>,
 }
 
 impl Default for OpenConfig {
-    /// No open.toml: folders enter, files open in their Windows app.
+    /// No open.toml: folders enter; text and code open in the editor (Neovim unless
+    /// config.toml says otherwise); everything else in its Windows app. The editor is
+    /// offered for everything in the `O` menu.
     fn default() -> Self {
+        let text = format!("*.{{{TEXT_EXTS}}}");
         let rules = [
             (
                 "dir",
@@ -104,17 +111,52 @@ impl Default for OpenConfig {
                     "enter",
                     "explorer",
                     "terminal-here",
+                    "editor",
                     "copy-path",
                     "copy-unc",
                 ][..],
             ),
-            ("*", &["default", "reveal", "copy-path", "copy-unc"][..]),
+            (
+                text.as_str(),
+                &[
+                    "editor",
+                    "notepadpp",
+                    "vscode",
+                    "default",
+                    "reveal",
+                    "copy-path",
+                    "copy-unc",
+                ][..],
+            ),
+            (
+                "*",
+                &[
+                    "default",
+                    "editor",
+                    "notepadpp",
+                    "vscode",
+                    "reveal",
+                    "copy-path",
+                    "copy-unc",
+                ][..],
+            ),
         ]
         .iter()
         .filter_map(|(m, u)| rule(m, u.iter().map(|s| s.to_string()).collect()).ok())
         .collect();
+        // GUI editors people have anyway: offered when installed, no config needed.
+        let gui = |desc: &str, program: &str| Opener {
+            desc: desc.to_string(),
+            run: vec![program.to_string(), "{paths}".to_string()],
+            mode: RunMode::Detached,
+            each: For::All,
+        };
+        let mut openers = BTreeMap::new();
+        openers.insert("notepadpp".to_string(), gui("Notepad++", "notepad++"));
+        openers.insert("vscode".to_string(), gui("VS Code", "code"));
         OpenConfig {
-            openers: BTreeMap::new(),
+            optional: openers.keys().cloned().collect(),
+            openers,
             rules,
             remember: true,
             o_uses_last: false,
@@ -138,6 +180,27 @@ fn rule(pattern: &str, openers: Vec<String>) -> Result<Rule, String> {
         matcher,
         openers,
     })
+}
+
+/// Text and code that open in the editor with `o` when there is no open.toml.
+pub const TEXT_EXTS: &str = "txt,md,markdown,rst,log,ini,cfg,conf,config,toml,yaml,yml,json,\
+    jsonc,xml,csv,tsv,rs,py,ps1,psm1,psd1,bat,cmd,sh,bash,fish,zsh,lua,vim,js,mjs,ts,tsx,jsx,\
+    css,scss,html,htm,sql,c,h,cpp,hpp,cc,cs,java,kt,go,rb,php,pl,r,swift,gitignore,\
+    gitattributes,editorconfig,env,reg,inf,vbs,pml,pmlmac,pmlfrm,pmlfnc,pmldat,pmlobj,mac,evars";
+
+/// An editor that runs in a terminal (it gets this one, sentier steps aside); anything
+/// else (VS Code, Notepad++) is started on its own.
+pub fn terminal_editor(program: &str) -> bool {
+    let stem = program
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    let stem = stem.strip_suffix(".exe").unwrap_or(&stem);
+    matches!(
+        stem,
+        "nvim" | "vim" | "vi" | "nano" | "micro" | "hx" | "helix" | "kak" | "emacs" | "ne" | "edit"
+    )
 }
 
 pub fn is_builtin(name: &str) -> bool {
@@ -186,6 +249,8 @@ pub fn parse(text: &str) -> (OpenConfig, Vec<String>) {
             match value.clone().try_into::<RawOpener>() {
                 Ok(raw) => match opener(raw) {
                     Ok(o) => {
+                        // Defined here: shown even when its program is missing.
+                        cfg.optional.retain(|n| n != name);
                         cfg.openers.insert(name.clone(), o);
                     }
                     Err(e) => problems.push(format!("open.toml: opener {name}: {e}")),
@@ -435,7 +500,9 @@ mod tests {
     #[test]
     fn parse_and_match() {
         let (cfg, problems) = parse(SAMPLE);
-        assert_eq!(cfg.openers.len(), 2, "{problems:?}");
+        // Its two, plus the built-in Notepad++ and VS Code ones.
+        assert_eq!(cfg.openers.len(), 4, "{problems:?}");
+        assert_eq!(cfg.optional, ["notepadpp", "vscode"]);
         assert_eq!(cfg.openers["nvim"].mode, RunMode::Inline);
         assert_eq!(cfg.openers["revu"].each, For::Each);
         assert!(cfg.o_uses_last && cfg.remember);
@@ -457,11 +524,38 @@ mod tests {
             (
                 "photo.jpg",
                 false,
-                &["default", "reveal", "copy-path", "copy-unc"][..],
+                &[
+                    "default",
+                    "editor",
+                    "notepadpp",
+                    "vscode",
+                    "reveal",
+                    "copy-path",
+                    "copy-unc",
+                ][..],
             ),
         ];
         for (name, dir, want) in table {
             assert_eq!(cfg.openers_for(name, dir), want, "{name}");
+        }
+        // Without open.toml: text and code open in the editor first, the rest in their
+        // Windows app; the editor is offered for folders too.
+        let d = OpenConfig::default();
+        assert_eq!(d.openers_for("lib.rs", false)[0], "editor");
+        assert_eq!(
+            d.openers_for("RUN_TEST.PMLMAC", false)[..3],
+            ["editor", "notepadpp", "vscode"]
+        );
+        assert_eq!(d.openers_for("photo.jpg", false)[0], "default");
+        assert!(d.openers_for("HIT", true).contains(&"editor".to_string()));
+        for (prog, term) in [
+            ("nvim", true),
+            (r"C:\tools\Neovim\bin\nvim.exe", true),
+            ("hx", true),
+            ("code", false),
+            ("notepad++", false),
+        ] {
+            assert_eq!(terminal_editor(prog), term, "{prog}");
         }
         assert_eq!(cfg.pattern_for("x.pdf", false), Some("*.pdf"));
     }

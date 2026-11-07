@@ -748,6 +748,11 @@ use   = ["default", "notepadpp", "reveal"]
 
 - **Built-in openers** (always available, no config needed):
   - `default` → `ShellExecuteW "open"`
+  - `editor` → the editor (config.toml `editor`, else `$VISUAL` / `$EDITOR`, else `nvim`):
+    terminal editors (and `code --wait`) run inline, GUI ones detached. Offered in every
+    `O` menu.
+  - `notepadpp` (Notepad++) and `vscode` (VS Code): GUI editors, offered for files when
+    installed (App Paths / PATH / `Program Files\<name>`), hidden when not; usable in rules.
   - `reveal` → `explorer.exe /select,"<path>"`, so Explorer opens with the file selected
   - `openwith` → the Windows dialog
   - `properties` → `SHObjectPropertiesW`
@@ -767,6 +772,10 @@ use   = ["default", "notepadpp", "reveal"]
   greys the opener out in the menu with "not found", instead of failing on run.
 - **Any pin of kind `app` can be used as an opener** (`use = ["pin:E3D — HIT (local)"]`),
   so the launcher and the menu share one list of apps.
+- **Without open.toml** the built-in rules apply: folders enter; text and code (`*.{txt,md,
+  toml,json,log,ps1,bat,rs,py,…,pml,pmlmac,pmlfrm,…}`) open in the editor with `o` (Notepad++
+  / VS Code next in `O`); everything else opens in its Windows app (editors in `O`). Nothing
+  has to be configured for the common cases.
 - Bad rules or openers are reported in the status bar at startup, never a crash.
 
 ### 14. Machines (user PCs through admin shares)

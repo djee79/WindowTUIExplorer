@@ -42,6 +42,20 @@ pub struct MenuItem {
     pub section: Section,
 }
 
+/// `nvim · this terminal`, `code`: the editor and where it runs.
+fn editor_detail(editor: &str) -> String {
+    let parts = rules::split_args(editor);
+    let program = parts.first().cloned().unwrap_or_default();
+    let waits = parts.iter().any(|a| a == "--wait" || a == "-w");
+    if rules::terminal_editor(&program) {
+        format!("{program} · this terminal")
+    } else if waits {
+        format!("{program} · waits until closed")
+    } else {
+        program
+    }
+}
+
 fn builtin_label(id: &str) -> Option<&'static str> {
     BUILTINS.iter().find(|(n, _)| *n == id).map(|(_, l)| *l)
 }
@@ -70,6 +84,7 @@ pub fn build_menu(
     last: Option<&str>,
     resolved: &BTreeMap<String, Option<String>>,
     registered: Option<&Registered>,
+    editor: &str,
 ) -> Vec<MenuItem> {
     let o_runs = first_opener(cfg, name, is_dir, last);
     let item = |id: &str, section: Section| {
@@ -91,12 +106,12 @@ pub fn build_menu(
                 None => (
                     builtin_label(id).unwrap_or(id).to_string(),
                     match id {
-                        "reveal" => "explorer /select",
-                        "openwith" => "Windows dialog",
-                        "terminal-here" => "wezterm cli spawn",
-                        _ => "",
-                    }
-                    .to_string(),
+                        "editor" => editor_detail(editor),
+                        "reveal" => "explorer /select".to_string(),
+                        "openwith" => "Windows dialog".to_string(),
+                        "terminal-here" => "wezterm cli spawn".to_string(),
+                        _ => String::new(),
+                    },
                     false,
                 ),
             },
@@ -125,6 +140,20 @@ pub fn build_menu(
         .filter(|id| !matches!(id.as_str(), "openwith" | "properties"))
         .map(|id| item(id, Section::Configured))
         .collect();
+    // The editor is always on offer, whatever the rules say; so are Notepad++ and VS
+    // Code for files when they're installed. Not installed (or not looked up yet): hidden.
+    let found = |id: &str| resolved.get(id).is_some_and(|r| r.is_some());
+    items.retain(|m| !cfg.optional.contains(&m.id) || found(&m.id));
+    if !items.iter().any(|m| m.id == "editor") {
+        items.push(item("editor", Section::Configured));
+    }
+    if !is_dir {
+        for id in &cfg.optional {
+            if found(id) && !items.iter().any(|m| &m.id == id) {
+                items.push(item(id, Section::Configured));
+            }
+        }
+    }
     if cfg.remember
         && let Some(i) = items.iter().position(|m| m.last)
     {
@@ -218,7 +247,15 @@ mod tests {
                 ("foxit".into(), "Foxit PDF Reader".into()),
             ],
         };
-        let m = build_menu(&c, "B-1001.pdf", false, Some("revu"), &resolved, Some(&reg));
+        let m = build_menu(
+            &c,
+            "B-1001.pdf",
+            false,
+            Some("revu"),
+            &resolved,
+            Some(&reg),
+            "nvim",
+        );
         let ids: Vec<&str> = m.iter().map(|i| i.id.as_str()).collect();
         // The last-used one first (remember), Windows' apps, the system ones at the end.
         assert_eq!(
@@ -228,6 +265,7 @@ mod tests {
                 "default",
                 "reveal",
                 "copy-unc",
+                "editor",
                 r"assoc:C:\x\msedge.exe",
                 "assoc:foxit",
                 "openwith",
@@ -239,21 +277,45 @@ mod tests {
         assert_eq!(m[1].detail, "Adobe Acrobat", "the default app's name");
         assert_eq!(m[2].hint, "gR");
         assert_eq!(
-            (m[4].section, m[4].label.as_str()),
+            (m[5].section, m[5].label.as_str()),
             (Section::Windows, "Microsoft Edge")
         );
-        assert_eq!(m[7].section, Section::System);
+        assert_eq!(m[8].section, Section::System);
+        assert_eq!(
+            (m[4].label.as_str(), m[4].detail.as_str()),
+            ("Editor", "nvim · this terminal"),
+            "the editor is always offered"
+        );
         assert_eq!(filter(&m, "REV"), [0, 2]);
-        assert_eq!(filter(&m, "foxit"), [5]);
-        assert_eq!(filter(&m, "").len(), 8);
+        assert_eq!(filter(&m, "foxit"), [6]);
+        assert_eq!(filter(&m, "").len(), 9);
 
         // Still looking: one greyed row in the Windows section.
-        let m = build_menu(&c, "notes.txt", false, None, &resolved, None);
+        let m = build_menu(&c, "notes.txt", false, None, &resolved, None, "nvim");
         assert_eq!(m[0].detail, "this terminal (inline)");
         assert_eq!(m[0].hint, "o");
         assert!(m.iter().any(|i| i.id == "assoc-loading" && i.missing));
+        // No open.toml, a .pmlmac: the editor first (o), Notepad++ because it's
+        // installed, VS Code hidden because it isn't.
+        let d = OpenConfig::default();
+        let mut found = BTreeMap::new();
+        found.insert(
+            "notepadpp".to_string(),
+            Some(r"C:\Program Files\Notepad++\notepad++.exe".to_string()),
+        );
+        found.insert("vscode".to_string(), None);
+        let m = build_menu(&d, "run_test.pmlmac", false, None, &found, None, "nvim");
+        let ids: Vec<&str> = m.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids[..2], ["editor", "notepadpp"], "{ids:?}");
+        assert!(!ids.contains(&"vscode"));
+        assert_eq!(m[0].hint, "o");
+        assert_eq!(m[1].label, "Notepad++");
+        // A GUI editor in config.toml: named, not "this terminal".
+        let m = build_menu(&d, "a.txt", false, None, &found, None, "code");
+        assert_eq!(m[0].detail, "code");
+
         // Folders: no Open with… dialog, no Windows apps.
-        let m = build_menu(&c, "HIT", true, None, &resolved, None);
+        let m = build_menu(&c, "HIT", true, None, &resolved, None, "nvim");
         assert_eq!(m[0].id, "enter");
         assert!(
             !m.iter()

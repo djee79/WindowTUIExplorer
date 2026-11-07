@@ -1120,3 +1120,20 @@ that finished with files skipped on purpose.
 Manual check: copy a folder from a share while one file in it is open in another program
 (Excel keeps .xlsx locked); watch the banner, try `R`, close the program, see it go
 through; again with `s`. Pause a big copy with `p`, resume, and compare the result.
+
+## Open in the editor, no config (code complete 2026-11-06, manual check pending)
+
+- Built-in opener `editor`: the editor from config.toml (else `$VISUAL` / `$EDITOR`, else
+  `nvim`) on the file(s): inline in this terminal for terminal editors (nvim, vim, hx,
+  micro, nano…) or `code --wait`, detached otherwise. Always in the `O` menu, files and
+  folders. `go` / `Space e` use the same code.
+- Built-in GUI openers `notepadpp` and `vscode`, shown only when found (App Paths, PATH,
+  or `%ProgramFiles%\<name>\<name>.exe`); also usable by name in open.toml rules.
+- Without open.toml: text and code files (a long list incl. PML) open in the editor with
+  `o` / Enter; `O` offers Notepad++ / VS Code / Windows' apps; other files keep opening
+  in their Windows app with the editors in `O`. ★ last + remember keep the per-extension
+  choice on top of the menu.
+- Tests can't start real programs any more (`spawn_detached` and launches are no-ops under
+  `cargo test`): one test run opened a VS Code window before this guard existed.
+
+Manual check: `o` on a .pmlmac → Neovim in the terminal, `:q` → back; `O` → Notepad++.

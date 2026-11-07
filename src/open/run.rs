@@ -46,7 +46,21 @@ pub fn resolve(program: &str) -> Option<String> {
     } else {
         format!("{p}.exe")
     };
-    crate::platform::app_path(&exe).filter(|a| Path::new(a).is_file())
+    crate::platform::app_path(&exe)
+        .filter(|a| Path::new(a).is_file())
+        .or_else(|| program_files(p, &exe))
+}
+
+/// `%ProgramFiles%\<name>\<name>.exe` (and the x86 one): where Notepad++ and friends
+/// install, for when they didn't register themselves.
+fn program_files(name: &str, exe: &str) -> Option<String> {
+    let stem = name.strip_suffix(".exe").unwrap_or(name);
+    ["ProgramFiles", "ProgramFiles(x86)"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(|base| Path::new(&base).join(stem).join(exe))
+        .find(|c| c.is_file())
+        .map(|c| c.display().to_string())
 }
 
 /// Every configured opener's program, resolved (None: not found, greyed in the menu).
@@ -77,6 +91,10 @@ fn opener_log() -> Option<std::fs::File> {
 /// Starts `program args` in `cwd` and doesn't wait. No console window; its output goes
 /// to the openers log, never to the TUI.
 pub fn spawn_detached(program: &str, args: &[String], cwd: Option<&str>) -> io::Result<()> {
+    // Tests exercise the paths that start programs; they must never open real windows.
+    if cfg!(test) {
+        return Ok(());
+    }
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;

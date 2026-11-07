@@ -481,20 +481,7 @@ impl App {
         let Some(dir) = self.cwd.real().as_fs().map(FsPath::display) else {
             return self.set_status("not a real folder here".into(), false);
         };
-        let editor = self.config.editor();
-        // `code --wait`-style editors come with their own arguments.
-        let mut parts = crate::open::rules::split_args(&editor);
-        if parts.is_empty() {
-            return;
-        }
-        let program = parts.remove(0);
-        parts.push(dir);
-        self.inline = Some(super::fileops::Inline {
-            program: program.clone(),
-            args: parts,
-            file: None,
-            then: super::fileops::InlineThen::Refresh { what: program },
-        });
+        self.open_in_editor(vec![dir]);
     }
 
     /// pins.toml changed outside: take it, unless a pin is being edited or asked about

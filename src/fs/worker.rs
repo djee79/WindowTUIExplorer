@@ -1088,6 +1088,9 @@ impl Worker {
             } else {
                 l.command.clone()
             };
+            if cfg!(test) {
+                return Ok(());
+            }
             crate::platform::shell_execute(&command, &l.args, &l.dir).map_err(|e| e.to_string())
         });
     }
