@@ -455,6 +455,25 @@ impl App {
         self.navigate(Loc::Machines, None);
     }
 
+    /// A PC by name (the `machine:` prompt, `Space m` with nothing matching): its
+    /// machine view, as if `\\NAME` had been typed. It's probed first (an asleep laptop
+    /// says so at once) and remembered as a recent machine; `M` / `m{key}` pin it.
+    pub(super) fn open_machine_named(&mut self, text: &str) -> Result<(), String> {
+        let host = machines::host_name(text)?;
+        self.navigate(Loc::Machine(host.clone()), None);
+        self.set_status(
+            format!("{host}: checking it answers… (M or m + a key pins it)"),
+            false,
+        );
+        Ok(())
+    }
+
+    /// `a` in Machines, "+ Add a machine…": ask for the name (prefilled if typed).
+    pub(super) fn ask_machine_name(&mut self, typed: &str) {
+        let prefill = machines::host_name(typed).unwrap_or_default();
+        self.open_prompt_with(PromptKind::MachineName, &prefill);
+    }
+
     // ------------------------------------------------------------------ pins
 
     /// `M` on a machine, or `m{key}` in its view: pin it (`kind = "machine"`).
@@ -576,13 +595,28 @@ impl App {
         for h in hosts {
             self.probe_machine_quietly(&h, false);
         }
-        let picker = crate::picker::Picker::new(
+        // A machine not met yet: by name (also: type it, Enter when nothing matches).
+        items.push(crate::picker::PickItem {
+            id: 0,
+            name: "+ Add a machine…".to_string(),
+            detail: "or type its name and press Enter · a in gm".to_string(),
+            kind: crate::picker::ItemKind::Action,
+            key: None,
+            tags: Vec::new(),
+            unc: false,
+            local: false,
+            reachable: None,
+            server: None,
+            score: 0,
+        });
+        let mut picker = crate::picker::Picker::new(
             "Machines",
             crate::picker::Source::Machines,
             items,
             self.worker.waker(),
             query,
         );
+        picker.note = Some("type a name: a new one opens with Enter when nothing matches".into());
         self.show_picker(picker);
     }
 

@@ -127,6 +127,17 @@ const PICKER_NORMAL_HINTS: &[(&str, &str)] = &[
     ("q/Esc", "close"),
 ];
 
+/// `gm`: the machines (user PCs).
+const MACHINES_HINTS: &[(&str, &str)] = &[
+    ("a", "add a machine"),
+    ("l/Enter", "open"),
+    ("M", "pin"),
+    ("R", "re-probe"),
+    ("Space m", "find one"),
+    ("gl", "Locations"),
+    ("g?", "help"),
+];
+
 const ROOT_HINTS: &[(&str, &str)] = &[
     ("l/Enter", "open"),
     ("R", "re-probe"),
@@ -579,6 +590,8 @@ pub fn draw_hints(f: &mut Frame, area: Rect, app: &App) {
         PICK_HINTS
     } else if app.visual.is_some() {
         VISUAL_HINTS
+    } else if app.cwd == crate::fs::path::Loc::Machines {
+        MACHINES_HINTS
     } else if app.at_root() {
         ROOT_HINTS
     } else if let Some(s) = app.search_state(&app.cwd) {

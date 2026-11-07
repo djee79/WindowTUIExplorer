@@ -29,6 +29,10 @@ pub const ACTIONS: &[(&str, &str)] = &[
         "+ New backup preset from this folder…",
         ":backup new · Space n b",
     ),
+    (
+        "+ Add a machine (user PC)…",
+        "a in gm · Space m, then a name",
+    ),
 ];
 
 impl App {
@@ -70,6 +74,7 @@ impl App {
             2 => self.import_wtm_command(),
             3 => self.sync_command("new", false),
             4 => self.backup_command("new"),
+            5 => self.ask_machine_name(""),
             _ => {}
         }
     }

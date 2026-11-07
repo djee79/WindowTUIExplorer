@@ -4061,6 +4061,7 @@ mod machine_tests {
         settle(&mut app);
         assert_eq!(app.picker.as_ref().map(|p| p.title), Some("Machines"));
         let mut names = picker_names(&app);
+        names.retain(|n| !n.starts_with('+'));
         names.sort();
         assert_eq!(names, ["PC-007", "PC-042"], "pinned once, recent once");
 
@@ -4074,7 +4075,7 @@ mod machine_tests {
             ]),
         )]));
         settle(&mut app);
-        assert_eq!(picker_names(&app).len(), 3);
+        assert_eq!(picker_names(&app).len(), 4, "3 machines and the add row");
         query(&mut app, "asmith");
         assert_eq!(picker_names(&app), ["PC-100"]);
         let screen = render(&mut app, 140, 30);
@@ -4146,13 +4147,77 @@ mod machine_tests {
         assert_eq!(pin.key_char(), Some('p'));
     }
 
+    /// A machine never met: `a` in `gm` asks for its name; `Space m` + a name with no
+    /// match opens it; the "+ Add a machine…" row asks too. Each opens its machine view
+    /// (probed) and makes it a recent machine; a bad name keeps the prompt with why.
+    #[test]
+    fn machines_are_added_by_name() {
+        let (mut app, _rt) = with_recent(&["PC-042"]);
+        // gm, a: the name prompt; a bad name stays and says why.
+        press(&mut app, "gm");
+        let screen = render(&mut app, 140, 30);
+        assert!(screen.contains("add a machine"), "the hint row: {screen}");
+        press(&mut app, "a");
+        assert_eq!(
+            app.prompt.as_ref().map(|p| p.kind),
+            Some(PromptKind::MachineName)
+        );
+        press(&mut app, "bad name");
+        press(&mut app, "<CR>");
+        assert!(
+            app.prompt
+                .as_ref()
+                .is_some_and(|p| p.note.contains("isn't a PC name")),
+            "stays open with why"
+        );
+        press(&mut app, "<C-u>");
+        press(&mut app, r"\\PC-555\C$");
+        press(&mut app, "<CR>");
+        assert_eq!(app.cwd, Loc::Machine("PC-555".into()));
+        assert!(app.recent_machines.iter().any(|r| r.host == "PC-555"));
+        assert!(
+            status(&app).contains("M or m + a key pins it"),
+            "{}",
+            status(&app)
+        );
+
+        // Space m, a name nothing matches, Enter: opened as a new machine.
+        press(&mut app, "<leader>m");
+        settle(&mut app);
+        query(&mut app, "PC-777");
+        let screen = render(&mut app, 140, 30);
+        assert!(screen.contains("Enter opens it as a new one"), "{screen}");
+        press(&mut app, "<CR>");
+        assert_eq!(app.cwd, Loc::Machine("PC-777".into()));
+
+        // The row: asks for the name.
+        press(&mut app, "<leader>m");
+        settle(&mut app);
+        query(&mut app, "add a machine");
+        assert_eq!(picker_names(&app), ["+ Add a machine…"]);
+        press(&mut app, "<CR>");
+        assert_eq!(
+            app.prompt.as_ref().map(|p| p.kind),
+            Some(PromptKind::MachineName)
+        );
+        press(&mut app, "<Esc><Esc>");
+        assert!(
+            status(&app).contains("no machine opened"),
+            "{}",
+            status(&app)
+        );
+    }
+
     #[test]
     fn machine_source_errors_show() {
         let (mut app, _rt) = with_recent(&[]);
         press(&mut app, "<leader>m");
         settle(&mut app);
         let screen = render(&mut app, 140, 30);
-        assert!(screen.contains("no machines yet"), "{screen}");
+        assert!(
+            screen.contains("+ Add a machine…"),
+            "no machines yet: the way to add one, {screen}"
+        );
         app.handle(AppEvent::MachineSources(vec![(
             "command",
             Err("source_cmd: timed out after 20 s".into()),

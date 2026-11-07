@@ -1221,3 +1221,13 @@ selected (`explorer /select`), and "WezTerm tab in this folder" likewise uses th
 you're in. `gx` / `gw` are unchanged (the current folder). Tests can no longer open real
 windows from any Windows launch call (ShellExecute, Properties, Open with, Explorer,
 handlers), guarded in `platform`.
+
+## Adding a machine by name (2026-11-06)
+
+A machine never visited could only be reached by knowing to type `\HOST`. Now: `a` in
+`gm` (a `machine:` prompt, any form: name, IP, `\HOST\C$…`; a bad name keeps the prompt
+with why), `Space m` + a name nothing matches + Enter, and a "+ Add a machine…" row in
+`Space m` and in the launcher. All open the machine view (port-445 probe first) and make it
+a recent machine; the status says `M` / `m + a key` pin it. `gm` has its own hint row
+(`a add a machine · l open · M pin · R re-probe · Space m find one`).
+`machines::host_name` (pure, tested).

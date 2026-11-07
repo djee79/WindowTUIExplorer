@@ -422,6 +422,26 @@ impl App {
             }
             return;
         }
+        // The machine picker with no machine matching: what was typed is a new one.
+        if let Some(p) = self.picker.as_ref()
+            && p.source == Source::Machines
+            && !p.query.text.trim().is_empty()
+            && !p.view.iter().any(|i| i.kind != ItemKind::Action)
+        {
+            let text = p.query.text.clone();
+            self.close_picker();
+            if let Err(e) = self.open_machine_named(&text) {
+                self.ask_machine_name(&text);
+                if let Some(pr) = self.prompt.as_mut() {
+                    pr.note = e;
+                }
+            }
+            return;
+        }
+        let from_machines = self
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.source == Source::Machines);
         let Some((kind, id, _)) = self.picker_selected() else {
             return;
         };
@@ -444,6 +464,7 @@ impl App {
         self.close_picker();
         match kind {
             ItemKind::StartMenu => self.launch_start_menu(id),
+            ItemKind::Action if from_machines => self.ask_machine_name(&typed),
             ItemKind::Action => self.run_launcher_action(id, &typed),
             ItemKind::File | ItemKind::Dir => self.open_picked(id, chosen),
             ItemKind::Binding | ItemKind::Command => self.run_picked_command(kind, id),

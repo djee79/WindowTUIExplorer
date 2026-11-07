@@ -47,6 +47,8 @@ pub enum PromptKind {
     GotoPage,
     /// `u` in a machine view: whose folders the templates open.
     MachineUser,
+    /// `a` in Machines, "+ Add a machine…": a PC name to open.
+    MachineName,
     /// `r` / `cw`: the item's new name.
     Rename,
     /// `a` / `A`: a new file / folder's name.
@@ -135,6 +137,7 @@ impl Prompt {
             PromptKind::TagRename => "rename tag to: ",
             PromptKind::GotoPage => "go to page: ",
             PromptKind::MachineUser => "templates for user: ",
+            PromptKind::MachineName => "machine: ",
             PromptKind::Rename => "rename to: ",
             PromptKind::NewFile => "new file: ",
             PromptKind::NewDir => "new folder: ",
@@ -404,6 +407,8 @@ impl App {
                 false,
             ),
             Action::DeletePermanent => self.start_delete(true, n),
+            // In Machines, `a` adds a machine (by name) instead of a file.
+            Action::NewFile if self.cwd == Loc::Machines => self.ask_machine_name(""),
             Action::NewFile => self.start_new(false),
             Action::NewDir => self.start_new(true),
             Action::BulkRename => self.start_bulk_rename(),
@@ -621,6 +626,7 @@ impl App {
             PromptKind::Command
             | PromptKind::PinTags
             | PromptKind::MachineUser
+            | PromptKind::MachineName
             | PromptKind::Filter
             | PromptKind::Preset(_) => self.prompt_changed(&mut p),
             _ => {}
@@ -820,6 +826,11 @@ impl App {
             PromptKind::NewFile => p.note = r"end in \ for a folder; sub\name makes sub too".into(),
             PromptKind::NewDir => p.note = r"sub\name makes both".into(),
             PromptKind::Preset(f) => p.note = self.preset_note(f, &text),
+            PromptKind::MachineName => {
+                p.note =
+                    r"a PC name (JDOE-LT042), an IP, or \\PC; it's checked before anything else"
+                        .to_string();
+            }
             PromptKind::MachineUser => {
                 let choices = self.machine_user_choices();
                 p.note = if choices.is_empty() {
@@ -882,6 +893,14 @@ impl App {
                 }
             }
             PromptKind::MachineUser => self.machine_user_picked(&text),
+            PromptKind::MachineName => {
+                if let Err(note) = self.open_machine_named(&text) {
+                    let mut p = p;
+                    p.note = note;
+                    self.prompt = Some(p);
+                    self.mode = Mode::Prompt;
+                }
+            }
             PromptKind::Rename | PromptKind::NewFile | PromptKind::NewDir => {
                 if let Err(note) = self.fileop_submit(p.kind, &text) {
                     let mut p = p;
@@ -920,6 +939,7 @@ impl App {
             | PromptKind::Preset(_) => self.pin_cancel(p.kind),
             PromptKind::GotoPage => {}
             PromptKind::MachineUser => self.machine_user_host = None,
+            PromptKind::MachineName => self.set_status("no machine opened".into(), false),
             PromptKind::Rename | PromptKind::NewFile | PromptKind::NewDir => self.fileop_cancel(),
         }
     }

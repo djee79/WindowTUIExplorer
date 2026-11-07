@@ -1232,7 +1232,11 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("r", Rename, "rename (Locations: a pin)"),
         ("cw", Rename, "rename"),
         ("u", UndoRenameHere, "undo the last bulk rename here"),
-        ("a", NewFile, "new file (end in \\ for a folder)"),
+        (
+            "a",
+            NewFile,
+            "new file (end in \\ for a folder; in gm: a machine)",
+        ),
         ("A", NewDir, "new folder"),
         ("D", DeletePermanent, "delete permanently (asks)"),
         ("~", Cd("~".to_string()), "home"),

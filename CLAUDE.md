@@ -830,6 +830,11 @@ key   = ""
   - `<leader>m` opens the machine picker
   - typing any `\\HOST\X$` admin-share path (`:cd \\JDOE-LT042\C$`) goes through the machine
     logic automatically
+- **Adding one by name:** `a` in `gm` (the Machines list) asks for a PC name (`JDOE-LT042`,
+  an IP, or `\\JDOE-LT042\C$` pasted as is); in `Space m`, typing a name nothing matches
+  and pressing Enter opens it; a "+ Add a machine…" row there and in the launcher asks too.
+  Each opens the machine view (probed first) and makes it a recent machine; `M` / `m{key}`
+  pin it.
 - **Recent machines are automatic:** every machine you open is remembered for
   `machines.recent_days` (default 30), then drops off unless you pin it (`M`). This keeps the
   pin list clean.

@@ -181,9 +181,7 @@ fn draw_results(f: &mut Frame, area: Rect, app: &mut App) {
             }
             Source::Files | Source::Grep => "  nothing found",
             Source::Dirs if p.total() == 0 => "  no folders visited yet",
-            Source::Machines if p.total() == 0 => {
-                r"  no machines yet: open one (\\HOST\C$), or set machines.inventory_csv"
-            }
+            Source::Machines => "  no machine matches: Enter opens it as a new one",
             Source::Pins | Source::Launcher if p.total() == 0 => {
                 "  no pins yet: m{key} in a folder, or M on an item"
             }

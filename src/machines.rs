@@ -391,6 +391,26 @@ pub fn serialize_recent(list: &[Recent]) -> String {
 }
 
 /// Records `host` as opened now (moving it to the front).
+/// A PC name as typed (`JDOE-LT042`, `\\JDOE-LT042`, `\\JDOE-LT042\C$\Users`, an IP, a
+/// full DNS name) → the host. Names are letters, digits, `-`, `_` and `.`.
+pub fn host_name(text: &str) -> Result<String, String> {
+    let t = text.trim().trim_start_matches(['\\', '/']);
+    let host = t.split(['\\', '/']).next().unwrap_or_default().trim();
+    if host.is_empty() {
+        return Err("a PC name, please".to_string());
+    }
+    if host.len() > 253
+        || !host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(format!(
+            "{host:?} isn't a PC name (letters, digits, - _ . only)"
+        ));
+    }
+    Ok(host.to_string())
+}
+
 pub fn touch(list: &mut Vec<Recent>, host: &str, now: SystemTime) {
     let seen = list
         .iter()
@@ -436,6 +456,25 @@ pub fn save_recent(path: &Path, list: &[Recent]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_names_as_typed() {
+        for (typed, want) in [
+            ("JDOE-LT042", "JDOE-LT042"),
+            ("  pc-007 ", "pc-007"),
+            (r"\\JDOE-LT042", "JDOE-LT042"),
+            (r"\\JDOE-LT042\C$\Users", "JDOE-LT042"),
+            ("//pc-1/c$", "pc-1"),
+            ("10.1.2.3", "10.1.2.3"),
+            ("pc-9.corp.example", "pc-9.corp.example"),
+        ] {
+            assert_eq!(host_name(typed).as_deref(), Ok(want), "{typed}");
+        }
+        assert!(host_name("").is_err());
+        assert!(host_name(r"\\").is_err());
+        assert!(host_name("bad name").is_err_and(|e| e.contains("isn't a PC name")));
+        assert!(host_name("pc#1").is_err());
+    }
 
     #[test]
     fn templates_expand() {
