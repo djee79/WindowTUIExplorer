@@ -376,7 +376,7 @@ impl App {
     }
 
     /// Lists a job the worker already runs.
-    pub(super) fn push_job(&mut self, job: Job, cancel: crate::fs::worker::CancelToken) {
+    pub(super) fn push_job(&mut self, job: Job, cancel: crate::jobs::Control) {
         self.job_cancel.insert(job.id, cancel);
         self.jobs.push(job);
         self.jobs_cursor = 0;
@@ -460,6 +460,8 @@ impl App {
     pub(super) fn jobs_tick(&mut self, now: Instant) {
         let mut open = false;
         for j in self.jobs.iter_mut().filter(|j| !j.phase.is_over()) {
+            // Clocks move without events (a retry countdown, a stall, a pause).
+            self.dirty = true;
             j.refresh(now);
             if now.duration_since(j.started) >= jobs::AUTO_PANEL_AFTER
                 && !self.jobs_auto_opened.contains(&j.id)
@@ -537,6 +539,9 @@ impl App {
             KeyCode::Char('g') => self.jobs_cursor = 0,
             KeyCode::Char('G') => self.jobs_cursor = n.saturating_sub(1),
             KeyCode::Char('c') => self.cancel_job(),
+            KeyCode::Char('p') => self.pause_job(),
+            KeyCode::Char('s') => self.skip_locked_file(),
+            KeyCode::Char('R') => self.retry_locked_now(),
             KeyCode::Char('r') => self.retry_job(),
             KeyCode::Char('o') => self.open_job_log(),
             KeyCode::Char('d') if pending_d => self.dismiss_job(),
@@ -559,6 +564,65 @@ impl App {
             }
             _ => self.set_status(format!("{} isn't running", job.title), false),
         }
+    }
+
+    /// The selected job if it's running, with its control.
+    fn running_selected(&self) -> Option<(&Job, &crate::jobs::Control)> {
+        let Some(JobRow::Live(i)) = self.selected_job_row() else {
+            return None;
+        };
+        let job = self.jobs.get(i).filter(|j| !j.phase.is_over())?;
+        Some((job, self.job_cancel.get(&job.id)?))
+    }
+
+    /// `p`: pause (robocopy stops; its locks go) or resume (it carries on where it was).
+    fn pause_job(&mut self) {
+        let Some((job, ctl)) = self.running_selected() else {
+            return self.set_status("p pauses a running job".into(), false);
+        };
+        let on = !ctl.paused();
+        ctl.set_paused(on);
+        let msg = if on {
+            format!("pausing {}… (p resumes)", job.title)
+        } else {
+            format!("resuming {}…", job.title)
+        };
+        self.set_status(msg, false);
+    }
+
+    /// `s`: leave out the locked file the job is waiting on.
+    fn skip_locked_file(&mut self) {
+        let Some((job, ctl)) = self.running_selected() else {
+            return self.set_status("s skips a locked file a running job waits on".into(), false);
+        };
+        let Some(w) = job.waiting.as_ref() else {
+            return self.set_status(
+                "no locked file to skip: it isn't waiting on one".into(),
+                false,
+            );
+        };
+        ctl.skip();
+        let name = w.path.rsplit('\\').next().unwrap_or(&w.path).to_string();
+        self.set_status(format!("skipping {name}…"), false);
+    }
+
+    /// `R`: try the locked file again now instead of waiting.
+    fn retry_locked_now(&mut self) {
+        let Some((job, ctl)) = self.running_selected() else {
+            return self.set_status(
+                "R retries a locked file a running job waits on".into(),
+                false,
+            );
+        };
+        let Some(w) = job.waiting.as_ref() else {
+            return self.set_status(
+                "nothing to retry now: it isn't waiting on a file".into(),
+                false,
+            );
+        };
+        ctl.retry_now();
+        let name = w.path.rsplit('\\').next().unwrap_or(&w.path).to_string();
+        self.set_status(format!("trying {name} again…"), false);
     }
 
     /// `r`: a new job that copies only the failed files again.

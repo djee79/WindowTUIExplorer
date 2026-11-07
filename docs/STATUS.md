@@ -1087,3 +1087,36 @@ slice B). Also: the panel now opens after 0.5 s instead of 5 s (a paste felt lag
 Slice B (next): sentier owns retries (`/R:0`, locked files retried at the end), stall
 detection (> 10 s without bytes) with the banner, `s` skip / `R` retry now, `!` for jobs
 that finished with files skipped on purpose.
+
+## Jobs panel redesign, slice B: sentier owns retries, stalls, pause (code complete 2026-11-06, manual check pending)
+
+- robocopy now always runs with `/R:0 /W:0`: a locked file (error 32/33) fails at once and
+  everything else is copied first. The runner (`jobs/run.rs`) queues the locked files and,
+  after the main pass, tries each one again (a one-file robocopy into its own folder, never
+  `/MIR`; or a native copy) every 10 s, up to 5 times. Events: `Waiting` (attempt, next
+  try), `Recovered`, `Skipped`, `GaveUp`. The tracker drops a recovered file from the
+  failed list and never lists a file twice. A job whose locked files all went through
+  ends DONE (robocopy's stale 8 bit is cleared); one still locked ends FAILED with it.
+- `jobs::Control` (cancel + paused / skip / retry-now atomic flags) replaces the bare
+  cancel token for jobs and backups; the UI never waits on it.
+- Keys in the panel: `p` pause / resume, `s` skip the locked file being waited on, `R`
+  try it now (the hint row shows `s` / `R` only while waiting). Pause stops robocopy (no
+  locks kept on the server) and runs the step again on resume (`/Z` resumes a half-copied
+  file); the native backend pauses between files; a retry countdown pauses too.
+- Stall detection: no bytes for 10 s while copying / finishing, or waiting on a locked
+  file → STALLED (yellow), `◐` on the stepper with the stall time, and a banner with the
+  most specific cause (waiting to retry X: the Windows message, error N, try k of 5 in
+  m:ss; finishing; no bytes while robocopy runs) and the keys that help. The status bar
+  shows `⚠ 1 job stalled · 99%` (or `‖ 1 job paused`) even with the panel closed.
+- Finished with files left out: `!` (yellow), `N skipped`, and a SKIPPED list in the
+  report (`skipped_files`, `serde(default)`).
+- `sentier run` (headless) gets the same retries: a nightly backup now waits up to ~50 s
+  for a locked file before reporting it.
+- Tests drive real robocopy against a file held open with no sharing (error 32): released
+  during the waits → copied on retry 2; `R` then `s` → left out, job DONE with 1 skipped;
+  locked throughout → FAILED after 5 tries, the rest copied; pause / resume / cancel while
+  paused.
+
+Manual check: copy a folder from a share while one file in it is open in another program
+(Excel keeps .xlsx locked); watch the banner, try `R`, close the program, see it go
+through; again with `s`. Pause a big copy with `p`, resume, and compare the result.

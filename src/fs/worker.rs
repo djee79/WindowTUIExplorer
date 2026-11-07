@@ -985,30 +985,33 @@ impl Worker {
         });
     }
 
-    /// Opens a file with its associated program (ShellExecute "open").
-    /// Runs a copy / move job on the blocking pool; its progress comes back as
-    /// `AppEvent::Job`. The token cancels it (robocopy is killed).
-    pub fn start_job(&self, id: u64, spec: crate::jobs::run::Spec) -> CancelToken {
-        let cancel = CancelToken::default();
-        let (tx, token) = (self.tx.clone(), cancel.clone());
+    /// Runs a copy / move job on the blocking pool; events come back as `Job`. The
+    /// returned control cancels, pauses, skips a locked file or retries it now.
+    pub fn start_job(&self, id: u64, spec: crate::jobs::run::Spec) -> crate::jobs::Control {
+        let ctl = crate::jobs::Control::default();
+        let (tx, c) = (self.tx.clone(), ctl.clone());
         self.rt.spawn_blocking(move || {
-            crate::jobs::run::run(&spec, &token, &|ev| {
+            crate::jobs::run::run(&spec, &c, &|ev| {
                 let _ = tx.send(AppEvent::Job { id, ev });
             });
         });
-        cancel
+        ctl
     }
 
     /// Runs a backup preset's pipeline on the blocking pool; events come back as `Job`.
-    pub fn start_backup(&self, id: u64, spec: crate::jobs::zip::BackupSpec) -> CancelToken {
-        let cancel = CancelToken::default();
-        let (tx, token) = (self.tx.clone(), cancel.clone());
+    pub fn start_backup(
+        &self,
+        id: u64,
+        spec: crate::jobs::zip::BackupSpec,
+    ) -> crate::jobs::Control {
+        let ctl = crate::jobs::Control::default();
+        let (tx, c) = (self.tx.clone(), ctl.clone());
         self.rt.spawn_blocking(move || {
-            crate::jobs::zip::run(&spec, &token, &|ev| {
+            crate::jobs::zip::run(&spec, &c, &|ev| {
                 let _ = tx.send(AppEvent::Job { id, ev });
             });
         });
-        cancel
+        ctl
     }
 
     /// A sync preset's dry run on the blocking pool: one `SyncPreviewed`. No timeout:

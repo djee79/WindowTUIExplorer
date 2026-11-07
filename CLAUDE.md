@@ -305,7 +305,7 @@ paths, tags are the main way to narrow things down.
 - **Backend choice:** any directory, or any file ≥ 256 MB → robocopy. Small file-only
   selections → native backend.
 - **robocopy backend** (`jobs/robocopy.rs`):
-  - Base args: `/E /Z /R:2 /W:5 /BYTES /FP /TEE /UNILOG:<job log>` (+ `/MOV` for moves of
+  - Base args: `/E /Z /R:0 /W:0 /BYTES /FP /TEE /UNILOG:<job log>` (+ `/MOV` for moves of
     files, `/MOVE` for directories). `/MT:n` is configurable (default off). **Verify** how
     `/MT` changes stdout (per-file % output may be suppressed) and make the parser handle
     both modes.
@@ -330,7 +330,14 @@ paths, tags are the main way to narrow things down.
   reasons, and a key to open the full log (`o`). Reports persist in
   `%LOCALAPPDATA%\sentier\jobs\` until dismissed.
 - `c` cancels a job (kills robocopy; the report says which files were done).
-  `r` retries failed files only.
+  `r` retries failed files only. `p` pauses (robocopy is stopped and holds no locks) and
+  resumes (the step runs again with `/Z`: copied files skipped, a half-copied one resumed).
+- **sentier owns retries** (docs/JOBS_PANEL_SPEC.md): robocopy never waits (`/R:0`), so a
+  locked file (error 32/33) doesn't hold the copy up. The locked files are tried again
+  after the main pass, every 10 s, up to 5 times. While it waits the panel shows a stall
+  banner (what, why, next try) and `s` leaves the file out (the job ends with `!` and
+  `N skipped`), `R` tries it now. Any job without progress for 10 s shows the banner
+  with the most specific cause, and the status bar says `⚠ 1 job stalled`.
 - **AVEVA guard:** if the source contains Dabacon project markers (configurable glob list,
   default: a directory containing an `evars.bat` alongside `*000` database dirs, and lock
   files), show a one-line warning before starting: "Looks like an AVEVA project. Make sure

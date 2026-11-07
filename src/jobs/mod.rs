@@ -250,6 +250,8 @@ pub enum Phase {
     Retrying,
     /// Every byte is written but robocopy hasn't exited: the old "stuck at 99 %".
     Finishing,
+    /// `p` in the jobs panel: robocopy is stopped until resumed (it restarts with `/Z`).
+    Paused,
     Done,
     Failed,
     Cancelled,
@@ -262,6 +264,7 @@ impl Phase {
             Phase::Copying => "COPYING",
             Phase::Retrying => "RETRYING",
             Phase::Finishing => "FINISHING",
+            Phase::Paused => "PAUSED",
             Phase::Done => "DONE",
             Phase::Failed => "FAILED",
             Phase::Cancelled => "CANCELLED",
@@ -302,7 +305,99 @@ pub enum JobEvent {
     },
     /// Old zips deleted by retention.
     Pruned(Vec<String>),
+    /// Paused (true) or running again (false).
+    Paused(bool),
+    /// A locked file sentier will try again: attempt `attempt` of `max` at `next`.
+    Waiting {
+        path: String,
+        code: u32,
+        message: String,
+        attempt: u32,
+        max: u32,
+        next: Instant,
+    },
+    /// A file that failed earlier was copied on retry `attempts`.
+    Recovered { path: String, attempts: u32 },
+    /// `s`: a locked file left out on purpose.
+    Skipped(String),
+    /// A locked file still locked after every retry (it stays failed).
+    GaveUp { path: String, attempts: u32 },
 }
+
+/// What the panel can tell a running job: cancel, pause / resume, skip the locked file it
+/// waits on, retry that file now. Atomic flags the runner polls, so the UI never waits.
+#[derive(Debug, Clone, Default)]
+pub struct Control {
+    pub cancel: crate::fs::worker::CancelToken,
+    flags: std::sync::Arc<Flags>,
+}
+
+#[derive(Debug, Default)]
+struct Flags {
+    paused: std::sync::atomic::AtomicBool,
+    skip: std::sync::atomic::AtomicBool,
+    retry_now: std::sync::atomic::AtomicBool,
+}
+
+impl Control {
+    pub fn cancel(&self) {
+        self.cancel.cancel();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+
+    pub fn paused(&self) -> bool {
+        self.flags.paused.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn set_paused(&self, on: bool) {
+        self.flags
+            .paused
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// `s`: skip the locked file being waited on.
+    pub fn skip(&self) {
+        self.flags
+            .skip
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// `R`: try the locked file again now.
+    pub fn retry_now(&self) {
+        self.flags
+            .retry_now
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(crate) fn take_skip(&self) -> bool {
+        self.flags
+            .skip
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn take_retry_now(&self) -> bool {
+        self.flags
+            .retry_now
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// A locked file sentier is waiting to try again (the stall banner).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waiting {
+    pub path: String,
+    pub code: u32,
+    pub message: String,
+    pub attempt: u32,
+    pub max: u32,
+    pub next: Instant,
+}
+
+/// No bytes for this long while copying: the panel says why (the stall banner).
+pub const STALL_AFTER: Duration = Duration::from_secs(10);
 
 /// Lines kept for the panel's ACTIVITY, and seconds of speed history for its chart.
 pub const ACTIVITY_KEEP: usize = 50;
@@ -400,6 +495,14 @@ pub struct Job {
     last_bytes: u64,
     /// What happened, newest last (ACTIVITY).
     pub activity: VecDeque<Activity>,
+    /// Paused with `p` (the runner confirmed it).
+    pub paused: bool,
+    /// The locked file sentier waits to try again, if any.
+    pub waiting: Option<Waiting>,
+    /// Attempts sentier made on locked files.
+    pub retry_attempts: u32,
+    /// Files left out with `s`.
+    pub skipped_files: Vec<String>,
 }
 
 impl Job {
@@ -443,6 +546,10 @@ impl Job {
             last_progress_at: now,
             last_bytes: 0,
             activity: VecDeque::new(),
+            paused: false,
+            waiting: None,
+            retry_attempts: 0,
+            skipped_files: Vec::new(),
         }
     }
 
@@ -541,6 +648,18 @@ impl Job {
         }
         self.hist_at = Some(now);
         self.hist_bytes = bytes;
+    }
+
+    /// No bytes for [`STALL_AFTER`] while copying or finishing, or waiting on a locked
+    /// file: the panel shows the stall banner. Never while paused or scanning.
+    pub fn stalled(&self, now: Instant) -> bool {
+        if self.paused
+            || matches!(self.phase, Phase::Scanning | Phase::Paused)
+            || self.phase.is_over()
+        {
+            return false;
+        }
+        self.waiting.is_some() || now.duration_since(self.last_progress_at) > STALL_AFTER
     }
 
     /// Where it copies from: the first step's source (the file itself for one file).
@@ -656,6 +775,65 @@ impl Job {
                 }
                 b.pruned = names;
             }
+            JobEvent::Paused(on) => {
+                self.paused = on;
+                self.note(
+                    ActKind::Start,
+                    if on {
+                        "paused (p resumes)".into()
+                    } else {
+                        "resumed".into()
+                    },
+                );
+            }
+            JobEvent::Waiting {
+                path,
+                code,
+                message,
+                attempt,
+                max,
+                next,
+            } => {
+                let secs = next.saturating_duration_since(now).as_secs();
+                self.note(
+                    ActKind::Retry(attempt),
+                    format!(
+                        "{}: {} (error {code}); try {attempt} of {max} in {secs} s",
+                        file_name(&path),
+                        message.trim().trim_end_matches('.')
+                    ),
+                );
+                self.retry_attempts += 1;
+                self.waiting = Some(Waiting {
+                    path,
+                    code,
+                    message,
+                    attempt,
+                    max,
+                    next,
+                });
+            }
+            JobEvent::Recovered { path, attempts } => {
+                self.tracker.recovered(&path, attempts);
+                self.waiting = None;
+                self.note(
+                    ActKind::Done,
+                    format!("{} copied on retry {attempts}", file_name(&path)),
+                );
+            }
+            JobEvent::Skipped(path) => {
+                self.tracker.forget_failed(&path);
+                self.waiting = None;
+                self.note(ActKind::Skip, format!("{} left out (s)", file_name(&path)));
+                self.skipped_files.push(path);
+            }
+            JobEvent::GaveUp { path, attempts } => {
+                self.waiting = None;
+                self.note(
+                    ActKind::Error,
+                    format!("{}: still locked after {attempts} tries", file_name(&path)),
+                );
+            }
             JobEvent::StepDone(code) => {
                 self.tracker.finish();
                 self.exit =
@@ -665,9 +843,18 @@ impl Job {
             JobEvent::Finished { cancelled } => {
                 self.tracker.finish();
                 self.ended = Some(now);
+                // robocopy runs with `/R:0` and sentier retries locked files itself, so its
+                // "some copies failed" (8) can be out of date: what failed in the end is
+                // what the tracker still lists. 16 (fatal) always counts.
                 let failed = self.error.is_some()
-                    || self.exit.is_some_and(|c| c >= 8)
-                    || !self.tracker.failed.is_empty();
+                    || self.exit.is_some_and(|c| c >= 16)
+                    || !self.tracker.failed.is_empty()
+                    || (self.exit.is_some_and(|c| c & 8 != 0) && !self.tracker.errors.is_empty());
+                if !failed && let Some(c) = self.exit.as_mut() {
+                    *c &= !8;
+                }
+                self.paused = false;
+                self.waiting = None;
                 self.set_phase(
                     if cancelled {
                         Phase::Cancelled
@@ -721,7 +908,11 @@ impl Job {
             return;
         }
         let t = &self.tracker;
-        let p = if self.later_step().is_some() {
+        let p = if self.paused {
+            Phase::Paused
+        } else if self.waiting.is_some() {
+            Phase::Retrying
+        } else if self.later_step().is_some() {
             Phase::Copying
         } else if self.total_files.is_none() {
             Phase::Scanning
@@ -859,6 +1050,7 @@ impl Job {
                 .collect(),
             history: self.history.iter().map(|v| v.round() as u64).collect(),
             activity: self.activity.iter().cloned().collect(),
+            skipped_files: self.skipped_files.clone(),
         }
     }
 }
@@ -935,6 +1127,9 @@ pub struct Report {
     /// The last [`ACTIVITY_KEEP`] events.
     #[serde(default)]
     pub activity: Vec<Activity>,
+    /// Files left out on purpose (`s` on a locked file).
+    #[serde(default)]
+    pub skipped_files: Vec<String>,
 }
 
 impl Report {

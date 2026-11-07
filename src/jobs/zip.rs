@@ -539,10 +539,11 @@ fn zip_time(t: Option<SystemTime>) -> ::zip::DateTime {
 }
 
 /// Runs the whole pipeline, then sends `Finished`.
-pub fn run(spec: &BackupSpec, cancel: &CancelToken, send: &dyn Fn(JobEvent)) {
+pub fn run(spec: &BackupSpec, ctl: &super::Control, send: &dyn Fn(JobEvent)) {
+    let cancel = &ctl.cancel;
     log_line(&spec.log, &format!("sentier backup: {}", spec.title));
     let partial = Path::new(&spec.dest_dir).join(format!("{}.partial", spec.zip_name));
-    let result = pipeline(spec, &partial, cancel, send);
+    let result = pipeline(spec, &partial, ctl, send);
     // Whatever happened, no half-written zip and no staging folder stay behind.
     if result.is_err() || cancel.is_cancelled() {
         let _ = std::fs::remove_file(long(&partial.display().to_string()));
@@ -569,9 +570,10 @@ pub fn run(spec: &BackupSpec, cancel: &CancelToken, send: &dyn Fn(JobEvent)) {
 fn pipeline(
     spec: &BackupSpec,
     partial: &Path,
-    cancel: &CancelToken,
+    ctl: &super::Control,
     send: &dyn Fn(JobEvent),
 ) -> Result<(), String> {
+    let cancel = &ctl.cancel;
     let stop = || cancel.is_cancelled().then(|| "cancelled".to_string());
     std::fs::create_dir_all(long(&spec.dest_dir))
         .map_err(|e| format!("can't create {}: {e}", spec.dest_dir))?;
@@ -580,7 +582,7 @@ fn pipeline(
     send(JobEvent::Stage(BackupStep::Staging));
     let root = match &spec.staging {
         Some(staging) => {
-            stage(spec, staging, cancel, send)?;
+            stage(spec, staging, ctl, send)?;
             staging.clone()
         }
         None => {
@@ -730,9 +732,10 @@ fn check_space(spec: &BackupSpec, bytes: u64) -> Result<(), String> {
 fn stage(
     spec: &BackupSpec,
     staging: &str,
-    cancel: &CancelToken,
+    ctl: &super::Control,
     send: &dyn Fn(JobEvent),
 ) -> Result<(), String> {
+    let cancel = &ctl.cancel;
     let step = Step {
         src: spec.source.clone(),
         dst: staging.to_string(),
@@ -782,7 +785,7 @@ fn stage(
         exclude_files: Vec::new(),
         totals: Some((files, bytes)),
     };
-    let cancelled = run_robocopy(&rspec, cancel, &|ev| {
+    let cancelled = run_robocopy(&rspec, ctl, &|ev| {
         match &ev {
             JobEvent::StepDone(c) => {
                 worst.set(worst.get() | *c.max(&0) | if *c < 0 { 16 } else { 0 })
@@ -1198,7 +1201,7 @@ mod tests {
 
     fn drive(spec: &BackupSpec) -> Job {
         let events = Mutex::new(Vec::new());
-        run(spec, &CancelToken::default(), &|e| {
+        run(spec, &crate::jobs::Control::default(), &|e| {
             if let Ok(mut v) = events.lock() {
                 v.push(e);
             }

@@ -334,6 +334,46 @@ impl Tracker {
     }
 
     /// The current file is on a retry after an error.
+    /// A file that failed was copied on a later attempt (sentier retries locked files
+    /// itself): it leaves the failed list and counts as worked-after-retries.
+    pub fn recovered(&mut self, path: &str, attempts: u32) {
+        self.settle();
+        self.failed.retain(|f| !f.path.eq_ignore_ascii_case(path));
+        let mut found = false;
+        for r in self
+            .retries
+            .iter_mut()
+            .filter(|r| r.path.eq_ignore_ascii_case(path))
+        {
+            r.ok = Some(true);
+            r.attempts = attempts;
+            found = true;
+        }
+        if !found {
+            self.retries.push(Retry {
+                path: path.to_string(),
+                code: 0,
+                message: String::new(),
+                attempts,
+                ok: Some(true),
+            });
+        }
+        // Only the latest record of it is kept.
+        let mut seen = false;
+        self.retries.retain(|r| {
+            let same = r.path.eq_ignore_ascii_case(path);
+            let keep = !(same && seen);
+            seen |= same;
+            keep
+        });
+    }
+
+    /// A failed file left out on purpose (`s`): no longer a failure.
+    pub fn forget_failed(&mut self, path: &str) {
+        self.settle();
+        self.failed.retain(|f| !f.path.eq_ignore_ascii_case(path));
+    }
+
     pub fn retrying(&self) -> bool {
         self.current.as_ref().is_some_and(|c| c.error.is_some())
     }
@@ -463,11 +503,22 @@ impl Tracker {
                 {
                     r.ok = Some(false);
                 }
-                self.failed.push(Failure {
-                    path: c.path,
-                    code: e.code,
-                    message: e.message,
-                });
+                // A file that fails again on a retry is listed once, with its latest error.
+                match self
+                    .failed
+                    .iter_mut()
+                    .find(|f| f.path.eq_ignore_ascii_case(&c.path))
+                {
+                    Some(f) => {
+                        f.code = e.code;
+                        f.message = e.message;
+                    }
+                    None => self.failed.push(Failure {
+                        path: c.path,
+                        code: e.code,
+                        message: e.message,
+                    }),
+                }
             }
             None => {
                 self.files_done += 1;
@@ -583,22 +634,19 @@ pub struct Options {
     pub exclude_files: Vec<String>,
 }
 
-/// `src dst [files] /E|/MIR /Z /R:2 /W:5 /BYTES /FP /TEE [/XD …] [/XF …] [/MOV|/MOVE]
-/// [/XC /XN /XO | /IS /IT] [/MT:n] [/L] /UNILOG+:<log>` (a dry run, `/L`, uses `/R:0 /W:0`)
+/// `src dst [files] /E|/MIR /Z /R:0 /W:0 /BYTES /FP /TEE [/XD …] [/XF …] [/MOV|/MOVE]
+/// [/XC /XN /XO | /IS /IT] [/MT:n] [/L] /UNILOG+:<log>`
 pub fn args(step: &Step, o: &Options) -> Vec<String> {
     let mut a = vec![step.src.clone(), step.dst.clone()];
     a.extend(step.files.iter().cloned());
     if step.files.is_empty() {
         a.push(if o.mirror { "/MIR" } else { "/E" }.into());
     }
-    // A dry run touches nothing, so a failure is worth no retries or waits.
-    let retries: [&str; 2] = if o.list_only {
-        ["/R:0", "/W:0"]
-    } else {
-        ["/R:2", "/W:5"]
-    };
+    // Never wait inside robocopy: a locked file fails at once, the rest is copied, and
+    // sentier retries the locked ones itself at the end (so they can be skipped, retried
+    // now, or the job paused).
     a.push("/Z".into());
-    a.extend(retries.map(String::from));
+    a.extend(["/R:0", "/W:0"].map(String::from));
     for s in ["/BYTES", "/FP", "/TEE"] {
         a.push(s.into());
     }
@@ -928,6 +976,57 @@ Accès refusé.\r\n";
             a.contains(&"/R:0".to_string()),
             "a dry run never waits on retries"
         );
-        assert!(!args(&dir, &o).contains(&"/R:0".to_string()));
+        assert!(
+            args(&dir, &o).contains(&"/R:0".to_string()),
+            "real runs don't either: sentier retries locked files itself"
+        );
+    }
+
+    #[test]
+    fn a_retried_file_is_listed_once_and_leaves_the_failed_list() {
+        let locked = |p: &str| {
+            Event::Error(RcError {
+                code: 32,
+                action: "Copying File".into(),
+                path: Some(p.into()),
+                message: "in use".into(),
+            })
+        };
+        let file = |p: &str| Event::File {
+            class: FileClass::New,
+            size: 10,
+            path: p.into(),
+        };
+        let mut t = Tracker::new(false);
+        // The main pass (/R:0): a.dbx is locked, b copies.
+        for e in [
+            file(r"S:\a.dbx"),
+            locked(r"S:\a.dbx"),
+            file(r"S:\b"),
+            Event::Progress(100.0),
+        ] {
+            t.apply(e);
+        }
+        assert_eq!(t.failed.len(), 1);
+        // A retry that fails again: still one failure.
+        for e in [file(r"S:\a.dbx"), locked(r"S:\a.dbx")] {
+            t.apply(e);
+        }
+        t.finish();
+        assert_eq!(t.failed.len(), 1, "not listed twice");
+        // The next retry works.
+        t.apply(file(r"S:\a.dbx"));
+        t.apply(Event::Progress(100.0));
+        t.recovered(r"S:\a.dbx", 2);
+        assert!(t.failed.is_empty());
+        assert_eq!(t.files_done, 2);
+        let worked: Vec<_> = t.retries.iter().filter(|r| r.ok == Some(true)).collect();
+        assert_eq!(worked.len(), 1);
+        assert_eq!(worked[0].attempts, 2);
+        // Left out on purpose: no longer a failure either.
+        t.apply(file(r"S:\c"));
+        t.apply(locked(r"S:\c"));
+        t.forget_failed(r"S:\c");
+        assert!(t.failed.is_empty());
     }
 }

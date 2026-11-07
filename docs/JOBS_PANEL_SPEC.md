@@ -140,4 +140,4 @@ Per job, kept in the job's state (and persisted to the job report so finished jo
 
 ## Out of scope
 
-- Pausing/resuming jobs, bandwidth limits, queue reordering.
+- Bandwidth limits, queue reordering. (Pause / resume was added: `p`.)

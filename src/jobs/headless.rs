@@ -16,7 +16,6 @@ use super::robocopy::Overwrite;
 use super::run::Spec;
 use super::zip::{BackupPreset, BackupSpec, BackupState, BackupStep};
 use super::{Backend, Job, JobEvent, Op, Phase, Plan, Report, clock, human_bytes};
-use crate::fs::worker::CancelToken;
 use crate::pins::{PinKind, PinStore};
 use std::cell::RefCell;
 use std::io::Write;
@@ -118,7 +117,7 @@ pub fn run(store: &PinStore, args: &RunArgs, out: &mut dyn Write) -> i32 {
     };
     let _ = writeln!(out, "log: {}", job.log);
     let cell = RefCell::new((&mut job, out));
-    start(&CancelToken::default(), &|ev| {
+    start(&super::Control::default(), &|ev| {
         if let Ok(mut c) = cell.try_borrow_mut() {
             let (job, out) = &mut *c;
             narrate(job, &ev, &mut **out);
@@ -132,7 +131,7 @@ pub fn run(store: &PinStore, args: &RunArgs, out: &mut dyn Write) -> i32 {
     exit_code(&report)
 }
 
-type Start = Box<dyn FnOnce(&CancelToken, &dyn Fn(JobEvent))>;
+type Start = Box<dyn FnOnce(&super::Control, &dyn Fn(JobEvent))>;
 
 fn new_id() -> u64 {
     std::time::SystemTime::now()

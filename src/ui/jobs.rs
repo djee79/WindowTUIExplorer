@@ -102,14 +102,32 @@ fn phase_color(p: Phase) -> Color {
     match p {
         Phase::Scanning | Phase::Copying | Phase::Finishing => ACCENT,
         Phase::Retrying => WARN,
+        Phase::Paused => DIR,
         Phase::Done => OK,
         Phase::Failed => ERR,
         Phase::Cancelled => DIM,
     }
 }
 
-/// `COPYING`, `MOVING`, `ZIPPING 2/5`, `FINISHING`.
-fn status_word(j: &Job) -> String {
+/// A running job's colour: paused blue, stalled yellow, else its phase's.
+fn live_color(j: &Job, now: Instant) -> Color {
+    if j.paused {
+        DIR
+    } else if j.stalled(now) {
+        WARN
+    } else {
+        phase_color(j.phase)
+    }
+}
+
+/// `COPYING`, `MOVING`, `ZIPPING 2/5`, `FINISHING`, `PAUSED`, `STALLED`.
+fn status_word(j: &Job, now: Instant) -> String {
+    if j.paused {
+        return "PAUSED".to_string();
+    }
+    if j.stalled(now) {
+        return "STALLED".to_string();
+    }
     if let Some(step) = j.backup.as_ref().and_then(|b| b.step)
         && !j.phase.is_over()
     {
@@ -217,6 +235,48 @@ fn rule(title: &str, right: &str, w: usize, color: Color) -> Line<'static> {
     ])
 }
 
+/// A boxed notice (the stall banner, the pause note): a bold headline, what's going on
+/// (wrapped), and the keys that help.
+fn banner(
+    color: Color,
+    head: String,
+    what: String,
+    keys: &[(&str, &str)],
+    w: usize,
+) -> Vec<Line<'static>> {
+    let inner = w.saturating_sub(4);
+    let edge = |l: Vec<Span<'static>>| {
+        let used: usize = l.iter().map(|s| s.width()).sum();
+        let mut v = vec![Span::styled("│ ", theme::fg(color))];
+        v.extend(l);
+        v.push(pad(inner.saturating_sub(used)));
+        v.push(Span::styled(" │", theme::fg(color)));
+        Line::from(v)
+    };
+    let mut out = vec![Line::from(Span::styled(
+        format!("╭{}╮", "─".repeat(w.saturating_sub(2))),
+        theme::fg(color),
+    ))];
+    out.push(edge(vec![Span::styled(
+        truncate(&head, inner),
+        theme::bold(color),
+    )]));
+    for l in crate::help::wrap(&what, inner) {
+        out.push(edge(vec![Span::styled(l, theme::fg(FG))]));
+    }
+    let mut k: Vec<Span<'static>> = Vec::new();
+    for (key, desc) in keys {
+        k.push(Span::styled(key.to_string(), theme::bold(FG)));
+        k.push(Span::styled(format!(" {desc}   "), theme::dim()));
+    }
+    out.push(edge(k));
+    out.push(Line::from(Span::styled(
+        format!("╰{}╯", "─".repeat(w.saturating_sub(2))),
+        theme::fg(color),
+    )));
+    out
+}
+
 /// Spans padded to `w` cells (so a background covers the whole line).
 fn filled(mut spans: Vec<Span<'static>>, w: usize) -> Vec<Span<'static>> {
     let used: usize = spans.iter().map(|s| s.width()).sum();
@@ -239,6 +299,8 @@ fn finished(r: &Report) -> Finished {
     let icon = match r.phase {
         Phase::Failed => ("✗", ERR),
         Phase::Cancelled => ("–", DIM),
+        // Done, but with files left out on purpose (`s`).
+        _ if !r.skipped_files.is_empty() => ("!", WARN),
         _ => ("✓", OK),
     };
     let ended = r.started + Duration::from_secs(r.seconds);
@@ -248,6 +310,9 @@ fn finished(r: &Report) -> Finished {
     };
     if !r.failed.is_empty() {
         what.push_str(&format!(" · {} failed", r.failed.len()));
+    }
+    if !r.skipped_files.is_empty() {
+        what.push_str(&format!(" · {} skipped", r.skipped_files.len()));
     }
     if r.skipped > 0 && r.backup.is_none() {
         what.push_str(&format!(" · {} unchanged", r.skipped));
@@ -307,13 +372,13 @@ fn draw_list(f: &mut Frame, area: Rect, app: &App, compact: bool) {
         ));
         for (n, j) in &running {
             let sel = *n == cursor;
-            let color = phase_color(j.phase);
+            let color = live_color(j, now);
             let mark = if sel {
                 Span::styled("▌", Style::new().fg(color).bg(CARD))
             } else {
                 Span::styled(" ", Style::new().bg(CARD))
             };
-            let word = status_word(j);
+            let word = status_word(j, now);
             let title = middle(&j.title, w.saturating_sub(4 + width(&word)));
             let l1 = vec![
                 mark.clone(),
@@ -322,9 +387,19 @@ fn draw_list(f: &mut Frame, area: Rect, app: &App, compact: bool) {
                 Span::styled(word, theme::bold(color).bg(CARD)),
             ];
             let pct = format!("{:.0}%", j.fraction() * 100.0);
-            let right = match j.phase {
-                Phase::Scanning => "scanning…".to_string(),
-                Phase::Finishing => {
+            let right = match (&j.waiting, j.phase) {
+                _ if j.paused => "paused".to_string(),
+                (Some(wt), _) => format!(
+                    "retry {} in {}",
+                    wt.attempt,
+                    clock(wt.next.saturating_duration_since(now))
+                ),
+                _ if j.stalled(now) => format!(
+                    "no progress {}",
+                    clock(now.duration_since(j.last_progress_at))
+                ),
+                (None, Phase::Scanning) => "scanning…".to_string(),
+                (None, Phase::Finishing) => {
                     format!("finishing {}", clock(now.duration_since(j.phase_since)))
                 }
                 _ => j
@@ -741,21 +816,104 @@ fn draw_live(f: &mut Frame, area: Rect, j: &Job, now: Instant) {
         kind_word(j.preset.as_ref(), j.op, j.backend),
     );
     let w = inner.width as usize;
-    let color = phase_color(j.phase);
+    let color = live_color(j, now);
+    let stalled = j.stalled(now);
     let mut lines = vec![Line::default()];
 
-    // 1. The stepper.
+    // 1. The stepper: the current stage is `‖` paused, `◐` stalled, else `●`.
+    let mark = if j.paused {
+        Some(("‖", DIR))
+    } else if stalled {
+        Some(("◐", WARN))
+    } else {
+        None
+    };
     lines.push(match &j.backup {
         Some(b) => {
             let (names, at) = backup_stages(b);
-            stepper(&names, at, &[], color, None, w)
+            stepper(&names, at, &[], color, mark, w)
         }
         None => {
-            let (names, at, times) = copy_stages(&j.stage_times(now), j.phase);
-            stepper(&names, at, &times, color, None, w)
+            // A locked-file wait happens after the copying: it's part of Copying.
+            let phase = if j.waiting.is_some() || j.paused {
+                Phase::Copying
+            } else {
+                j.phase
+            };
+            let (mut names, at, mut times) = copy_stages(&j.stage_times(now), phase);
+            if stalled && let Some(n) = names.get_mut(at) {
+                // The stall time replaces the stage time there.
+                if let Some(t) = times.get_mut(at) {
+                    *t = None;
+                }
+                n.push_str(&format!(
+                    " · stalled {}",
+                    clock(now.duration_since(j.last_progress_at))
+                ));
+            }
+            stepper(&names, at, &times, color, mark, w)
         }
     });
-    if j.phase == Phase::Finishing {
+
+    // 2. Why it isn't moving: paused, or the stall banner.
+    if j.paused {
+        lines.push(Line::default());
+        lines.extend(banner(
+            DIR,
+            "‖ Paused · p resumes".to_string(),
+            "robocopy is stopped and holds no files; resuming carries on where it left off \
+             (a half-copied file restarts from where it stopped)."
+                .to_string(),
+            &[("p", "resume"), ("c", "cancel job"), ("o", "open log")],
+            w,
+        ));
+    } else if stalled {
+        lines.push(Line::default());
+        let quiet = clock(now.duration_since(j.last_progress_at));
+        let (cause, what, keys): (String, String, &[(&str, &str)]) = match &j.waiting {
+            Some(wt) => (
+                "sentier is waiting to retry a locked file".to_string(),
+                format!(
+                    "{}: {} (error {}). Try {} of {} in {}. Everything else is copied.",
+                    wt.path,
+                    wt.message.trim().trim_end_matches('.'),
+                    wt.code,
+                    wt.attempt,
+                    wt.max,
+                    clock(wt.next.saturating_duration_since(now))
+                ),
+                &[
+                    ("s", "skip this file"),
+                    ("R", "retry now"),
+                    ("c", "cancel job"),
+                    ("o", "open log"),
+                ],
+            ),
+            None if j.phase == Phase::Finishing => (
+                "robocopy is finishing".to_string(),
+                format!(
+                    "Every byte is written; it is closing files on {} and hasn't exited yet.",
+                    j.dest
+                ),
+                &[("c", "cancel job"), ("o", "open log")],
+            ),
+            None => (
+                "no bytes moved; robocopy is still running".to_string(),
+                match j.tracker.current.as_ref() {
+                    Some(c) => format!("It's on {} ({:.0}%).", c.path, c.pct),
+                    None => "It's between files (listing folders on a slow share?).".to_string(),
+                },
+                &[("p", "pause"), ("c", "cancel job"), ("o", "open log")],
+            ),
+        };
+        lines.extend(banner(
+            WARN,
+            format!("⚠ No progress for {quiet} · {cause}"),
+            what,
+            keys,
+            w,
+        ));
+    } else if j.phase == Phase::Finishing {
         lines.push(Line::default());
         let text = format!(
             "every byte is written; robocopy is closing files on {} and hasn't exited ({}).",
@@ -797,17 +955,21 @@ fn draw_live(f: &mut Frame, area: Rect, j: &Job, now: Instant) {
         ),
         (None, None) => "counting…".to_string(),
     };
-    let eta = match j.phase {
-        Phase::Scanning => "ETA after the scan".to_string(),
-        Phase::Finishing => "ETA — finishing".to_string(),
-        _ => j
-            .eta(now)
-            .map_or("ETA —".to_string(), |e| format!("ETA {}", clock(e))),
+    let (eta, eta_style) = match j.phase {
+        _ if j.paused => ("ETA — paused".to_string(), theme::fg(DIR)),
+        _ if j.waiting.is_some() => ("ETA waiting on a locked file".to_string(), theme::fg(WARN)),
+        Phase::Scanning => ("ETA after the scan".to_string(), theme::dim()),
+        Phase::Finishing => ("ETA — finishing".to_string(), theme::dim()),
+        _ => (
+            j.eta(now)
+                .map_or("ETA —".to_string(), |e| format!("ETA {}", clock(e))),
+            theme::dim(),
+        ),
     };
     lines.push(Line::from(vec![
         Span::styled(size.clone(), theme::fg(FG)),
         pad(w.saturating_sub(width(&size) + width(&eta))),
-        Span::styled(eta, theme::dim()),
+        Span::styled(eta, eta_style),
     ]));
     if let Some(c) = j.tracker.current.as_ref().filter(|c| c.pct < 100.0)
         && later.is_none()
@@ -860,12 +1022,29 @@ fn draw_live(f: &mut Frame, area: Rect, j: &Job, now: Instant) {
         FG,
         format!("started {}", hms(j.started_at)),
     ));
+    // sentier's own tries on locked files: the next one, and how often.
+    let retry_note = match &j.waiting {
+        Some(wt) => format!(
+            "next {} · every {} s",
+            clock(wt.next.saturating_duration_since(now)),
+            crate::jobs::run::RETRY_EVERY.as_secs()
+        ),
+        None => last_retry,
+    };
     st.push(stat(
         "Retries",
-        t.retries.len().to_string(),
-        if t.retries.is_empty() { FG } else { WARN },
-        last_retry,
+        j.retry_attempts.to_string(),
+        if j.retry_attempts == 0 { FG } else { WARN },
+        retry_note,
     ));
+    if !j.skipped_files.is_empty() {
+        st.push(stat(
+            "Skipped",
+            j.skipped_files.len().to_string(),
+            WARN,
+            "left out with s".to_string(),
+        ));
+    }
     st.push(if errors == 0 {
         stat("Errors", "none".into(), OK, String::new())
     } else {
@@ -986,6 +1165,21 @@ fn draw_report(f: &mut Frame, area: Rect, r: &Report) {
             }
         }
     }
+    if !r.skipped_files.is_empty() {
+        lines.push(Line::default());
+        lines.push(rule(
+            &format!("SKIPPED {}", r.skipped_files.len()),
+            "left out with s (still locked)",
+            w,
+            WARN,
+        ));
+        for p in &r.skipped_files {
+            lines.push(Line::from(vec![
+                Span::styled("! ", theme::fg(WARN)),
+                Span::styled(truncate_left(p, w.saturating_sub(2)), theme::fg(FG)),
+            ]));
+        }
+    }
     if !r.errors.is_empty() {
         lines.push(Line::default());
         lines.push(rule("ERRORS", "", w, ERR));
@@ -1067,20 +1261,57 @@ pub fn indicator(app: &App) -> Option<Span<'static>> {
     if running.is_empty() {
         return None;
     }
+    let now = Instant::now();
     let frac = running.iter().map(|j| j.fraction()).sum::<f64>() / running.len() as f64;
     let n = running.len();
-    let any_finishing = running.iter().any(|j| j.phase == Phase::Finishing);
-    let text = format!(
-        "⇅ {n} job{} · {:.0}%{}   ",
-        if n == 1 { "" } else { "s" },
-        frac * 100.0,
-        if any_finishing { " finishing" } else { "" }
-    );
+    let jobs = if n == 1 { "job" } else { "jobs" };
+    let pct = frac * 100.0;
+    // A stall shows even with the panel closed (spec): that's what it's for.
+    let stalled = running.iter().filter(|j| j.stalled(now)).count();
+    let paused = running.iter().filter(|j| j.paused).count();
+    let (text, color) = if stalled > 0 {
+        (format!("⚠ {stalled} {jobs} stalled · {pct:.0}%   "), WARN)
+    } else if paused == n {
+        (format!("‖ {n} {jobs} paused · {pct:.0}%   "), DIR)
+    } else {
+        let finishing = running.iter().any(|j| j.phase == Phase::Finishing);
+        (
+            format!(
+                "⇅ {n} {jobs} · {pct:.0}%{}   ",
+                if finishing { " finishing" } else { "" }
+            ),
+            ACCENT,
+        )
+    };
     Some(Span::styled(
         text,
         Style::new()
-            .fg(ACCENT)
+            .fg(color)
             .add_modifier(Modifier::BOLD)
             .bg(SEL_BG),
     ))
+}
+
+/// The status bar's hint row in the panel, for the selected job: `p` always for a
+/// running one, `s` / `R` while it waits on a locked file.
+pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    let mut h = vec![("jk", "pick job")];
+    let live = match app.selected_job_row() {
+        Some(JobRow::Live(i)) => app.jobs.get(i).filter(|j| !j.phase.is_over()),
+        _ => None,
+    };
+    if let Some(j) = live {
+        h.push(("c", "cancel"));
+        h.push(("p", if j.paused { "resume" } else { "pause" }));
+        if j.waiting.is_some() {
+            h.push(("s", "skip locked file"));
+            h.push(("R", "retry now"));
+        }
+    } else {
+        h.push(("r", "retry failed"));
+        h.push(("Enter", "dismiss"));
+    }
+    h.push(("o", "log"));
+    h.push(("J", "close"));
+    h
 }

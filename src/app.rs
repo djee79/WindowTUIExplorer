@@ -294,7 +294,7 @@ pub struct App {
     pub visual: Option<usize>,
     pub register: Option<jobs::Register>,
     pub jobs: Vec<crate::jobs::Job>,
-    job_cancel: HashMap<u64, crate::fs::worker::CancelToken>,
+    job_cancel: HashMap<u64, crate::jobs::Control>,
     pub old_reports: Vec<crate::jobs::Report>,
     pub jobs_cursor: usize,
     jobs_auto_opened: HashSet<u64>,
@@ -4484,6 +4484,74 @@ mod job_tests {
         assert!(
             narrow.contains("RUNNING 1") && narrow.contains("THROUGHPUT"),
             "{narrow}"
+        );
+
+        // Waiting on a locked file: STALLED, the banner says why, s / R reach the job.
+        let ctl = crate::jobs::Control::default();
+        let id = app.jobs[0].id;
+        app.job_cancel.insert(id, ctl.clone());
+        app.jobs[0].apply(
+            JobEvent::Waiting {
+                path: r"\\srv01\p\Videos\DEMO\dbs\demo1043.dbx".into(),
+                code: 32,
+                message: "The process cannot access the file because it is being used by another process.".into(),
+                attempt: 3,
+                max: 5,
+                next: Instant::now() + Duration::from_secs(18),
+            },
+            Instant::now(),
+        );
+        let stall = render(&mut app, 220, 50);
+        if std::env::var_os("SENTIER_SHOW_JOBS").is_some() {
+            eprintln!("{stall}");
+        }
+        for want in [
+            "STALLED",
+            "◐ Copying",
+            "⚠ No progress for",
+            "waiting to retry a locked file",
+            "error 32",
+            "Try 3 of 5",
+            "Everything else is copied",
+            "s skip this file",
+            "R retry now",
+            "ETA waiting on a locked file",
+            "s skip locked file",
+            "⚠ 1 job stalled",
+        ] {
+            assert!(stall.contains(want), "{want}\n{stall}");
+        }
+        press(&mut app, "s");
+        assert!(ctl.take_skip(), "s reached the runner");
+        press(&mut app, "R");
+        assert!(ctl.take_retry_now(), "R reached the runner");
+
+        // p pauses (the runner confirms with Paused), p again resumes.
+        press(&mut app, "p");
+        assert!(ctl.paused());
+        app.jobs[0].apply(JobEvent::Paused(true), Instant::now());
+        let paused = render(&mut app, 220, 50);
+        for want in ["PAUSED", "‖ Paused · p resumes", "ETA — paused", "p resume"] {
+            assert!(paused.contains(want), "{want}\n{paused}");
+        }
+        press(&mut app, "p");
+        assert!(!ctl.paused());
+
+        // Finished with a file left out: `!` and SKIPPED.
+        app.jobs[0].apply(
+            JobEvent::Skipped(r"\\srv01\p\Videos\DEMO\dbs\demo1043.dbx".into()),
+            Instant::now(),
+        );
+        app.jobs[0].apply(JobEvent::StepDone(1), Instant::now());
+        app.jobs[0].apply(JobEvent::Finished { cancelled: false }, Instant::now());
+        let done = render(&mut app, 220, 50);
+        if std::env::var_os("SENTIER_SHOW_JOBS").is_some() {
+            eprintln!("{done}");
+        }
+        assert!(done.contains("! site-survey.avi"), "{done}");
+        assert!(
+            done.contains("1 skipped") && done.contains("SKIPPED 1"),
+            "{done}"
         );
     }
 

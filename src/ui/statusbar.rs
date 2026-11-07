@@ -39,15 +39,6 @@ const HINTS: &[(&str, &str)] = &[
     ("g?", "help"),
 ];
 
-const JOBS_HINTS: &[(&str, &str)] = &[
-    ("jk", "pick job"),
-    ("c", "cancel"),
-    ("r", "retry failed"),
-    ("o", "log"),
-    ("Enter", "dismiss"),
-    ("J", "close"),
-];
-
 const SYNC_HINTS: &[(&str, &str)] = &[
     ("Enter", "run"),
     ("u", "mirror / update"),
@@ -539,6 +530,7 @@ pub fn draw_hints(f: &mut Frame, area: Rect, app: &App) {
         .as_ref()
         .filter(|_| app.mode == Mode::Picker)
         .map(|p| p.mode);
+    let jobs_hints = super::jobs::hints(app);
     let hints = if let Some(m) = picker_mode {
         match m {
             crate::picker::PickerMode::Insert => PICKER_INSERT_HINTS,
@@ -547,7 +539,7 @@ pub fn draw_hints(f: &mut Frame, area: Rect, app: &App) {
     } else if app.mode == Mode::Preview {
         FULL_PREVIEW_HINTS
     } else if app.mode == Mode::Jobs {
-        JOBS_HINTS
+        jobs_hints.as_slice()
     } else if app.mode == Mode::OpenWith {
         OPEN_HINTS
     } else if app.mode == Mode::SyncPreview {

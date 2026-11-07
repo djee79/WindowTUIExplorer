@@ -3,11 +3,21 @@
 //! own thread, decoded from the OEM code page, parsed, and sent in batches about every
 //! 100 ms. The native and rename backends make the same events, so the app tracks every
 //! job the same way.
+//!
+//! **sentier owns retries** (docs/JOBS_PANEL_SPEC.md): robocopy runs with `/R:0`, so a
+//! locked file (error 32 / 33) fails at once and everything else is copied first. The
+//! locked files are then tried again, one by one, every [`RETRY_EVERY`], up to
+//! [`RETRY_TRIES`] times. While it waits the panel shows why, and the user can skip the
+//! file (`s`), try it now (`R`), pause or cancel.
+//!
+//! **Pause** (`p`) stops robocopy (its file handles and the server's locks go with it);
+//! resuming runs the same step again, which skips what's already copied and restarts a
+//! half-copied file where it stopped (`/Z`). The native backend pauses between files.
 
 use super::robocopy::{
-    self, Event, FileClass, Options, Overwrite, Parser, RcError, Row, Summary, Tracker,
+    self, Event, FileClass, Options, Overwrite, Parser, RcError, Row, Step, Summary, Tracker,
 };
-use super::{Backend, JobEvent, Pair, Plan};
+use super::{Backend, Control, JobEvent, Pair, Plan};
 use crate::fs::worker::CancelToken;
 use std::io::{Read, Write};
 use std::os::windows::process::CommandExt;
@@ -17,8 +27,15 @@ use std::time::{Duration, Instant};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const BATCH_EVERY: Duration = Duration::from_millis(100);
-/// Native copies retry a locked file this many times, a second apart.
-const NATIVE_RETRIES: u32 = 2;
+/// How often, and how many times, sentier tries a locked file again.
+pub const RETRY_TRIES: u32 = 5;
+pub const RETRY_EVERY: Duration = if cfg!(test) {
+    Duration::from_millis(150)
+} else {
+    Duration::from_secs(10)
+};
+/// How often the runner looks at the panel's flags while waiting.
+const POLL: Duration = Duration::from_millis(50);
 
 pub struct Spec {
     pub plan: Plan,
@@ -36,12 +53,12 @@ pub struct Spec {
 }
 
 /// Runs everything, then sends `Finished`.
-pub fn run(spec: &Spec, cancel: &CancelToken, send: &dyn Fn(JobEvent)) {
+pub fn run(spec: &Spec, ctl: &Control, send: &dyn Fn(JobEvent)) {
     log_line(&spec.log, &format!("sentier job: {}", spec.plan.title));
     let cancelled = match spec.plan.backend {
-        Backend::Robocopy => run_robocopy(spec, cancel, send),
-        Backend::Native => run_pairs(spec, cancel, send, false),
-        Backend::Rename => run_pairs(spec, cancel, send, true),
+        Backend::Robocopy => run_robocopy(spec, ctl, send),
+        Backend::Native => run_pairs(spec, ctl, send, false),
+        Backend::Rename => run_pairs(spec, ctl, send, true),
     };
     log_line(&spec.log, if cancelled { "cancelled" } else { "finished" });
     send(JobEvent::Finished { cancelled });
@@ -61,8 +78,72 @@ pub(super) fn log_line(log: &str, line: &str) {
     }
 }
 
-/// The `/L` pass for the totals, then each step. Returns whether it was cancelled.
-pub(super) fn run_robocopy(spec: &Spec, cancel: &CancelToken, send: &dyn Fn(JobEvent)) -> bool {
+/// While the job is paused: waits, telling the panel. False when it got cancelled.
+fn hold(ctl: &Control, send: &dyn Fn(JobEvent), log: &str) -> bool {
+    if ctl.is_cancelled() {
+        return false;
+    }
+    if !ctl.paused() {
+        return true;
+    }
+    send(JobEvent::Paused(true));
+    log_line(log, "paused");
+    while ctl.paused() {
+        if ctl.is_cancelled() {
+            return false;
+        }
+        std::thread::sleep(POLL);
+    }
+    send(JobEvent::Paused(false));
+    log_line(log, "resumed");
+    !ctl.is_cancelled()
+}
+
+/// A file that was locked, and how to try it again.
+struct Locked {
+    path: String,
+    code: u32,
+    message: String,
+    again: Again,
+}
+
+enum Again {
+    /// robocopy on just that file (its folder, the file name as the filter).
+    Robocopy(Step),
+    Native(Pair),
+}
+
+fn is_locked(code: u32) -> bool {
+    matches!(code, 32 | 33)
+}
+
+/// The one-file step for `path`, a file under `step`'s source.
+fn single_file_step(step: &Step, path: &str) -> Option<Step> {
+    let base = step.src.trim_end_matches('\\');
+    let head = path.get(..base.len())?;
+    if !head.eq_ignore_ascii_case(base) {
+        return None;
+    }
+    let rel = path[base.len()..].trim_start_matches('\\');
+    let (dir, name) = rel.rsplit_once('\\').unwrap_or(("", rel));
+    let join = |a: &str| {
+        let a = a.trim_end_matches('\\');
+        if dir.is_empty() {
+            a.to_string()
+        } else {
+            format!("{a}\\{dir}")
+        }
+    };
+    (!name.is_empty()).then(|| Step {
+        src: join(&step.src),
+        dst: join(&step.dst),
+        files: vec![name.to_string()],
+    })
+}
+
+/// The `/L` pass for the totals, then each step, then the locked files. Returns whether
+/// it was cancelled.
+pub(super) fn run_robocopy(spec: &Spec, ctl: &Control, send: &dyn Fn(JobEvent)) -> bool {
     let opts = |list_only: bool| Options {
         moving: spec.moving,
         overwrite: spec.overwrite,
@@ -81,14 +162,14 @@ pub(super) fn run_robocopy(spec: &Spec, cancel: &CancelToken, send: &dyn Fn(JobE
         &spec.plan.steps[..]
     };
     for step in to_scan {
-        let (t, _) = match dry_run(step, &opts(true), cancel) {
+        let (t, _) = match dry_run(step, &opts(true), &ctl.cancel) {
             Ok(r) => r,
             Err(e) => {
                 send(JobEvent::Error(e));
                 return false;
             }
         };
-        if cancel.is_cancelled() {
+        if ctl.is_cancelled() {
             return true;
         }
         if let Some(s) = t.summary {
@@ -97,19 +178,262 @@ pub(super) fn run_robocopy(spec: &Spec, cancel: &CancelToken, send: &dyn Fn(JobE
         }
     }
     send(JobEvent::Scanned { files, bytes });
+    let mut locked: Vec<Locked> = Vec::new();
     for step in &spec.plan.steps {
-        let args = robocopy::args(step, &opts(false));
-        log_line(&spec.log, &format!("robocopy {}", quote_args(&args)));
-        let r = robocopy_once(&args, cancel, &mut |evs| send(JobEvent::Output(evs)));
-        match r {
-            Ok(code) => send(JobEvent::StepDone(code)),
-            Err(e) => {
-                send(JobEvent::Error(e));
-                return false;
+        // Paused mid-step: robocopy is stopped, and the step runs again on resume.
+        loop {
+            if !hold(ctl, send, &spec.log) {
+                return true;
+            }
+            let args = robocopy::args(step, &opts(false));
+            log_line(&spec.log, &format!("robocopy {}", quote_args(&args)));
+            let mut seen: Vec<RcError> = Vec::new();
+            let r = robocopy_once(&args, &|| ctl.is_cancelled() || ctl.paused(), &mut |evs| {
+                for e in &evs {
+                    if let Event::Error(x) = e
+                        && is_locked(x.code)
+                        && x.path.is_some()
+                    {
+                        seen.push(x.clone());
+                    }
+                }
+                send(JobEvent::Output(evs));
+            });
+            match r {
+                Err(e) => {
+                    send(JobEvent::Error(e));
+                    return false;
+                }
+                Ok((_, true)) if ctl.is_cancelled() => return true,
+                Ok((_, true)) => {
+                    log_line(&spec.log, "robocopy stopped (paused); it resumes from here");
+                }
+                Ok((code, false)) => {
+                    send(JobEvent::StepDone(code));
+                    for x in seen {
+                        let Some(path) = x.path.clone() else { continue };
+                        if locked.iter().any(|l| l.path.eq_ignore_ascii_case(&path)) {
+                            continue;
+                        }
+                        if let Some(one) = single_file_step(step, &path) {
+                            locked.push(Locked {
+                                path,
+                                code: x.code,
+                                message: x.message,
+                                again: Again::Robocopy(one),
+                            });
+                        }
+                    }
+                    break;
+                }
             }
         }
-        if cancel.is_cancelled() {
-            return true;
+    }
+    retry_locked(spec, ctl, send, locked, &opts(false))
+}
+
+/// How a wait for the next try ended.
+enum Wait {
+    Due,
+    Now,
+    Skip,
+    /// Paused and resumed: start the countdown again.
+    Again,
+    Cancelled,
+}
+
+fn countdown(ctl: &Control, send: &dyn Fn(JobEvent), log: &str, until: Instant) -> Wait {
+    loop {
+        if ctl.is_cancelled() {
+            return Wait::Cancelled;
+        }
+        if ctl.take_skip() {
+            return Wait::Skip;
+        }
+        if ctl.take_retry_now() {
+            return Wait::Now;
+        }
+        if ctl.paused() {
+            return if hold(ctl, send, log) {
+                Wait::Again
+            } else {
+                Wait::Cancelled
+            };
+        }
+        if Instant::now() >= until {
+            return Wait::Due;
+        }
+        std::thread::sleep(POLL);
+    }
+}
+
+/// How one more try went.
+enum Try {
+    Ok,
+    Locked(u32, String),
+    Failed,
+    Paused,
+    Cancelled,
+}
+
+fn try_again(
+    item: &Locked,
+    spec: &Spec,
+    ctl: &Control,
+    send: &dyn Fn(JobEvent),
+    opts: &Options,
+) -> Try {
+    match &item.again {
+        Again::Robocopy(step) => {
+            // Never /MIR with a file filter: only this one file.
+            let o = Options {
+                mirror: false,
+                ..opts.clone()
+            };
+            let args = robocopy::args(step, &o);
+            log_line(&spec.log, &format!("retry: robocopy {}", quote_args(&args)));
+            let mut err: Option<RcError> = None;
+            let r = robocopy_once(&args, &|| ctl.is_cancelled() || ctl.paused(), &mut |evs| {
+                for e in &evs {
+                    if let Event::Error(x) = e {
+                        err = Some(x.clone());
+                    }
+                }
+                send(JobEvent::Output(evs));
+            });
+            match r {
+                Err(e) => {
+                    log_line(&spec.log, &format!("retry: {e}"));
+                    Try::Failed
+                }
+                Ok((_, true)) if ctl.is_cancelled() => Try::Cancelled,
+                Ok((_, true)) => Try::Paused,
+                Ok((code, false)) => match err {
+                    Some(x) if is_locked(x.code) => Try::Locked(x.code, x.message),
+                    Some(_) => Try::Failed,
+                    None if code >= 8 => Try::Failed,
+                    None => Try::Ok,
+                },
+            }
+        }
+        Again::Native(pair) => {
+            send(JobEvent::Output(vec![Event::File {
+                class: FileClass::New,
+                size: pair.size,
+                path: pair.src.clone(),
+            }]));
+            match copy_pair(pair, spec.moving) {
+                Ok(()) => {
+                    send(JobEvent::Output(vec![Event::Progress(100.0)]));
+                    Try::Ok
+                }
+                Err(e) => {
+                    let code = e.raw_os_error().unwrap_or(0) as u32;
+                    let message = os_message(&e);
+                    send(JobEvent::Output(vec![Event::Error(RcError {
+                        code,
+                        action: "Copying File".into(),
+                        path: Some(pair.src.clone()),
+                        message: message.clone(),
+                    })]));
+                    if is_locked(code) {
+                        Try::Locked(code, message)
+                    } else {
+                        Try::Failed
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The locked files, one by one: wait, try again, until it works, the user skips it, or
+/// the tries run out. Returns whether the job was cancelled.
+fn retry_locked(
+    spec: &Spec,
+    ctl: &Control,
+    send: &dyn Fn(JobEvent),
+    locked: Vec<Locked>,
+    opts: &Options,
+) -> bool {
+    if locked.is_empty() {
+        return false;
+    }
+    // A key pressed before anything was waiting doesn't count.
+    ctl.take_skip();
+    ctl.take_retry_now();
+    log_line(
+        &spec.log,
+        &format!(
+            "{} locked file(s): trying again every {} s, up to {} times",
+            locked.len(),
+            RETRY_EVERY.as_secs(),
+            RETRY_TRIES
+        ),
+    );
+    'item: for item in locked {
+        let (mut code, mut message) = (item.code, item.message.clone());
+        let mut attempt = 0;
+        loop {
+            if attempt >= RETRY_TRIES {
+                log_line(&spec.log, &format!("gave up (still locked): {}", item.path));
+                send(JobEvent::GaveUp {
+                    path: item.path.clone(),
+                    attempts: attempt,
+                });
+                continue 'item;
+            }
+            attempt += 1;
+            loop {
+                let next = Instant::now() + RETRY_EVERY;
+                send(JobEvent::Waiting {
+                    path: item.path.clone(),
+                    code,
+                    message: message.clone(),
+                    attempt,
+                    max: RETRY_TRIES,
+                    next,
+                });
+                match countdown(ctl, send, &spec.log, next) {
+                    Wait::Due | Wait::Now => break,
+                    Wait::Again => continue,
+                    Wait::Cancelled => return true,
+                    Wait::Skip => {
+                        log_line(&spec.log, &format!("skipped (s): {}", item.path));
+                        send(JobEvent::Skipped(item.path.clone()));
+                        continue 'item;
+                    }
+                }
+            }
+            match try_again(&item, spec, ctl, send, opts) {
+                Try::Ok => {
+                    log_line(
+                        &spec.log,
+                        &format!("copied on retry {attempt}: {}", item.path),
+                    );
+                    send(JobEvent::Recovered {
+                        path: item.path.clone(),
+                        attempts: attempt,
+                    });
+                    continue 'item;
+                }
+                Try::Locked(c, m) => (code, message) = (c, m),
+                Try::Failed => {
+                    send(JobEvent::GaveUp {
+                        path: item.path.clone(),
+                        attempts: attempt,
+                    });
+                    continue 'item;
+                }
+                // A pause during the try doesn't use up a try.
+                Try::Paused => {
+                    attempt -= 1;
+                    if !hold(ctl, send, &spec.log) {
+                        return true;
+                    }
+                }
+                Try::Cancelled => return true,
+            }
         }
     }
     false
@@ -129,11 +453,15 @@ pub fn dry_run(
         ..opts.clone()
     };
     let mut t = Tracker::new(true);
-    let code = robocopy_once(&robocopy::args(step, &opts), cancel, &mut |evs| {
-        for e in evs {
-            t.apply(e);
-        }
-    })?;
+    let (code, _) = robocopy_once(
+        &robocopy::args(step, &opts),
+        &|| cancel.is_cancelled(),
+        &mut |evs| {
+            for e in evs {
+                t.apply(e);
+            }
+        },
+    )?;
     t.finish();
     Ok((t, code))
 }
@@ -152,12 +480,12 @@ fn quote_args(args: &[String]) -> String {
 }
 
 /// One robocopy run: its parsed output goes to `on_events` in batches. Returns the exit
-/// code (-1 when killed).
+/// code (-1 when killed) and whether it was killed (`stop` said so: cancel or pause).
 fn robocopy_once(
     args: &[String],
-    cancel: &CancelToken,
+    stop: &dyn Fn() -> bool,
     on_events: &mut dyn FnMut(Vec<Event>),
-) -> Result<i32, String> {
+) -> Result<(i32, bool), String> {
     let mut child = Command::new("robocopy")
         .args(args)
         .stdin(Stdio::null())
@@ -191,7 +519,7 @@ fn robocopy_once(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        if cancel.is_cancelled() && !killed {
+        if stop() && !killed {
             let _ = child.kill();
             killed = true;
         }
@@ -207,15 +535,15 @@ fn robocopy_once(
     let _ = reader.join();
     let status = child.wait().map_err(|e| e.to_string())?;
     Ok(if killed {
-        -1
+        (-1, true)
     } else {
-        status.code().unwrap_or(-1)
+        (status.code().unwrap_or(-1), false)
     })
 }
 
-/// The native (copy) and rename backends: one pair at a time. Returns whether it was
-/// cancelled.
-fn run_pairs(spec: &Spec, cancel: &CancelToken, send: &dyn Fn(JobEvent), rename: bool) -> bool {
+/// The native (copy) and rename backends: one pair at a time, pausing between files.
+/// A locked file is queued and tried again at the end. Returns whether it was cancelled.
+fn run_pairs(spec: &Spec, ctl: &Control, send: &dyn Fn(JobEvent), rename: bool) -> bool {
     let pairs = &spec.plan.pairs;
     send(JobEvent::Scanned {
         files: pairs.len() as u64,
@@ -229,9 +557,10 @@ fn run_pairs(spec: &Spec, cancel: &CancelToken, send: &dyn Fn(JobEvent), rename:
         total: pairs.len() as u64,
         ..Row::default()
     };
+    let mut locked: Vec<Locked> = Vec::new();
     let mut cancelled = false;
     for pair in pairs {
-        if cancel.is_cancelled() {
+        if !hold(ctl, send, &spec.log) {
             cancelled = true;
             break;
         }
@@ -242,42 +571,41 @@ fn run_pairs(spec: &Spec, cancel: &CancelToken, send: &dyn Fn(JobEvent), rename:
             continue;
         }
         let size = if rename { 0 } else { pair.size };
-        let mut attempt = 0;
-        loop {
-            send(JobEvent::Output(vec![Event::File {
-                class: FileClass::New,
-                size,
-                path: pair.src.clone(),
-            }]));
-            let r = if rename {
-                rename_pair(pair, exists)
-            } else {
-                copy_pair(pair, spec.moving)
-            };
-            match r {
-                Ok(()) => {
-                    files.copied += 1;
-                    log_line(&spec.log, &format!("ok: {} → {}", pair.src, pair.dst));
-                    send(JobEvent::Output(vec![Event::Progress(100.0)]));
-                    break;
-                }
-                Err(e) => {
-                    let code = e.raw_os_error().unwrap_or(0) as u32;
-                    log_line(&spec.log, &format!("ERROR {code} {}: {e}", pair.src));
-                    send(JobEvent::Output(vec![Event::Error(RcError {
+        send(JobEvent::Output(vec![Event::File {
+            class: FileClass::New,
+            size,
+            path: pair.src.clone(),
+        }]));
+        let r = if rename {
+            rename_pair(pair, exists)
+        } else {
+            copy_pair(pair, spec.moving)
+        };
+        match r {
+            Ok(()) => {
+                files.copied += 1;
+                log_line(&spec.log, &format!("ok: {} → {}", pair.src, pair.dst));
+                send(JobEvent::Output(vec![Event::Progress(100.0)]));
+            }
+            Err(e) => {
+                let code = e.raw_os_error().unwrap_or(0) as u32;
+                let message = os_message(&e);
+                log_line(&spec.log, &format!("ERROR {code} {}: {e}", pair.src));
+                send(JobEvent::Output(vec![Event::Error(RcError {
+                    code,
+                    action: if rename { "Moving" } else { "Copying File" }.into(),
+                    path: Some(pair.src.clone()),
+                    message: message.clone(),
+                })]));
+                files.failed += 1;
+                // Only a locked copy is worth trying again, later.
+                if is_locked(code) && !rename {
+                    locked.push(Locked {
+                        path: pair.src.clone(),
                         code,
-                        action: if rename { "Moving" } else { "Copying File" }.into(),
-                        path: Some(pair.src.clone()),
-                        message: os_message(&e),
-                    })]));
-                    attempt += 1;
-                    // Only a locked file (32, 33) is worth trying again.
-                    if attempt > NATIVE_RETRIES || !matches!(code, 32 | 33) || cancel.is_cancelled()
-                    {
-                        files.failed += 1;
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_secs(1));
+                        message,
+                        again: Again::Native(pair.clone()),
+                    });
                 }
             }
         }
@@ -291,7 +619,20 @@ fn run_pairs(spec: &Spec, cancel: &CancelToken, send: &dyn Fn(JobEvent), rename:
     } else {
         (files.copied > 0) as i32
     }));
-    cancelled
+    if cancelled {
+        return true;
+    }
+    let opts = Options {
+        moving: spec.moving,
+        overwrite: spec.overwrite,
+        mirror: false,
+        list_only: false,
+        threads: 0,
+        log: None,
+        exclude_dirs: Vec::new(),
+        exclude_files: Vec::new(),
+    };
+    retry_locked(spec, ctl, send, locked, &opts)
 }
 
 /// The message without std's ` (os error 32)` tail.
@@ -327,8 +668,8 @@ fn rename_pair(p: &Pair, exists: bool) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jobs::robocopy::Step;
     use crate::jobs::{Job, Op, Phase};
+    use std::os::windows::fs::OpenOptionsExt;
     use std::sync::Mutex;
 
     fn temp(name: &str) -> std::path::PathBuf {
@@ -338,9 +679,8 @@ mod tests {
         dir
     }
 
-    /// Runs `plan` to the end and returns the job it built.
-    fn drive(plan: Plan, moving: bool, overwrite: Overwrite, log: &str) -> Job {
-        let spec = Spec {
+    fn spec(plan: &Plan, moving: bool, overwrite: Overwrite, log: &str) -> Spec {
+        Spec {
             plan: plan.clone(),
             moving,
             overwrite,
@@ -350,9 +690,23 @@ mod tests {
             exclude_dirs: vec![],
             exclude_files: vec![],
             totals: None,
-        };
+        }
+    }
+
+    /// Runs `plan` to the end with `ctl`, calling `on` for every event (to press keys
+    /// as the panel would), and returns the job it built.
+    fn drive_with(
+        plan: Plan,
+        moving: bool,
+        overwrite: Overwrite,
+        log: &str,
+        ctl: &Control,
+        on: &(dyn Fn(&JobEvent) + Sync),
+    ) -> Job {
+        let spec = spec(&plan, moving, overwrite, log);
         let events = Mutex::new(Vec::new());
-        run(&spec, &CancelToken::default(), &|e| {
+        run(&spec, ctl, &|e| {
+            on(&e);
             if let Ok(mut v) = events.lock() {
                 v.push(e);
             }
@@ -365,15 +719,23 @@ mod tests {
         job
     }
 
-    #[test]
-    fn robocopy_copies_a_tree_and_skips_existing() {
-        let dir = temp("rc");
-        let src = dir.join("src");
-        std::fs::create_dir_all(src.join("sub")).ok();
-        std::fs::write(src.join("a.txt"), "hello").ok();
-        std::fs::write(src.join("sub").join("é.txt"), "é").ok();
-        let dst = dir.join("dst").join("src");
-        let plan = Plan {
+    fn drive(plan: Plan, moving: bool, overwrite: Overwrite, log: &str) -> Job {
+        drive_with(plan, moving, overwrite, log, &Control::default(), &|_| {})
+    }
+
+    /// Opens `path` with no sharing, as an open AVEVA database does: robocopy and
+    /// std::fs::copy get error 32 until it's dropped.
+    fn lock(path: &std::path::Path) -> Option<std::fs::File> {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(path)
+            .ok()
+    }
+
+    fn tree_plan(src: &std::path::Path, dst: &std::path::Path) -> Plan {
+        Plan {
             backend: Backend::Robocopy,
             steps: vec![Step {
                 src: src.display().to_string(),
@@ -382,7 +744,18 @@ mod tests {
             }],
             pairs: vec![],
             title: "src → dst".into(),
-        };
+        }
+    }
+
+    #[test]
+    fn robocopy_copies_a_tree_and_skips_existing() {
+        let dir = temp("rc");
+        let src = dir.join("src");
+        std::fs::create_dir_all(src.join("sub")).ok();
+        std::fs::write(src.join("a.txt"), "hello").ok();
+        std::fs::write(src.join("sub").join("é.txt"), "é").ok();
+        let dst = dir.join("dst").join("src");
+        let plan = tree_plan(&src, &dst);
         let log = dir.join("job.log").display().to_string();
         let job = drive(plan.clone(), false, Overwrite::Never, &log);
         assert_eq!(job.phase, Phase::Done, "{:?}", job.error);
@@ -410,6 +783,212 @@ mod tests {
         assert_eq!((job.total_files, job.tracker.files_done), (Some(0), 0));
         assert_eq!(job.exit, Some(0));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The headline: a locked file doesn't hold the copy up. Everything else is copied,
+    /// sentier waits and says why, and the file goes through once it's released.
+    #[test]
+    fn robocopy_locked_file_is_retried_by_sentier_until_released() {
+        let dir = temp("rc-lock");
+        let src = dir.join("src");
+        std::fs::create_dir_all(src.join("dbs")).ok();
+        std::fs::write(src.join("a.txt"), "a").ok();
+        std::fs::write(src.join("dbs").join("demo1043.dbx"), "db").ok();
+        let dst = dir.join("dst");
+        let held = Mutex::new(lock(&src.join("dbs").join("demo1043.dbx")));
+        let log = dir.join("job.log").display().to_string();
+        let ctl = Control::default();
+        let job = drive_with(
+            tree_plan(&src, &dst),
+            false,
+            Overwrite::Never,
+            &log,
+            &ctl,
+            &|e| {
+                // The user closes the file after the second wait starts.
+                if let JobEvent::Waiting { attempt: 2, .. } = e
+                    && let Ok(mut h) = held.lock()
+                {
+                    h.take();
+                }
+            },
+        );
+        assert_eq!(
+            job.phase,
+            Phase::Done,
+            "{:?} {:?}",
+            job.error,
+            job.tracker.failed
+        );
+        assert!(dst.join("a.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dst.join("dbs").join("demo1043.dbx"))
+                .ok()
+                .as_deref(),
+            Some("db"),
+            "copied on the retry, into its own folder"
+        );
+        assert!(job.tracker.failed.is_empty());
+        assert_eq!(job.retry_attempts, 2);
+        assert_eq!(job.exit.map(|c| c & 8), Some(0), "no stale 'copies failed'");
+        let r = job.report(Instant::now());
+        assert_eq!(r.retried.len(), 1);
+        assert!(
+            r.activity
+                .iter()
+                .any(|a| a.text.contains("demo1043.dbx copied on retry 2")),
+            "{:?}",
+            r.activity
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `s` on a file that stays locked: left out, the job ends with it listed as skipped.
+    #[test]
+    fn skip_leaves_a_locked_file_out_and_retry_now_skips_the_wait() {
+        let dir = temp("rc-skip");
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).ok();
+        std::fs::write(src.join("a.txt"), "a").ok();
+        std::fs::write(src.join("busy.dbx"), "x").ok();
+        let _held = lock(&src.join("busy.dbx"));
+        let log = dir.join("job.log").display().to_string();
+        let ctl = Control::default();
+        let ctl2 = ctl.clone();
+        let job = drive_with(
+            tree_plan(&src, &dir.join("dst")),
+            false,
+            Overwrite::Never,
+            &log,
+            &ctl,
+            &move |e| match e {
+                JobEvent::Waiting { attempt: 1, .. } => ctl2.retry_now(),
+                JobEvent::Waiting { attempt: 2, .. } => ctl2.skip(),
+                _ => {}
+            },
+        );
+        assert_eq!(job.phase, Phase::Done, "{:?}", job.tracker.failed);
+        assert_eq!(job.skipped_files.len(), 1);
+        assert!(job.skipped_files[0].ends_with("busy.dbx"));
+        assert!(job.tracker.failed.is_empty());
+        assert!(dir.join("dst").join("a.txt").exists());
+        let r = job.report(Instant::now());
+        assert_eq!(r.skipped_files.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Still locked after every try: the job fails with that file, the rest copied.
+    #[test]
+    fn a_file_locked_throughout_fails_after_the_tries() {
+        let dir = temp("native-lock");
+        std::fs::create_dir_all(dir.join("dst")).ok();
+        std::fs::write(dir.join("a.txt"), "a").ok();
+        std::fs::write(dir.join("b.dbx"), "b").ok();
+        let _held = lock(&dir.join("b.dbx"));
+        let pair = |n: &str| Pair {
+            src: dir.join(n).display().to_string(),
+            dst: dir.join("dst").join(n).display().to_string(),
+            size: 1,
+            is_dir: false,
+        };
+        let plan = Plan {
+            backend: Backend::Native,
+            steps: vec![],
+            pairs: vec![pair("b.dbx"), pair("a.txt")],
+            title: "2 files → dst".into(),
+        };
+        let log = dir.join("job.log").display().to_string();
+        let job = drive(plan, false, Overwrite::Never, &log);
+        assert_eq!(job.phase, Phase::Failed);
+        assert!(
+            dir.join("dst").join("a.txt").exists(),
+            "the rest wasn't held up"
+        );
+        assert_eq!(job.tracker.failed.len(), 1, "listed once");
+        assert_eq!(job.tracker.failed[0].code, 32);
+        assert_eq!(job.retry_attempts, RETRY_TRIES);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Paused before it starts: it waits (and says so) until resumed, then completes.
+    #[test]
+    fn pause_waits_and_resume_carries_on() {
+        let dir = temp("pause");
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).ok();
+        std::fs::write(src.join("a.txt"), "a").ok();
+        let log = dir.join("job.log").display().to_string();
+        let ctl = Control::default();
+        ctl.set_paused(true);
+        let resume = ctl.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            resume.set_paused(false);
+        });
+        let paused_seen = Mutex::new(Vec::new());
+        let job = drive_with(
+            tree_plan(&src, &dir.join("dst")),
+            false,
+            Overwrite::Never,
+            &log,
+            &ctl,
+            &|e| {
+                if let JobEvent::Paused(on) = e
+                    && let Ok(mut v) = paused_seen.lock()
+                {
+                    v.push(*on);
+                }
+            },
+        );
+        let _ = t.join();
+        assert_eq!(paused_seen.into_inner().unwrap_or_default(), [true, false]);
+        assert_eq!(job.phase, Phase::Done);
+        assert!(!job.paused);
+        assert!(dir.join("dst").join("a.txt").exists());
+
+        // Cancelled while paused: it stops, nothing copied.
+        let ctl = Control::default();
+        ctl.set_paused(true);
+        let c = ctl.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            c.cancel();
+        });
+        let job = drive_with(
+            tree_plan(&src, &dir.join("dst2")),
+            false,
+            Overwrite::Never,
+            &log,
+            &ctl,
+            &|_| {},
+        );
+        let _ = t.join();
+        assert_eq!(job.phase, Phase::Cancelled);
+        assert!(!dir.join("dst2").join("a.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn single_file_steps_keep_the_folder() {
+        let step = Step {
+            src: r"\\srv01\p\HIT".into(),
+            dst: r"D:\local\HIT".into(),
+            files: vec![],
+        };
+        assert_eq!(
+            single_file_step(&step, r"\\srv01\p\HIT\DEMO\dbs\demo1043.dbx"),
+            Some(Step {
+                src: r"\\srv01\p\HIT\DEMO\dbs".into(),
+                dst: r"D:\local\HIT\DEMO\dbs".into(),
+                files: vec!["demo1043.dbx".into()],
+            })
+        );
+        assert_eq!(
+            single_file_step(&step, r"\\srv01\p\hit\a.txt").map(|s| s.src),
+            Some(r"\\srv01\p\HIT".into()),
+            "case-insensitive"
+        );
+        assert_eq!(single_file_step(&step, r"\\srv01\p\OTHER\a.txt"), None);
     }
 
     #[test]
