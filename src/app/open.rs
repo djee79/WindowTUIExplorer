@@ -250,14 +250,12 @@ impl App {
             return;
         };
         let paths: Vec<String> = targets.iter().map(|t| t.path.clone()).collect();
+        // The folder you're looking at: the one the item is in (a subfolder under the
+        // cursor is not where you are).
         let folder = |t: &OpenTarget| {
-            if t.is_dir {
-                t.path.clone()
-            } else {
-                crate::jobs::parent_of(&t.path)
-                    .unwrap_or(&t.path)
-                    .to_string()
-            }
+            crate::jobs::parent_of(&t.path)
+                .unwrap_or(&t.path)
+                .to_string()
         };
         let many = |what: &str| match paths.len() {
             1 => format!("{what} {}", first.name),
@@ -278,21 +276,10 @@ impl App {
             }
             "editor" => self.open_in_editor(paths),
             "reveal" => self.worker.reveal(first.path.clone()),
-            "explorer" => self.worker.run_detached(
-                format!("Explorer: {}", folder(&first)),
-                "explorer.exe".into(),
-                vec![folder(&first)],
-                None,
-            ),
-            "terminal-here" => {
-                let dir = folder(&first);
-                self.worker.run_detached(
-                    format!("WezTerm tab in {dir}"),
-                    "wezterm".into(),
-                    vec!["cli".into(), "spawn".into(), "--cwd".into(), dir.clone()],
-                    Some(dir),
-                );
-            }
+            // Explorer on the folder you're looking at, with the item selected: what
+            // sentier shows, cursor included.
+            "explorer" => self.worker.reveal(first.path.clone()),
+            "terminal-here" => self.terminal_in(folder(&first)),
             "copy-path" => self
                 .worker
                 .copy_text(many("copied the path of"), paths, false),
@@ -436,10 +423,30 @@ impl App {
 
     /// `gx` / `gw`: Explorer / a WezTerm tab in the current folder.
     pub(super) fn open_here(&mut self, id: &str) {
-        match self.here() {
-            Some(t) => self.run_opener(id, vec![t], false),
-            None => self.set_status("not a real folder here".into(), false),
+        let Some(t) = self.here() else {
+            return self.set_status("not a real folder here".into(), false);
+        };
+        // The folder itself (not "the folder it's in", as from the menu).
+        match id {
+            "explorer" => self.worker.run_detached(
+                format!("Explorer: {}", t.path),
+                "explorer.exe".into(),
+                vec![t.path],
+                None,
+            ),
+            "terminal-here" => self.terminal_in(t.path),
+            _ => self.run_opener(id, vec![t], false),
         }
+    }
+
+    /// A new WezTerm tab in `dir`.
+    fn terminal_in(&mut self, dir: String) {
+        self.worker.run_detached(
+            format!("WezTerm tab in {dir}"),
+            "wezterm".into(),
+            vec!["cli".into(), "spawn".into(), "--cwd".into(), dir.clone()],
+            Some(dir),
+        );
     }
 
     /// `gR`, `Alt-Enter`, `yp`, `yP`: on the selection or the cursor item.

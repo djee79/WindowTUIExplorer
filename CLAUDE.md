@@ -780,8 +780,10 @@ use   = ["default", "notepadpp", "reveal"]
   - `reveal` → `explorer.exe /select,"<path>"`, so Explorer opens with the file selected
   - `openwith` → the Windows dialog
   - `properties` → `SHObjectPropertiesW`
-  - `explorer` → opens the folder
-  - `terminal-here` → `wezterm cli spawn --cwd`
+  - `explorer` → Explorer on the folder you're looking at, with the item under the cursor
+    selected (`/select`): what sentier shows. `gx` opens the current folder itself.
+  - `terminal-here` → `wezterm cli spawn --cwd` in the folder you're looking at (`gw`: the
+    current folder)
   - `copy-path` / `copy-unc`
   - `enter` → navigate into a directory
 - **Modes:**

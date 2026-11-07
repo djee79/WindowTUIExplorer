@@ -5825,6 +5825,37 @@ mod job_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// "This folder in Explorer" from the `O` menu on a highlighted subfolder shows the
+    /// folder you're in, with the subfolder selected (`/select`), not the subfolder
+    /// itself; `gx` opens the folder you're in.
+    #[test]
+    fn explorer_shows_the_folder_on_screen() {
+        let dir = temp_tree();
+        let mut l = Live::new(&dir.join("src"));
+        l.goto("proj");
+        press(&mut l.app, "O");
+        let pos = l
+            .app
+            .open_menu
+            .as_ref()
+            .and_then(|m| m.items.iter().position(|i| i.id == "explorer"));
+        let Some(pos) = pos else {
+            panic!("no Explorer entry for a folder")
+        };
+        assert_eq!(
+            l.app.open_menu.as_ref().map(|m| m.items[pos].label.clone()),
+            Some("This folder in Explorer".to_string())
+        );
+        if let Some(m) = l.app.open_menu.as_mut() {
+            m.cursor = m.shown().iter().position(|&i| i == pos).unwrap_or(0);
+        }
+        press(&mut l.app, "<CR>");
+        l.until(|a| status(a).contains("revealed proj"));
+        press(&mut l.app, "gx");
+        l.until(|a| status(a).starts_with("Explorer: ") && status(a).ends_with(r"\src"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `g Space` / `:cd` take Windows' variables: `%TEM` + Tab completes the name,
     /// `%TEMP%` and `$env:APPDATA` go there.
     #[test]

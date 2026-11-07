@@ -80,6 +80,10 @@ pub fn disk_space(path: &str) -> io::Result<DiskSpace> {
 
 /// `ShellExecuteW("open", path)`: opens a file with its associated program.
 pub fn shell_open(path: &str) -> io::Result<()> {
+    // Tests reach the code that opens windows; they must never open real ones.
+    if cfg!(test) {
+        return Ok(());
+    }
     // ShellExecute may use COM for some handlers. Initializing more than once on a pooled
     // thread just returns S_FALSE, which is fine.
     // SAFETY: no reserved pointer; flags are valid COINIT values.
@@ -763,6 +767,10 @@ pub fn app_path(exe: &str) -> Option<String> {
 /// Windows' own "Open with" chooser (including "always use this app"). Modal: blocks
 /// until it closes, so call it from its own thread.
 pub fn open_with_dialog(path: &str) -> io::Result<()> {
+    // Tests reach the code that opens windows; they must never open real ones.
+    if cfg!(test) {
+        return Ok(());
+    }
     use windows::Win32::UI::Shell::{
         OAIF_ALLOW_REGISTRATION, OAIF_EXEC, OAIF_REGISTER_EXT, OPENASINFO, SHOpenWithDialog,
     };
@@ -781,6 +789,10 @@ pub fn open_with_dialog(path: &str) -> io::Result<()> {
 /// The Properties sheet of a file or folder (Explorer's Alt-Enter). Windows shows it on a
 /// thread of its own; it lives as long as this process does.
 pub fn show_properties(path: &str) -> io::Result<()> {
+    // Tests reach the code that opens windows; they must never open real ones.
+    if cfg!(test) {
+        return Ok(());
+    }
     use windows::Win32::UI::Shell::{SHOP_FILEPATH, SHObjectProperties};
     // SAFETY: no reserved pointer; flags are valid COINIT values.
     let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
@@ -797,6 +809,10 @@ pub fn show_properties(path: &str) -> io::Result<()> {
 /// An Explorer window with `path` selected (`explorer /select,"path"`). The argument is
 /// passed as written: explorer parses it itself and doesn't take standard quoting.
 pub fn reveal(path: &str) -> io::Result<()> {
+    // Tests reach the code that opens windows; they must never open real ones.
+    if cfg!(test) {
+        return Ok(());
+    }
     use std::os::windows::process::CommandExt;
     std::process::Command::new("explorer.exe")
         .raw_arg(format!("/select,\"{path}\""))
@@ -887,6 +903,10 @@ pub fn assoc_invoke(ext: &str, name: &str, path: &str) -> io::Result<()> {
                 .is_ok_and(|n| n == name)
         })
         .ok_or_else(|| io::Error::other("that app isn't registered for this file type any more"))?;
+    // Tests reach the code that opens windows; they must never open real ones.
+    if cfg!(test) {
+        return Ok(());
+    }
     let p = HSTRING::from(path);
     // SAFETY: the path outlives the call; no bind context.
     let item: IShellItem =
@@ -950,6 +970,10 @@ pub fn expand_env(s: &str) -> String {
 /// wtm's `run_command`: `ShellExecuteW("open", command, args, dir)`, every field with
 /// `%ENV%` expanded. Runs `.exe`, `.bat`, `.lnk`, documents and URLs alike.
 pub fn shell_execute(command: &str, args: &str, dir: &str) -> io::Result<()> {
+    // Tests reach the code that opens windows; they must never open real ones.
+    if cfg!(test) {
+        return Ok(());
+    }
     // SAFETY: no reserved pointer; flags are valid COINIT values.
     let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
     let file = HSTRING::from(expand_env(command));

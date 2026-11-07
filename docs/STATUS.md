@@ -1212,3 +1212,12 @@ section in `g?` with `,m ,M` on one row.
 `$env:APPDATA`, any case; an unset name stays as typed (`D:\50% off`). `%APP` + Tab
 completes the variable name (`%APPDATA%\`), Tab again lists its folders.
 `pins::expand_vars` (pure, table-tested incl. `%%`, `%NOPE%%TEMP%`, paths with `%`).
+
+## "Explorer" shows the folder on screen (2026-11-06)
+
+From the `O` menu, "This folder in Explorer" (was "Open the folder in Explorer") opened a
+highlighted subfolder itself; it now opens the folder you're looking at with the item
+selected (`explorer /select`), and "WezTerm tab in this folder" likewise uses the folder
+you're in. `gx` / `gw` are unchanged (the current folder). Tests can no longer open real
+windows from any Windows launch call (ShellExecute, Properties, Open with, Explorer,
+handlers), guarded in `platform`.
