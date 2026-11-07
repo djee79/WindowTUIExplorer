@@ -6427,7 +6427,12 @@ mod job_tests {
         type_text(&mut l.app, "upper");
         press(&mut l.app, "<CR>");
         assert_eq!(l.app.rename_presets.len(), 1);
-        assert!(status(&l.app).contains("saved preset upper"));
+        // "saved", or "updated" when a run with a reused process id left one behind.
+        assert!(
+            status(&l.app).contains(" preset upper"),
+            "{}",
+            status(&l.app)
+        );
         press(&mut l.app, "<CR>");
         assert!(l.app.confirm_note().contains("Rename 5 items?"));
         press(&mut l.app, "y");
