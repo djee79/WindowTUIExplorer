@@ -2747,9 +2747,14 @@ mod pin_tests {
         press(&mut app, "<C-x>n");
         assert_eq!(app.pins.pins.len(), 2, "n keeps it");
         assert_eq!(app.mode, Mode::Picker);
+        // Normal mode: D and dd, the file view's delete keys, ask the same question.
         settle(&mut app);
-        press(&mut app, "<C-x>y");
-        assert_eq!(app.pins.pins.len(), 1);
+        press(&mut app, "<Esc>Dn");
+        assert_eq!(app.pins.pins.len(), 2, "D asks first");
+        assert_eq!(app.mode, Mode::Picker);
+        settle(&mut app);
+        press(&mut app, "<Esc>ddy");
+        assert_eq!(app.pins.pins.len(), 1, "dd deletes after a y");
         assert_eq!(app.mode, Mode::Picker);
     }
 

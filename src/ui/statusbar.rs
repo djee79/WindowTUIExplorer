@@ -131,7 +131,8 @@ const PICKER_NORMAL_HINTS: &[(&str, &str)] = &[
     ("O", "a preset's folders"),
     ("]t/[t", "cycle tag"),
     ("i", "type"),
-    ("^e/^t/^x", "edit · tags · delete"),
+    ("^e/^t", "edit · tags"),
+    ("D/dd", "delete"),
     ("q/Esc", "close"),
 ];
 

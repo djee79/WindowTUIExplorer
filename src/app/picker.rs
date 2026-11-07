@@ -4,7 +4,7 @@
 //! Insert mode (they open there) types into the query; `Esc` goes to normal mode, where
 //! `j`/`k` (with counts), `gg`/`G`, `^d`/`^u`, `]t`/`[t` work, `i`/`a` go back to insert,
 //! and `Esc`/`q` close. In both: `^j`/`^k` `^n`/`^p` move, `Enter` opens, `^e` edits,
-//! `^t` edits tags, `^x` deletes (asks first). Editing returns to the picker.
+//! `^t` edits tags, `^x` (normal mode: `D` / `dd`) deletes (asks first). Editing returns to the picker.
 //! In the tag picker `Tab` chooses tags and `Enter` opens the pin picker filtered to
 //! pins carrying all of them.
 
@@ -24,6 +24,8 @@ pub enum PickerPending {
     G,
     Next,
     Prev,
+    /// `d`: `dd` deletes, like in the file view.
+    D,
 }
 
 /// Which picker to come back to after an edit started from one.
@@ -347,6 +349,7 @@ impl App {
             (Some(PickerPending::Prev), KeyCode::Char('t'), false) => {
                 self.picker_with(|p| p.cycle_tag(false));
             }
+            (Some(PickerPending::D), KeyCode::Char('d'), false) => self.picker_delete(),
             (Some(_), _, _) => {}
             (None, KeyCode::Char(c), false)
                 if c.is_ascii_digit() && (c != '0' || count.is_some()) =>
@@ -362,6 +365,9 @@ impl App {
                 self.picker_pending = Some(PickerPending::G);
                 self.picker_count = count;
             }
+            // `D` / `dd`: delete the pin (confirmed), the file view's delete keys.
+            (None, KeyCode::Char('D'), false) => self.picker_delete(),
+            (None, KeyCode::Char('d'), false) => self.picker_pending = Some(PickerPending::D),
             (None, KeyCode::Char('G'), false) => {
                 let row = count.map_or(usize::MAX, |c| c.saturating_sub(1));
                 self.picker_with(|p| p.set_cursor(row));

@@ -261,7 +261,7 @@ color = "#e3a857"
 - `'{key}` jumps or launches directly, like jumping to a vim mark. Pause after `'` and the
   which-key popup lists every pin key. `''` returns to the previous directory (as in vim).
   `<leader>p` opens the pin picker.
-- In any picker, `Ctrl-e` edits, `Ctrl-x` deletes (with confirmation), `Ctrl-t` edits the
+- In any picker, `Ctrl-e` edits, `Ctrl-x` (normal mode: `D` or `dd`, as in the file view) deletes (with confirmation), `Ctrl-t` edits the
   tags. `T` does the same on a pin in Locations.
 
 #### Tags and filtering
