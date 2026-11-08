@@ -31,7 +31,7 @@ src/platform/shim.rs   non-Windows stub so `cargo test` builds on Linux (approve
 src/ui/                theme.rs (colors from docs/theme.toml, compiled in), columns.rs
                        (3 rounded panels per 01-main), statusbar.rs (top bar, status line,
                        key hints), help.rs (? overlay)
-shell/sentier.ps1      PowerShell `s` wrapper (Q writes cwd)
+shell/sentier-shell.ps1 PowerShell `s` wrapper (Q writes cwd)
 ```
 
 Keys working: `hjkl`/arrows, `gg` `G` Home End, `^d` `^u` PgUp PgDn, Enter/`l` (dir → enter,
@@ -82,7 +82,7 @@ Manual checklist for M1 "done":
 - [ ] A folder with 50k+ files: loading counter climbs, no timeout, scrolling is smooth.
 - [ ] Panic hook: temporarily add a `panic!()` on some key and confirm the terminal is
       restored. Then `panic = "abort"` may go into the release profile.
-- [ ] `. shell\sentier.ps1`, run `s`, press `Q`: the shell lands in sentier's directory.
+- [ ] `. shell\sentier-shell.ps1`, run `s`, press `Q`: the shell lands in sentier's directory.
 - [ ] Logs appear in `%LOCALAPPDATA%\sentier\logs\`.
 
 ## Open questions about the mockups (settle before M2–M5)
