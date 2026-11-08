@@ -406,7 +406,7 @@ impl App {
     pub(super) fn open_in_editor(&mut self, paths: Vec<String>) {
         let editor = self.config.editor();
         // `code --wait`-style editors come with their own arguments.
-        let mut parts = rules::split_args(&editor);
+        let mut parts = rules::split_command(&editor);
         if parts.is_empty() || paths.is_empty() {
             return;
         }

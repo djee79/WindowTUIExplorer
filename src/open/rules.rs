@@ -431,6 +431,34 @@ pub fn command_lines(o: &Opener, targets: &[Target]) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// Splits an editor command (config `editor`, `$VISUAL`, `$EDITOR`) into program + args.
+/// Like `split_args`, except that on Windows these often hold an unquoted path with
+/// spaces (`C:\Program Files\Neovim\bin\nvim.exe`): an unquoted program that starts
+/// with a drive or `\\` runs up to the first `.exe` / `.cmd` / `.bat` / `.com` that ends
+/// a word, spaces included. Pure text: no filesystem check on the UI thread.
+pub fn split_command(s: &str) -> Vec<String> {
+    let t = s.trim();
+    let b = t.as_bytes();
+    let rooted =
+        t.starts_with("\\\\") || (b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':');
+    if rooted {
+        let lower = t.to_ascii_lowercase();
+        for ext in [".exe", ".cmd", ".bat", ".com"] {
+            let mut from = 0;
+            while let Some(i) = lower[from..].find(ext) {
+                let end = from + i + ext.len();
+                if lower[end..].chars().next().is_none_or(char::is_whitespace) {
+                    let mut out = vec![t[..end].to_string()];
+                    out.extend(split_args(&t[end..]));
+                    return out;
+                }
+                from = end;
+            }
+        }
+    }
+    split_args(t)
+}
+
 /// Splits a pin's `args` string the way a command line would: spaces separate, double
 /// quotes group.
 pub fn split_args(s: &str) -> Vec<String> {
@@ -621,5 +649,33 @@ mod tests {
             ["-p", r"C:\Program Files\x", "--flag", "", "end"]
         );
         assert!(split_args("   ").is_empty());
+    }
+
+    #[test]
+    fn editor_command_split() {
+        let nvim = r"C:\Program Files\Neovim\bin\nvim.exe";
+        let code = r"C:\Program Files\Microsoft VS Code\bin\code.cmd";
+        let cases: &[(&str, &[&str])] = &[
+            ("nvim", &["nvim"]),
+            ("code --wait", &["code", "--wait"]),
+            (nvim, &[nvim]),
+            (&format!("  {nvim}  "), &[nvim]),
+            (&format!("{nvim} -u NONE"), &[nvim, "-u", "NONE"]),
+            (&format!(r#""{nvim}" -u NONE"#), &[nvim, "-u", "NONE"]),
+            (&format!("{code} --wait"), &[code, "--wait"]),
+            (
+                r"C:\Tools\my.exe.d\nvim.EXE",
+                &[r"C:\Tools\my.exe.d\nvim.EXE"],
+            ),
+            (
+                r"\\srv01\tools\Neo Vim\nvim.exe -R",
+                &[r"\\srv01\tools\Neo Vim\nvim.exe", "-R"],
+            ),
+            // No extension: plain splitting, as before.
+            (r"C:\bin\nvim --clean", &[r"C:\bin\nvim", "--clean"]),
+        ];
+        for (input, want) in cases {
+            assert_eq!(split_command(input), *want, "{input}");
+        }
     }
 }

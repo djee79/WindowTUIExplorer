@@ -44,7 +44,7 @@ pub struct MenuItem {
 
 /// `nvim · this terminal`, `code`: the editor and where it runs.
 fn editor_detail(editor: &str) -> String {
-    let parts = rules::split_args(editor);
+    let parts = rules::split_command(editor);
     let program = parts.first().cloned().unwrap_or_default();
     let waits = parts.iter().any(|a| a == "--wait" || a == "-w");
     if rules::terminal_editor(&program) {

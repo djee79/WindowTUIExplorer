@@ -310,7 +310,7 @@ impl App {
             return self.set_status("nothing to rename here".into(), false);
         }
         let editor = self.config.editor();
-        let mut words = editor.split_whitespace().map(str::to_string);
+        let mut words = crate::open::rules::split_command(&editor).into_iter();
         let program = words.next().unwrap_or_else(|| "nvim".into());
         let file = std::env::temp_dir().join(format!("sentier-rename-{}.txt", std::process::id()));
         let mut args: Vec<String> = words.collect();
