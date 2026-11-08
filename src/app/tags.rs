@@ -47,6 +47,11 @@ pub enum Confirm {
         direct: bool,
         why: String,
     },
+    /// A zip or an extract on an admin share.
+    Archive {
+        job: Box<crate::jobs::archive::ArchiveJob>,
+        why: String,
+    },
     /// A delete, or a change on an admin share / a bulk rename.
     FileOp {
         op: crate::fs::ops::FileOp,
@@ -63,6 +68,7 @@ impl Confirm {
             Confirm::Paste { .. }
             | Confirm::FileOp { .. }
             | Confirm::Backup { .. }
+            | Confirm::Archive { .. }
             | Confirm::ImportWtm { .. } => None,
         }
     }
@@ -250,6 +256,7 @@ impl App {
             Some(
                 Confirm::Paste { why, .. }
                 | Confirm::Backup { why, .. }
+                | Confirm::Archive { why, .. }
                 | Confirm::ImportWtm { why, .. },
             ) => format!("{why} Go ahead?"),
             None => String::new(),
@@ -313,6 +320,14 @@ impl App {
                     )
                 }
                 Confirm::Backup { .. } => ("Backup".to_string(), false),
+                Confirm::Archive { job, .. } => (
+                    match **job {
+                        crate::jobs::archive::ArchiveJob::Compress { .. } => "Zip",
+                        crate::jobs::archive::ArchiveJob::Extract { .. } => "Extract",
+                    }
+                    .to_string(),
+                    false,
+                ),
                 Confirm::ImportWtm { pins, .. } => {
                     items.extend(pins.iter().map(|p| p.name.clone()));
                     ("Import from wtm".to_string(), false)
@@ -419,6 +434,9 @@ impl App {
         if let Confirm::ImportWtm { pins, usage, .. } = c {
             return self.import_wtm(pins, *usage);
         }
+        if let Confirm::Archive { job, .. } = c {
+            return self.start_archive(*job);
+        }
         if let Confirm::Backup { preset, direct, .. } = c {
             return self.run_backup(*preset, direct);
         }
@@ -446,6 +464,7 @@ impl App {
             Confirm::Paste { .. }
             | Confirm::FileOp { .. }
             | Confirm::Backup { .. }
+            | Confirm::Archive { .. }
             | Confirm::ImportWtm { .. } => String::new(),
         };
         self.save_pins();

@@ -721,6 +721,16 @@ impl App {
 
 /// `3 copied · 1 skipped · 3.80 GB`
 pub fn done_counts(r: &Report) -> String {
+    if let Some(b) = &r.backup {
+        let name = b.zip.rsplit('\\').next().unwrap_or(&b.zip);
+        let counts = format!("{} entries · {}", b.entries, jobs::human_bytes(b.bytes));
+        // `done: HIT.zip · 3 entries` (the title is the zip), `done: HIT backup · HIT_….zip`.
+        return match (b.extracted, name.eq_ignore_ascii_case(&r.title)) {
+            (true, _) => format!("extracted to {name} · {counts}"),
+            (false, true) => counts,
+            (false, false) => format!("{name} · {counts}"),
+        };
+    }
     let mut parts = vec![format!("{} copied", r.copied)];
     if r.skipped > 0 {
         parts.push(format!("{} skipped (already there)", r.skipped));

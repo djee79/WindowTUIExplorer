@@ -4,7 +4,8 @@
 use super::theme::{self, ACCENT, BORDER, PANEL_BG};
 use super::{truncate, width};
 use crate::app::App;
-use crate::keymap::{Action, Continuation, Key, fmt_keys};
+use crate::fs::EntryKind;
+use crate::keymap::{Action, Continuation, Key, Lookup, fmt_keys};
 use crate::pins::KeyOwner;
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -83,12 +84,36 @@ fn char_rows(app: &App) -> Vec<Continuation> {
     rows
 }
 
+/// What `dd` does on the Locations entry under the cursor: never anything to files.
+fn locations_delete_desc(app: &App) -> &'static str {
+    match app.selected().map(|e| e.kind) {
+        Some(EntryKind::Pin) => "unpin (asks; the folder itself stays)",
+        Some(EntryKind::Share) => "forget this share (files untouched)",
+        Some(EntryKind::Drive(_)) => "nothing: drives can't be removed",
+        _ => "remove from this list (files untouched)",
+    }
+}
+
 pub fn draw(f: &mut Frame, body: Rect, app: &App) {
     let mut rows = if app.mark_prefix.is_some() {
         Vec::new()
     } else {
         app.keymap.continuations(&app.keys_pending)
     };
+    // In Locations `dd` only edits the list: say so rather than "Recycle Bin".
+    if app.at_root() {
+        for row in &mut rows {
+            let mut seq = app.keys_pending.clone();
+            seq.push(row.key);
+            if let Lookup::Exact {
+                action: Action::Delete,
+                ..
+            } = app.keymap.lookup(&seq)
+            {
+                row.desc = locations_delete_desc(app).to_string();
+            }
+        }
+    }
     rows.extend(char_rows(app));
     if rows.is_empty() {
         let hint = match app.keymap.char_action(&app.keys_pending) {

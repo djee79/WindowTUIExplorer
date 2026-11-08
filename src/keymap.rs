@@ -306,6 +306,10 @@ pub enum Action {
     /// `u`: the newest bulk rename in this folder (or below it), back (asks).
     UndoRenameHere,
     BulkRename,
+    /// `<leader>zc` / `:zip [name]`: zip the selection (or the item) into this folder.
+    Compress(String),
+    /// `<leader>zx` / `:unzip`: extract the archive under the cursor here.
+    Extract,
     /// `<leader>p`: the pin picker.
     PinPicker,
     /// `<leader>t` / `:tags`: the tag picker.
@@ -471,6 +475,8 @@ const NAMED: &[(&str, Action)] = &[
     ("undo-rename-here", Action::UndoRenameHere),
     ("rename-edit", Action::BulkRename),
     ("bulk-rename", Action::BulkRename),
+    ("compress", Action::Compress(String::new())),
+    ("extract", Action::Extract),
     ("pin-picker", Action::PinPicker),
     ("tag-picker", Action::TagPicker),
     ("machine-picker", Action::MachinePicker),
@@ -815,6 +821,20 @@ pub const COMMANDS: &[Command] = {
             Same,
         ),
         cmd(
+            "zip",
+            "[name]",
+            "zip the selection (or the item) into this folder",
+            SyncBackup,
+            Same,
+        ),
+        cmd(
+            "unzip",
+            "",
+            "extract the archive under the cursor here (.zip; .7z .rar .tar.gz with 7-Zip)",
+            SyncBackup,
+            Same,
+        ),
+        cmd(
             "rename",
             "",
             "bulk rename panel, PowerRename-style (r on a selection)",
@@ -961,7 +981,7 @@ impl Action {
             FullPreview | NextPage | PrevPage | GotoPage | NextMatch | PrevMatch => Group::Preview,
             ToggleMark | Visual | Yank | Cut | Paste | PasteOverwrite | RepeatPaste | NewFile
             | NewDir | Rename | UndoRenameHere | UndoRename(_) | RenamePanel | BulkRename
-            | Delete | DeletePermanent => Group::SelectEdit,
+            | Compress(_) | Extract | Delete | DeletePermanent => Group::SelectEdit,
             CopyPath | CopyUnc | CopyName | OpenWith | Reveal | ExplorerHere | Properties
             | TerminalHere | EditHere => Group::PathsWindows,
             JumpMark(_) | SetMark(_) | PinItem | EditPinTags | PinPicker | TagPicker
@@ -1033,6 +1053,8 @@ impl Action {
             "sync" => Ok(Action::Sync(arg.to_string(), false)),
             "sync!" => Ok(Action::Sync(arg.to_string(), true)),
             "backup" => Ok(Action::Backup(arg.to_string())),
+            "zip" => Ok(Action::Compress(arg.to_string())),
+            "unzip" | "extract" => Ok(Action::Extract),
             "pin" if arg.is_empty() => Ok(Action::PinCwd),
             "pin" if arg == "url" || arg.starts_with("url ") => {
                 Ok(Action::PinUrl(arg[3..].trim().to_string()))
@@ -1291,6 +1313,12 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("<leader>j", Jobs, "jobs panel"),
         ("<leader>rs", SyncPicker, "run a sync preset"),
         ("<leader>rb", Backup(String::new()), "run a backup preset"),
+        (
+            "<leader>zc",
+            Compress(String::new()),
+            "compress to zip (the selection or the item)",
+        ),
+        ("<leader>zx", Extract, "extract the archive here"),
         ("J", Jobs, "jobs panel"),
         ("<Tab>", ToggleMark, "select + down"),
         ("v", Visual, "visual (range select)"),
@@ -1304,7 +1332,7 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         (
             "dd",
             Delete,
-            "delete to the Recycle Bin (Locations: remove)",
+            "delete to the Recycle Bin (Locations: only the list entry)",
         ),
         (":", CommandLine, "command line"),
         ("q", Quit, "quit (with several tabs: close this one)"),
@@ -1351,6 +1379,7 @@ fn group_label(prefix: &[Key], leader: Key) -> &'static str {
         [l, k] if *l == leader && k.code == KeyCode::Char('n') => "new… (web app, presets)",
         [l, k] if *l == leader && k.code == KeyCode::Char('f') => "find (files, recent folders)",
         [l, k] if *l == leader && k.code == KeyCode::Char('s') => "search (keymaps)",
+        [l, k] if *l == leader && k.code == KeyCode::Char('z') => "zip / extract",
         _ => "more",
     }
 }

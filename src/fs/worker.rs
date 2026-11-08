@@ -1052,6 +1052,40 @@ impl Worker {
         ctl
     }
 
+    /// A compress / extract job on the blocking pool; events come back as `Job`. With
+    /// `audit` (an admin share's machine and user) the outcome goes to `audit.log`.
+    pub fn start_archive(
+        &self,
+        id: u64,
+        job: crate::jobs::archive::ArchiveJob,
+        audit: Option<(String, Option<String>)>,
+    ) -> crate::jobs::Control {
+        let ctl = crate::jobs::Control::default();
+        let (tx, c) = (self.tx.clone(), ctl.clone());
+        self.rt.spawn_blocking(move || {
+            let outcome = std::cell::Cell::new("ok");
+            crate::jobs::archive::run(&job, &c, &|ev| {
+                match &ev {
+                    crate::jobs::JobEvent::Error(_) => outcome.set("FAILED"),
+                    crate::jobs::JobEvent::Finished { cancelled: true } => outcome.set("cancelled"),
+                    _ => {}
+                }
+                let _ = tx.send(AppEvent::Job { id, ev });
+            });
+            if let Some((host, user)) = audit {
+                let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                append_audit(&format!(
+                    "{now}\t{host}\t{}\t{}\t{}\t{}",
+                    user.as_deref().unwrap_or("-"),
+                    job.describe(),
+                    outcome.get(),
+                    job.paths().join(" | ")
+                ));
+            }
+        });
+        ctl
+    }
+
     /// A sync preset's dry run on the blocking pool: one `SyncPreviewed`. No timeout:
     /// robocopy gives up on an unreachable share by itself (`/R:0`), and the cancel
     /// token (Esc) kills it.

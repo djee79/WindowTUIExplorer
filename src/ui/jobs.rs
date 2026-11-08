@@ -9,7 +9,7 @@ use super::theme::{
 };
 use super::{truncate, truncate_left, width};
 use crate::app::{App, JobRow};
-use crate::jobs::zip::BackupStep;
+use crate::jobs::zip::{BackupStep, StepSet};
 use crate::jobs::{ActKind, Activity, Job, Phase, Report, clock, files_word, human_bytes};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -128,14 +128,15 @@ fn status_word(j: &Job, now: Instant) -> String {
     if j.stalled(now) {
         return "STALLED".to_string();
     }
-    if let Some(step) = j.backup.as_ref().and_then(|b| b.step)
+    if let Some(b) = j.backup.as_ref()
+        && let Some(step) = b.step
         && !j.phase.is_over()
     {
         return format!(
             "{} {}/{}",
             step.word().to_uppercase(),
-            step.number(),
-            BackupStep::ALL.len()
+            b.number(step),
+            b.steps().len()
         );
     }
     match (j.phase, j.op) {
@@ -144,15 +145,36 @@ fn status_word(j: &Job, now: Instant) -> String {
     }
 }
 
-/// `sync · mirror` for a preset's job, else `copy · robocopy`.
+/// `sync · mirror` for a preset's job, `compress · zip` / `extract` for an archive
+/// job, else `copy · robocopy`.
 fn kind_word(
     preset: Option<&crate::jobs::preset::PresetRef>,
+    archive: Option<&'static str>,
     op: crate::jobs::Op,
     backend: crate::jobs::Backend,
 ) -> String {
-    match preset {
-        Some(p) => p.label.clone(),
-        None => format!("{} · {}", op.word(), backend.word()),
+    match (preset, archive) {
+        (Some(p), _) => p.label.clone(),
+        (None, Some(a)) => a.to_string(),
+        (None, None) => format!("{} · {}", op.word(), backend.word()),
+    }
+}
+
+/// An archive job's kind word, or None for a copy or a backup.
+fn archive_word(kind: Option<StepSet>) -> Option<&'static str> {
+    match kind? {
+        StepSet::Compress => Some("compress · zip"),
+        StepSet::Extract => Some("extract"),
+        StepSet::Backup => None,
+    }
+}
+
+/// The same from a report: a backup has a preset, a compress or extract doesn't.
+fn report_archive(r: &crate::jobs::Report) -> Option<&'static str> {
+    match (&r.preset, &r.backup) {
+        (None, Some(b)) if b.extracted => Some("extract"),
+        (None, Some(_)) => Some("compress · zip"),
+        _ => None,
     }
 }
 
@@ -305,6 +327,7 @@ fn finished(r: &Report) -> Finished {
     };
     let ended = r.started + Duration::from_secs(r.seconds);
     let mut what = match &r.backup {
+        Some(b) if b.extracted => format!("{} · {} entries", human_bytes(b.bytes), b.entries),
         Some(b) => format!("zip {} · {} entries", human_bytes(b.bytes), b.entries),
         None => files_word(r.copied),
     };
@@ -317,9 +340,10 @@ fn finished(r: &Report) -> Finished {
     if r.skipped > 0 && r.backup.is_none() {
         what.push_str(&format!(" · {} unchanged", r.skipped));
     }
-    let (op, engine) = match &r.preset {
-        Some(p) => (p.label.clone(), String::new()),
-        None => (r.op.word().to_string(), format!(" ({})", r.backend.word())),
+    let (op, engine) = match (&r.preset, report_archive(r)) {
+        (Some(p), _) => (p.label.clone(), String::new()),
+        (None, Some(a)) => (a.to_string(), String::new()),
+        (None, None) => (r.op.word().to_string(), format!(" ({})", r.backend.word())),
     };
     Finished {
         icon,
@@ -413,7 +437,12 @@ fn draw_list(f: &mut Frame, area: Rect, app: &App, compact: bool) {
             l2.extend(bar(j.fraction(), bw, color));
             l2.push(Span::styled(format!(" {pct}"), theme::bold(FG).bg(CARD)));
             l2.push(Span::styled(format!("  {right}"), theme::dim().bg(CARD)));
-            let mut facts = vec![kind_word(j.preset.as_ref(), j.op, j.backend)];
+            let mut facts = vec![kind_word(
+                j.preset.as_ref(),
+                archive_word(j.backup.as_ref().map(|b| b.kind)),
+                j.op,
+                j.backend,
+            )];
             if let Some(n) = j.total_files {
                 facts.push(files_word(n));
             }
@@ -587,7 +616,8 @@ fn copy_stages(
 }
 
 fn backup_stages(b: &crate::jobs::zip::BackupState) -> (Vec<String>, usize) {
-    let names = BackupStep::ALL
+    let names = b
+        .steps()
         .iter()
         .map(|s| {
             let w = s.word();
@@ -598,7 +628,7 @@ fn backup_stages(b: &crate::jobs::zip::BackupState) -> (Vec<String>, usize) {
             n
         })
         .collect();
-    (names, b.step.map_or(0, |s| s.number() - 1))
+    (names, b.step.map_or(0, |s| b.number(s) - 1))
 }
 
 /// `16`, `50`, `200`: a round number at or above `v`.
@@ -813,7 +843,12 @@ fn draw_live(f: &mut Frame, area: Rect, j: &Job, now: Instant) {
         f,
         area,
         j.title.clone(),
-        kind_word(j.preset.as_ref(), j.op, j.backend),
+        kind_word(
+            j.preset.as_ref(),
+            archive_word(j.backup.as_ref().map(|b| b.kind)),
+            j.op,
+            j.backend,
+        ),
     );
     let w = inner.width as usize;
     let color = live_color(j, now);
@@ -1068,7 +1103,7 @@ fn draw_report(f: &mut Frame, area: Rect, r: &Report) {
         f,
         area,
         r.title.clone(),
-        kind_word(r.preset.as_ref(), r.op, r.backend),
+        kind_word(r.preset.as_ref(), report_archive(r), r.op, r.backend),
     );
     let w = inner.width as usize;
     let color = phase_color(r.phase);
@@ -1097,29 +1132,33 @@ fn draw_report(f: &mut Frame, area: Rect, r: &Report) {
         truncate(&r.result_line(), w),
         theme::bold(color),
     )]));
-    lines.push(Line::from(Span::styled(
-        format!(
-            "{} copied · {} unchanged · {} failed · {} extra  ·  {} in {}",
-            r.copied,
-            r.skipped,
-            r.failed.len(),
-            r.extra,
-            human_bytes(r.bytes),
-            clock(Duration::from_secs(r.seconds))
-        ),
-        theme::fg(FG),
-    )));
+    // Robocopy's counts mean nothing for a compress / extract (no robocopy in it).
+    if report_archive(r).is_none() {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{} copied · {} unchanged · {} failed · {} extra  ·  {} in {}",
+                r.copied,
+                r.skipped,
+                r.failed.len(),
+                r.extra,
+                human_bytes(r.bytes),
+                clock(Duration::from_secs(r.seconds))
+            ),
+            theme::fg(FG),
+        )));
+    }
     if let Some(b) = &r.backup {
         lines.push(Line::default());
-        lines.extend(path_lines("Zip", &b.zip, NET, "", w));
+        let (label, checked) = if b.extracted {
+            ("Folder", "entries extracted, every CRC checked")
+        } else {
+            ("Zip", "entries read back, every CRC checked")
+        };
+        lines.extend(path_lines(label, &b.zip, NET, "", w));
         lines.push(Line::from(vec![
             Span::styled(format!("{:<8}", "Verified"), theme::dim()),
             Span::styled(
-                format!(
-                    "{} entries read back, every CRC checked · {}",
-                    b.entries,
-                    human_bytes(b.bytes)
-                ),
+                format!("{} {checked} · {}", b.entries, human_bytes(b.bytes)),
                 theme::fg(OK),
             ),
         ]));

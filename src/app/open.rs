@@ -109,7 +109,7 @@ impl App {
     }
 
     fn menu_items(&self, name: &str, is_dir: bool, ext: &str) -> Vec<MenuItem> {
-        open_menu::build_menu(
+        let mut items = open_menu::build_menu(
             &self.open_cfg,
             name,
             is_dir,
@@ -117,7 +117,47 @@ impl App {
             &self.open_resolved,
             self.open_registered.get(ext),
             &self.config.editor(),
-        )
+        );
+        // Extract an archive, or zip anything else: last of the configured rows.
+        use crate::jobs::archive::{Format, format_of};
+        let (id, detail, missing) = match (is_dir, format_of(name)) {
+            (false, Some(Format::Zip)) => ("extract", "into a folder here".to_string(), false),
+            (false, Some(Format::SevenZip)) => match &self.seven_zip {
+                Some(_) => ("extract", "into a folder here (7-Zip)".to_string(), false),
+                None => (
+                    "extract",
+                    "needs 7-Zip (7z.exe), not found".to_string(),
+                    true,
+                ),
+            },
+            _ => ("compress", "a zip in this folder".to_string(), false),
+        };
+        let at = items
+            .iter()
+            .position(|m| m.section != open_menu::Section::Configured)
+            .unwrap_or(items.len());
+        items.insert(
+            at,
+            MenuItem {
+                id: id.to_string(),
+                label: rules::BUILTINS
+                    .iter()
+                    .find(|(n, _)| *n == id)
+                    .map_or(id, |(_, l)| *l)
+                    .to_string(),
+                detail,
+                hint: if id == "extract" {
+                    "Space zx"
+                } else {
+                    "Space zc"
+                }
+                .to_string(),
+                missing,
+                last: false,
+                section: open_menu::Section::Configured,
+            },
+        );
+        items
     }
 
     /// Windows answered for `ext`: kept for the session, and the open menu (if it's for
@@ -306,6 +346,15 @@ impl App {
             "copy-unc" => self
                 .worker
                 .copy_text(many("copied the UNC path of"), paths, true),
+            "extract" => {
+                for t in targets.iter().filter(|t| !t.is_dir) {
+                    self.extract_path(t.path.clone());
+                }
+            }
+            "compress" => {
+                let items = targets.iter().map(|t| (t.path.clone(), t.is_dir)).collect();
+                self.compress_paths(items, folder(&first), "");
+            }
             "openwith" => self.worker.open_with_dialog(first.path.clone()),
             "properties" => self.worker.properties(first.path.clone()),
             pin if pin.starts_with("pin:") => self.run_pin_opener(&pin[4..], &targets),

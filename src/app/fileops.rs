@@ -52,7 +52,7 @@ pub struct InlineResult {
 
 impl App {
     /// The machine and its user when `loc` is on an admin share.
-    fn admin_target(&self, loc: &Loc) -> Option<(String, Option<String>)> {
+    pub(super) fn admin_target(&self, loc: &Loc) -> Option<(String, Option<String>)> {
         let host = loc.admin_host()?.to_string();
         let user = self.machine_user(&host);
         Some((host, user))

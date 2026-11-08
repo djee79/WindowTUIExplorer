@@ -3,6 +3,7 @@
 //! (robocopy's, parsed, or the same events made by the native backend), and the app
 //! applies them here.
 
+pub mod archive;
 pub mod headless;
 pub mod preset;
 pub mod robocopy;
@@ -816,6 +817,7 @@ impl Job {
                     bytes,
                     entries,
                     pruned: Vec::new(),
+                    extracted: b.kind == zip::StepSet::Extract,
                 });
             }
             JobEvent::Pruned(names) => {
@@ -926,11 +928,20 @@ impl Job {
                             n
                         ),
                     },
-                    _ => format!(
-                        "{} copied ({}) in {took}",
-                        files_word(self.tracker.files_done),
-                        human_bytes(self.tracker.bytes_done)
-                    ),
+                    // A zip made or an archive extracted: what came out.
+                    _ => match self.backup.as_ref().and_then(|b| b.outcome.as_ref()) {
+                        Some(o) => format!(
+                            "{} · {} entries · {} in {took}",
+                            file_name(&o.zip),
+                            o.entries,
+                            human_bytes(o.bytes)
+                        ),
+                        None => format!(
+                            "{} copied ({}) in {took}",
+                            files_word(self.tracker.files_done),
+                            human_bytes(self.tracker.bytes_done)
+                        ),
+                    },
                 };
                 let kind = if self.phase == Phase::Done {
                     ActKind::Done
@@ -1186,7 +1197,10 @@ impl Report {
     /// `FAILED robocopy exit 9 = 1 (files copied) + 8 (some copies failed)`
     pub fn result_line(&self) -> String {
         if let (Phase::Done, Some(b)) = (self.phase, &self.backup) {
-            return format!("DONE zip made and verified ({} entries)", b.entries);
+            return match b.extracted {
+                true => format!("DONE extracted, every CRC checked ({} entries)", b.entries),
+                false => format!("DONE zip made and verified ({} entries)", b.entries),
+            };
         }
         let mut s = self.phase.word().to_string();
         if let Some(code) = self.exit

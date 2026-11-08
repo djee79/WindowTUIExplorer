@@ -4,6 +4,7 @@
 //! This module never touches the filesystem. It asks the [`Worker`] for things and reacts
 //! to the [`AppEvent`]s that come back.
 
+mod archive;
 pub mod auth;
 mod fileops;
 pub(crate) mod finders;
@@ -238,6 +239,8 @@ pub struct App {
     pins_loaded: bool,
     /// A pin being made or edited through prompts.
     pin_draft: Option<pins::PinDraft>,
+    /// What `<leader>zc` zips while its name is asked.
+    zip_draft: Option<archive::ZipDraft>,
     /// A key that clashes with others (`'dd` while `'d` is D:\): moving those first.
     key_move: Option<pins::KeyMove>,
     /// `'d` when keys start with d (`'dd`, `'dl`): waiting for the second letter.
@@ -428,6 +431,7 @@ impl App {
             pins: crate::pins::PinStore::default(),
             pins_loaded: false,
             pin_draft: None,
+            zip_draft: None,
             key_move: None,
             mark_prefix: None,
             pick: None,
@@ -2413,6 +2417,61 @@ mod tests {
         let screen = render(&mut app, 160, 24);
         assert!(
             line_of(&screen, "C:  Windows").contains("│  ● C:"),
+            "{screen}"
+        );
+    }
+
+    /// Locations with these entries (in order), drawn.
+    fn locations_screen(entries: Vec<Entry>) -> String {
+        let (mut app, _rt) = fixture();
+        app.dirs.insert(
+            Loc::Root,
+            DirState {
+                listing: Some(listing_unsorted(entries)),
+                ..DirState::default()
+            },
+        );
+        app.set_cwd(Loc::Root, None);
+        render(&mut app, 160, 24)
+    }
+
+    #[test]
+    fn shares_hint_only_when_there_are_none() {
+        let share = || Entry::virtual_entry(r"\\srv01\project".into(), EntryKind::Share, "".into());
+        let machine =
+            || Entry::virtual_entry("PC-042".into(), EntryKind::Machine(Some(true)), "".into());
+        let hint = "none yet: browse a";
+        // Shares and machines: MACHINES is the last section, still no hint.
+        let screen = locations_screen(vec![share(), machine()]);
+        assert!(
+            screen.contains("MACHINES") && !screen.contains(hint),
+            "{screen}"
+        );
+        // Machines only: the hint, above MACHINES.
+        let screen = locations_screen(vec![machine()]);
+        let (at_hint, at_machines) = (screen.find(hint), screen.find("MACHINES"));
+        assert!(at_hint.is_some() && at_hint < at_machines, "{screen}");
+        // Nothing at all: the hint.
+        assert!(locations_screen(Vec::new()).contains(hint));
+    }
+
+    #[test]
+    fn which_key_dd_in_locations_says_files_are_untouched() {
+        let (mut app, _rt) = root_fixture();
+        let popup = |app: &mut App| {
+            press(app, "d");
+            app.tick(Instant::now() + app.keymap.timeout + Duration::from_millis(1));
+            let screen = render(app, 160, 24);
+            press(app, "<Esc>");
+            screen
+        };
+        let screen = popup(&mut app);
+        assert!(screen.contains("drives can't be removed"), "{screen}");
+        assert!(!screen.contains("Recycle Bin"), "{screen}");
+        press(&mut app, "2j");
+        let screen = popup(&mut app);
+        assert!(
+            screen.contains("forget this share (files untouched)"),
             "{screen}"
         );
     }
@@ -4555,6 +4614,91 @@ mod job_tests {
             .unwrap_or_default()
     }
 
+    fn listed(app: &App, name: &str) -> bool {
+        app.view_listing
+            .as_ref()
+            .is_some_and(|l| l.entries.iter().any(|e| e.name == name))
+    }
+
+    #[test]
+    fn zip_and_extract_from_the_keys() {
+        let dir = temp_tree();
+        let src = dir.join("src");
+        let mut l = Live::new(&src);
+
+        // <leader>zc on a folder: the name suggested, Enter zips it as a job.
+        l.goto("proj");
+        press(&mut l.app, "<Space>zc");
+        let asked = l.app.prompt.as_ref().map(|p| (p.kind, p.editor.text()));
+        assert_eq!(asked, Some((PromptKind::ZipName, "proj.zip".into())));
+        assert!(
+            l.app
+                .prompt
+                .as_ref()
+                .is_some_and(|p| p.note == "proj → proj.zip"),
+            "{:?}",
+            l.app.prompt.as_ref().map(|p| &p.note)
+        );
+        press(&mut l.app, "<CR>");
+        assert_eq!(l.app.jobs.len(), 1);
+        l.until(|a| a.jobs.iter().all(|j| j.phase.is_over()) && listed(a, "proj.zip"));
+        assert_eq!(l.app.jobs[0].phase, Phase::Done, "{}", status(&l.app));
+        assert!(
+            status(&l.app).contains("done: proj.zip · 3 entries · "),
+            "{}",
+            status(&l.app)
+        );
+
+        // <leader>zx on it: one folder at the top, and proj exists → proj_1.
+        l.goto("proj.zip");
+        press(&mut l.app, "<Space>zx");
+        l.until(|a| a.jobs.iter().all(|j| j.phase.is_over()) && listed(a, "proj_1"));
+        assert_eq!(
+            std::fs::read_to_string(src.join(r"proj_1\sub\c.txt"))
+                .ok()
+                .as_deref(),
+            Some("c")
+        );
+        assert!(
+            status(&l.app).contains("extracted to proj_1"),
+            "{}",
+            status(&l.app)
+        );
+
+        // :zip with a name, on a selection; the name gets its .zip.
+        l.goto("a.txt");
+        press(&mut l.app, "<Tab><Tab>:zip two<CR>");
+        l.until(|a| a.jobs.iter().all(|j| j.phase.is_over()) && listed(a, "two.zip"));
+        assert!(l.app.marked.is_empty(), "the selection is used up");
+
+        // Not an archive / not a folder: said, nothing started.
+        let jobs = l.app.jobs.len();
+        l.goto("a.txt");
+        press(&mut l.app, "<Space>zx");
+        assert!(
+            status(&l.app).contains("isn't an archive"),
+            "{}",
+            status(&l.app)
+        );
+        l.goto("proj");
+        press(&mut l.app, "<Space>zx");
+        assert!(status(&l.app).contains("put the cursor on an archive"));
+        // A .7z without 7-Zip.
+        l.app.seven_zip = None;
+        let _ = std::fs::write(src.join("x.7z"), "x");
+        press(&mut l.app, "R");
+        l.until(|a| listed(a, "x.7z"));
+        l.goto("x.7z");
+        press(&mut l.app, "<Space>zx");
+        assert!(status(&l.app).contains("needs 7-Zip"), "{}", status(&l.app));
+        assert_eq!(l.app.jobs.len(), jobs);
+        // Esc on the name prompt zips nothing.
+        press(&mut l.app, "<Space>zc<Esc><Esc>");
+        assert_eq!(status(&l.app), "not zipped");
+        assert_eq!(l.app.jobs.len(), jobs);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn tab_visual_and_operands() {
         let (mut app, _rt) = fixture();
@@ -6003,6 +6147,7 @@ mod job_tests {
                 "default",
                 "copy-path",
                 "editor",
+                "compress",
                 "assoc:np",
                 "openwith",
                 "properties"
@@ -6010,6 +6155,7 @@ mod job_tests {
         );
         let screen = render(&mut l.app, 140, 40);
         assert!(screen.contains("Open a.txt with"), "{screen}");
+        assert!(screen.contains("Compress to zip"), "{screen}");
         assert!(screen.contains("configured (*.txt)"), "{screen}");
         assert!(screen.contains("not found"), "{screen}");
         assert!(
@@ -6029,7 +6175,7 @@ mod job_tests {
                 ],
             },
         });
-        assert_eq!(ids(&l.app)[6], "assoc:code");
+        assert_eq!(ids(&l.app)[7], "assoc:code");
         assert_eq!(l.app.open_menu.as_ref().map(|m| m.cursor), Some(2));
         press(&mut l.app, "<Up><Up>");
         // The missing one can't run: the menu stays.
@@ -6040,7 +6186,7 @@ mod job_tests {
         type_text(&mut l.app, "ech");
         assert_eq!(l.app.open_menu.as_ref().map(|m| m.shown().len()), Some(1));
         press(&mut l.app, "<Esc>");
-        assert_eq!(l.app.open_menu.as_ref().map(|m| m.shown().len()), Some(9));
+        assert_eq!(l.app.open_menu.as_ref().map(|m| m.shown().len()), Some(10));
         // 1 picks Echo, and it's remembered for .txt.
         press(&mut l.app, "1");
         assert_eq!(l.app.mode, Mode::Normal);

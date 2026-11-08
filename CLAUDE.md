@@ -371,6 +371,19 @@ paths, tags are the main way to narrow things down.
 - Bulk rename: `r` / `cw` with a selection (or a visual range), or `:rename`, opens the
   PowerRename-style panel (section 16). `:rename-edit` opens the selection's names in
   `$EDITOR` (Neovim), one per line, and applies the edited lines after the same preview.
+- **Zip / extract** (`jobs/archive.rs`), jobs in the panel like a copy:
+  - `<leader>zc` / `:zip [name]` zips the selection (or the item) into this folder; the
+    name is asked, suggested (`report.pdf` → `report.zip`, a folder → its name, several
+    → the folder's name). Written as `.partial`, read back (every CRC), then renamed; a
+    name in use gets a number.
+  - `<leader>zx` / `:unzip` extracts the archive under the cursor here: into a folder
+    named after it (`HIT.zip` → `HIT\`), or, when it holds one top folder, that folder as
+    it is (no `HIT\HIT\`); a name in use gets a number (`HIT_1`). `.zip` natively, every
+    CRC checked; an entry that would land outside the folder refuses the archive.
+    `.7z .rar .tar .gz .tgz .bz2 .xz .cab` through 7-Zip when it's installed (a
+    `.tar.gz` is unpacked both ways), else "needs 7-Zip".
+  - Also in the `O` menu ("Compress to zip" / "Extract here"). Admin shares: the usual
+    confirmation naming the machine, and the audit log.
 - All operations run in the worker and report back. Errors go to the status bar.
 
 ### 6. Launcher (ported from wtm)
@@ -1125,6 +1138,7 @@ filters) · `dialog` (confirmations, sync preview).
 | `<leader>/` | grep picker |
 | `<leader>j` | jobs panel |
 | `<leader>rs` · `<leader>rb` | run a sync preset · run a backup preset (pickers) |
+| `<leader>zc` · `<leader>zx` | zip the selection here · extract the archive under the cursor here |
 | `<leader>l` | Locations |
 | `<leader>m` | machines picker (recent, pinned, inventory, AD) |
 | `<leader>t` | tag picker (multi-select, applies a tag filter) |

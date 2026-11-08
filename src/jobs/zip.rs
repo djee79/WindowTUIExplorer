@@ -372,6 +372,8 @@ pub enum BackupStep {
     Verifying,
     Retention,
     Cleanup,
+    /// `<leader>zx`: an archive unpacked (see `jobs::archive`).
+    Extracting,
 }
 
 impl BackupStep {
@@ -383,14 +385,6 @@ impl BackupStep {
         BackupStep::Cleanup,
     ];
 
-    /// 1-based, for `ZIPPING 2/5`.
-    pub fn number(self) -> usize {
-        BackupStep::ALL
-            .iter()
-            .position(|s| *s == self)
-            .map_or(1, |i| i + 1)
-    }
-
     pub fn word(self) -> &'static str {
         match self {
             BackupStep::Staging => "staging",
@@ -398,13 +392,43 @@ impl BackupStep {
             BackupStep::Verifying => "verifying",
             BackupStep::Retention => "retention",
             BackupStep::Cleanup => "cleanup",
+            BackupStep::Extracting => "extracting",
         }
+    }
+}
+
+/// Which pipeline a [`BackupState`] follows: a backup preset, or a plain compress /
+/// extract (`<leader>zc` / `<leader>zx`) that reuses its zip writer and checks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StepSet {
+    #[default]
+    Backup,
+    Compress,
+    Extract,
+}
+
+impl StepSet {
+    pub fn steps(self) -> &'static [BackupStep] {
+        match self {
+            StepSet::Backup => &BackupStep::ALL,
+            StepSet::Compress => &[BackupStep::Zipping, BackupStep::Verifying],
+            StepSet::Extract => &[BackupStep::Extracting],
+        }
+    }
+
+    /// 1-based, for `ZIPPING 2/5`.
+    pub fn number(self, step: BackupStep) -> usize {
+        self.steps()
+            .iter()
+            .position(|s| *s == step)
+            .map_or(1, |i| i + 1)
     }
 }
 
 /// A backup job's own progress, next to the robocopy tracker (used while staging).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BackupState {
+    pub kind: StepSet,
     pub step: Option<BackupStep>,
     /// Bytes of the current step (zipped, verified).
     pub done: u64,
@@ -417,14 +441,28 @@ pub struct BackupState {
     pub pruned: Vec<String>,
 }
 
+impl BackupState {
+    /// The steps this job goes through, in order.
+    pub fn steps(&self) -> &'static [BackupStep] {
+        self.kind.steps()
+    }
+
+    pub fn number(&self, step: BackupStep) -> usize {
+        self.kind.number(step)
+    }
+}
+
 /// What a finished backup made, kept in the report.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackupOutcome {
+    /// The zip, or the folder an archive was extracted to (`extracted`).
     pub zip: String,
     pub bytes: u64,
     pub entries: u64,
     #[serde(default)]
     pub pruned: Vec<String>,
+    #[serde(default)]
+    pub extracted: bool,
 }
 
 // ------------------------------------------------------------------ the run
@@ -460,7 +498,7 @@ pub fn staging_dir(id: u64) -> Option<String> {
 }
 
 /// `C:\x` → `\\?\C:\x`, `\\srv\s\x` → `\\?\UNC\srv\s\x`: no 260-character limit.
-fn long(p: &str) -> PathBuf {
+pub(super) fn long(p: &str) -> PathBuf {
     if p.starts_with(r"\\?\") {
         PathBuf::from(p)
     } else if let Some(rest) = p.strip_prefix(r"\\") {
@@ -470,17 +508,17 @@ fn long(p: &str) -> PathBuf {
     }
 }
 
-struct Found {
+pub(super) struct Found {
     /// `/`-separated, relative to the root; folders end in `/`.
-    rel: String,
-    path: PathBuf,
-    size: u64,
-    modified: Option<SystemTime>,
+    pub(super) rel: String,
+    pub(super) path: PathBuf,
+    pub(super) size: u64,
+    pub(super) modified: Option<SystemTime>,
 }
 
 /// Every folder and file below `root`, folders before their contents, sorted by name.
 /// Junctions and symlinks are skipped, never followed.
-fn walk(root: &Path, cancel: &CancelToken) -> std::io::Result<Vec<Found>> {
+pub(super) fn walk(root: &Path, cancel: &CancelToken) -> std::io::Result<Vec<Found>> {
     let mut out = Vec::new();
     let mut stack = vec![(root.to_path_buf(), String::new())];
     while let Some((dir, prefix)) = stack.pop() {
@@ -521,7 +559,7 @@ fn walk(root: &Path, cancel: &CancelToken) -> std::io::Result<Vec<Found>> {
     Ok(out)
 }
 
-fn zip_time(t: Option<SystemTime>) -> ::zip::DateTime {
+pub(super) fn zip_time(t: Option<SystemTime>) -> ::zip::DateTime {
     use chrono::{Datelike, Timelike};
     let Some(t) = t else {
         return ::zip::DateTime::default_for_write();
@@ -619,7 +657,7 @@ fn pipeline(
     };
     match &seven {
         Some(exe) => zip_7z(exe, spec, partial, &root, total, cancel, send)?,
-        None => write_zip(spec, partial, &found, total, cancel, send)?,
+        None => write_zip(spec.compression, partial, &found, total, cancel, send)?,
     }
     if let Some(e) = stop() {
         return Err(e);
@@ -689,7 +727,7 @@ fn pipeline(
 }
 
 /// `HIT_2026-11-05_1945.zip`, or `…_2.zip` if that is taken (two runs in a minute).
-fn free_name(dir: &Path, name: &str) -> PathBuf {
+pub(super) fn free_name(dir: &Path, name: &str) -> PathBuf {
     let first = dir.join(name);
     if !long(&first.display().to_string()).exists() {
         return first;
@@ -811,15 +849,15 @@ fn stage(
 }
 
 /// Sends `StageProgress` at most every 100 ms.
-struct Progress<'a> {
-    send: &'a dyn Fn(JobEvent),
-    total: u64,
-    done: u64,
-    last: Instant,
+pub(super) struct Progress<'a> {
+    pub(super) send: &'a dyn Fn(JobEvent),
+    pub(super) total: u64,
+    pub(super) done: u64,
+    pub(super) last: Instant,
 }
 
 impl Progress<'_> {
-    fn tick(&mut self, current: &str, force: bool) {
+    pub(super) fn tick(&mut self, current: &str, force: bool) {
         if force || self.last.elapsed() >= PROGRESS_EVERY {
             self.last = Instant::now();
             (self.send)(JobEvent::StageProgress {
@@ -831,8 +869,8 @@ impl Progress<'_> {
     }
 }
 
-fn write_zip(
-    spec: &BackupSpec,
+pub(super) fn write_zip(
+    compression: Compression,
     partial: &Path,
     found: &[Found],
     total: u64,
@@ -854,8 +892,7 @@ fn write_zip(
         if cancel.is_cancelled() {
             return Err("cancelled".into());
         }
-        let opts = spec
-            .compression
+        let opts = compression
             .options()
             .last_modified_time(zip_time(f.modified))
             .large_file(f.size >= u64::from(u32::MAX));
@@ -998,14 +1035,14 @@ fn zip_7z(
 }
 
 /// `45% 12 + hitmac\x.pmlmac` → 45.
-fn percent(line: &str) -> Option<u64> {
+pub(super) fn percent(line: &str) -> Option<u64> {
     let (n, _) = line.split_once('%')?;
     n.trim().parse::<u64>().ok().filter(|n| *n <= 100)
 }
 
 /// Every entry read back in full: the zip crate checks each CRC as it reaches the end.
 /// The zip must hold exactly `files` files. Returns its entry count (files + folders).
-fn verify(
+pub(super) fn verify(
     partial: &Path,
     files: u64,
     total: u64,
@@ -1338,7 +1375,14 @@ mod tests {
         spec.source = data.display().to_string();
         let found = walk(&long(&spec.source), &CancelToken::default()).unwrap_or_default();
         let total = found.iter().map(|f| f.size).sum();
-        let ok = write_zip(&spec, &zip, &found, total, &CancelToken::default(), &|_| {});
+        let ok = write_zip(
+            spec.compression,
+            &zip,
+            &found,
+            total,
+            &CancelToken::default(),
+            &|_| {},
+        );
         assert_eq!(ok, Ok(()));
         assert_eq!(
             verify(&zip, 1, total, &CancelToken::default(), &|_| {}),

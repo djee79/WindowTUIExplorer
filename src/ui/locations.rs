@@ -95,9 +95,22 @@ fn draw_list(f: &mut Frame, area: Rect, app: &mut App) {
         ));
         lines.push(Line::default());
     }
+    // No shares yet: say how to get one, where SHARES would be (before MACHINES).
+    let mut shares_hint =
+        app.filter.is_empty() && !listing.entries.iter().any(|e| e.kind == EntryKind::Share);
+    let empty_shares = |lines: &mut Vec<Line>| {
+        lines.push(Line::default());
+        lines.push(header(Section::Shares));
+        lines.push(hint(
+            "none yet: browse a \\\\server\\share once and it appears here",
+        ));
+    };
     for (row, &i) in app.view.iter().enumerate() {
         let e = &listing.entries[i];
         let section = Section::of(e);
+        if section == Section::Machines && std::mem::take(&mut shares_hint) {
+            empty_shares(&mut lines);
+        }
         if current != Some(section) {
             if current.is_some() {
                 lines.push(Line::default());
@@ -118,12 +131,8 @@ fn draw_list(f: &mut Frame, area: Rect, app: &mut App) {
     if app.view.is_empty() && !app.filter.is_empty() {
         lines.push(hint("no match"));
     }
-    if current != Some(Section::Shares) && app.filter.is_empty() {
-        lines.push(Line::default());
-        lines.push(header(Section::Shares));
-        lines.push(hint(
-            "none yet: browse a \\\\server\\share once and it appears here",
-        ));
+    if shares_hint {
+        empty_shares(&mut lines);
     }
 
     // Legend pinned to the bottom when there's room.

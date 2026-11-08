@@ -56,6 +56,8 @@ pub enum PromptKind {
     /// `a` / `A`: a new file / folder's name.
     NewFile,
     NewDir,
+    /// `<leader>zc`: the zip's name.
+    ZipName,
     /// One field of a sync / backup preset (`:sync new`, `:backup new`, `^e`).
     Preset(PresetField),
 }
@@ -144,6 +146,7 @@ impl Prompt {
             PromptKind::Rename => "rename to: ",
             PromptKind::NewFile => "new file: ",
             PromptKind::NewDir => "new folder: ",
+            PromptKind::ZipName => "zip name: ",
             PromptKind::Preset(f) => f.prefix(),
         }
     }
@@ -433,6 +436,8 @@ impl App {
             Action::NewFile => self.start_new(false),
             Action::NewDir => self.start_new(true),
             Action::BulkRename => self.start_bulk_rename(),
+            Action::Compress(name) => self.compress_selection(&name, n),
+            Action::Extract => self.extract_selected(),
             Action::RenamePanel => self.open_rename_panel(),
             Action::UndoRename(n) => self.undo_rename(n, false),
             Action::UndoRenameHere => self.undo_rename(1, true),
@@ -650,6 +655,7 @@ impl App {
             | PromptKind::MachineUser
             | PromptKind::MachineName
             | PromptKind::Filter
+            | PromptKind::ZipName
             | PromptKind::Preset(_) => self.prompt_changed(&mut p),
             _ => {}
         }
@@ -848,6 +854,7 @@ impl App {
             | PromptKind::GotoPage => p.note.clear(),
             PromptKind::NewFile => p.note = r"end in \ for a folder; sub\name makes sub too".into(),
             PromptKind::NewDir => p.note = r"sub\name makes both".into(),
+            PromptKind::ZipName => p.note = self.zip_note(&text),
             PromptKind::Preset(f) => p.note = self.preset_note(f, &text),
             PromptKind::MachineName => {
                 p.note =
@@ -925,6 +932,14 @@ impl App {
                     self.mode = Mode::Prompt;
                 }
             }
+            PromptKind::ZipName => {
+                if let Err(note) = self.zip_named(&text) {
+                    let mut p = p;
+                    p.note = note;
+                    self.prompt = Some(p);
+                    self.mode = Mode::Prompt;
+                }
+            }
             PromptKind::Rename | PromptKind::NewFile | PromptKind::NewDir => {
                 if let Err(note) = self.fileop_submit(p.kind, &text) {
                     let mut p = p;
@@ -966,6 +981,7 @@ impl App {
             PromptKind::MachineUser => self.machine_user_host = None,
             PromptKind::MachineName => self.set_status("no machine opened".into(), false),
             PromptKind::Rename | PromptKind::NewFile | PromptKind::NewDir => self.fileop_cancel(),
+            PromptKind::ZipName => self.zip_cancel(),
         }
     }
 

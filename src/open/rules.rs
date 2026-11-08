@@ -38,6 +38,8 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ("copy-path", "Copy path"),
     ("copy-unc", "Copy UNC path"),
     ("enter", "Enter"),
+    ("extract", "Extract here"),
+    ("compress", "Compress to zip"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

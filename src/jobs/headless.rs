@@ -14,7 +14,7 @@
 use super::preset::{LastRun, PresetRef, SyncMode, SyncPreset};
 use super::robocopy::Overwrite;
 use super::run::Spec;
-use super::zip::{BackupPreset, BackupSpec, BackupState, BackupStep};
+use super::zip::{BackupPreset, BackupSpec, BackupState, BackupStep, StepSet};
 use super::{Backend, Job, JobEvent, Op, Phase, Plan, Report, clock, human_bytes};
 use crate::pins::{PinKind, PinStore};
 use std::cell::RefCell;
@@ -268,7 +268,12 @@ fn narrate(job: &Job, ev: &JobEvent, out: &mut dyn Write) {
         JobEvent::Stage(BackupStep::Staging) if job.backup.as_ref().is_some_and(|b| b.direct) => {
             "  staging: skipped (the source is a sync preset's local copy)".into()
         }
-        JobEvent::Stage(s) => format!("  {} {}/{}…", s.word(), s.number(), BackupStep::ALL.len()),
+        JobEvent::Stage(s) => format!(
+            "  {} {}/{}…",
+            s.word(),
+            StepSet::Backup.number(*s),
+            BackupStep::ALL.len()
+        ),
         JobEvent::Produced {
             path,
             bytes,
