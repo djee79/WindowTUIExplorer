@@ -76,6 +76,20 @@ pub struct ViewDraft {
     reopen: Option<Reopen>,
 }
 
+impl ViewDraft {
+    pub(super) fn idx(&self) -> usize {
+        self.idx
+    }
+
+    pub(super) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(super) fn reopen(self) -> Option<Reopen> {
+        self.reopen
+    }
+}
+
 fn pins_word(n: usize) -> String {
     if n == 1 {
         "1 pin".to_string()
@@ -355,23 +369,11 @@ impl App {
                 self.open_prompt_with(PromptKind::ViewKey, &key);
             }
             PromptKind::ViewKey => {
-                let key = single_key(text)?;
+                let key = pins::parse_key(text)?;
                 let Some(d) = self.view_draft.take() else {
                     return Ok(());
                 };
-                let Some(view) = self.pins.views.get_mut(d.idx) else {
-                    return Ok(());
-                };
-                view.name = d.name.clone();
-                let moved = self.pins.set_view_key(d.idx, key);
-                self.save_pins();
-                let msg = match (key, moved) {
-                    (Some(c), Some(old)) => format!("'{c} → view {} (was {old})", d.name),
-                    (Some(c), None) => format!("'{c} → view {}", d.name),
-                    (None, _) => format!("saved view {}", d.name),
-                };
-                self.set_status(msg, false);
-                self.reopen_picker(d.reopen);
+                self.give_view_key(d, key);
             }
             PromptKind::TagRename => {
                 let Some(old) = self.tag_draft.take() else {
@@ -452,12 +454,21 @@ impl App {
     }
 }
 
-/// A key prompt's answer: empty for none, else one letter or digit.
-fn single_key(text: &str) -> Result<Option<char>, String> {
-    let mut chars = text.trim().chars();
-    match (chars.next(), chars.next()) {
-        (None, _) => Ok(None),
-        (Some(c), None) if pins::valid_key(c) => Ok(Some(c)),
-        _ => Err("one letter or digit, or empty for none".to_string()),
+impl App {
+    /// The view's key step, once its key clashes with nothing: rename, rekey, save.
+    pub(super) fn finish_view_key(&mut self, d: ViewDraft, key: Option<String>) {
+        let Some(view) = self.pins.views.get_mut(d.idx) else {
+            return;
+        };
+        view.name = d.name.clone();
+        let moved = self.pins.set_view_key(d.idx, key.as_deref());
+        self.save_pins();
+        let msg = match (key, moved) {
+            (Some(k), Some(old)) => format!("'{k} → view {} (was {old})", d.name),
+            (Some(k), None) => format!("'{k} → view {}", d.name),
+            (None, _) => format!("saved view {}", d.name),
+        };
+        self.set_status(msg, false);
+        self.reopen_picker(d.reopen);
     }
 }

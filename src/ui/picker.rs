@@ -363,7 +363,11 @@ fn result_line(
         base.fg(kind_color(item.kind)),
     ));
     used += KIND_W;
-    let key = item.key.map(|c| format!("'{c}")).unwrap_or_default();
+    let key = item
+        .key
+        .as_ref()
+        .map(|k| format!("'{k}"))
+        .unwrap_or_default();
     let tags = item
         .tags
         .iter()
@@ -557,7 +561,9 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
     }
     lines.push(info_line(
         "Key",
-        item.key.map_or("none".to_string(), |c| format!("'{c}")),
+        item.key
+            .as_ref()
+            .map_or("none".to_string(), |k| format!("'{k}")),
     ));
     let tags = item
         .tags
@@ -690,7 +696,9 @@ fn draw_view_preview(f: &mut Frame, inner: Rect, app: &App, item: &PickItem) {
         info_line("Query", item.detail.clone()),
         info_line(
             "Key",
-            item.key.map_or("none".to_string(), |c| format!("'{c}")),
+            item.key
+                .as_ref()
+                .map_or("none".to_string(), |k| format!("'{k}")),
         ),
         Line::default(),
         Line::from(Span::styled(

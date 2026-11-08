@@ -552,11 +552,14 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
 
     let mut right = Vec::new();
     // vim's showcmd: the count and keys typed so far.
-    let pending = format!(
-        "{}{}",
-        app.count.map(|c| c.to_string()).unwrap_or_default(),
-        fmt_keys(&app.keys_pending, app.keymap.leader)
-    );
+    let pending = match app.mark_prefix {
+        Some(c) => format!("'{c}"),
+        None => format!(
+            "{}{}",
+            app.count.map(|c| c.to_string()).unwrap_or_default(),
+            fmt_keys(&app.keys_pending, app.keymap.leader)
+        ),
+    };
     if !pending.is_empty() {
         right.push(Span::styled(format!("{pending}   "), theme::bold(ACCENT)));
     }

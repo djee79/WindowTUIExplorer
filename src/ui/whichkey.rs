@@ -5,6 +5,7 @@ use super::theme::{self, ACCENT, BORDER, PANEL_BG};
 use super::{truncate, width};
 use crate::app::App;
 use crate::keymap::{Action, Continuation, Key, fmt_keys};
+use crate::pins::KeyOwner;
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::Rect;
@@ -15,41 +16,79 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 const KEY_W: usize = 8;
 const COL_W: usize = 48;
 
-/// After `'`: every pin with its key, so the popup doubles as a quick pin menu. After
-/// `m`: the keys already taken (pressing one moves it here, like a vim mark).
+/// After `'`: every pin with its key, so the popup doubles as a quick pin menu; keys
+/// sharing a first letter (`'dd`, `'dl`) show as one `+d` group. After `'d`: that
+/// group's second letters. After `m`: the keys already taken (pressing one moves it
+/// here, like a vim mark).
 fn char_rows(app: &App) -> Vec<Continuation> {
-    let action = app.keymap.char_action(&app.keys_pending);
     // (key, name, what it opens) for pins and saved views.
-    let mut keyed: Vec<(char, String, String)> =
-        app.pins
-            .pins
-            .iter()
-            .filter_map(|p| Some((p.key_char()?, p.name.clone(), p.detail())))
-            .chain(app.pins.views.iter().filter_map(|v| {
-                Some((v.key_char()?, v.name.clone(), format!("[view] {}", v.query)))
-            }))
-            .collect();
-    keyed.sort_by_key(|(c, _, _)| *c);
-    let row = |c: char, desc: String| Continuation {
+    let mut keyed: Vec<(String, String, String)> = app
+        .pins
+        .keyed()
+        .map(|(o, k)| {
+            let (name, what) = match o {
+                KeyOwner::Pin(i) => app.pins.pins.get(i).map(|p| (p.name.clone(), p.detail())),
+                KeyOwner::View(i) => app
+                    .pins
+                    .views
+                    .get(i)
+                    .map(|v| (v.name.clone(), format!("[view] {}", v.query))),
+            }
+            .unwrap_or_default();
+            (k.to_string(), name, what)
+        })
+        .collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    let row = |c: char, desc: String, group: bool| Continuation {
         key: Key::plain(KeyCode::Char(c)),
         desc,
-        group: false,
+        group,
     };
-    match action {
-        Some(Action::JumpMark(_)) => keyed
+    if let Some(first) = app.mark_prefix {
+        return keyed
             .into_iter()
-            .map(|(c, name, what)| row(c, format!("{name}  {what}")))
-            .collect(),
-        Some(Action::SetMark(_)) => keyed
-            .into_iter()
-            .map(|(c, name, _)| row(c, format!("taken: {name}")))
-            .collect(),
-        _ => Vec::new(),
+            .filter_map(|(k, name, what)| {
+                let second = k.strip_prefix(first)?.chars().next()?;
+                Some(row(second, format!("{name}  {what}"), false))
+            })
+            .collect();
     }
+    let jump = match app.keymap.char_action(&app.keys_pending) {
+        Some(Action::JumpMark(_)) => true,
+        Some(Action::SetMark(_)) => false,
+        _ => return Vec::new(),
+    };
+    let mut rows: Vec<Continuation> = Vec::new();
+    for (k, name, what) in keyed {
+        let mut chars = k.chars();
+        let (Some(first), second) = (chars.next(), chars.next()) else {
+            continue;
+        };
+        if second.is_none() {
+            let desc = if jump {
+                format!("{name}  {what}")
+            } else {
+                format!("taken: {name}")
+            };
+            rows.push(row(first, desc, false));
+            continue;
+        }
+        // A two-letter key: one group row per first letter, naming its pins.
+        let group = Key::plain(KeyCode::Char(first));
+        match rows.iter_mut().find(|r| r.key == group) {
+            Some(r) => r.desc = format!("{} · {name}", r.desc),
+            None => rows.push(row(first, name, true)),
+        }
+    }
+    rows
 }
 
 pub fn draw(f: &mut Frame, body: Rect, app: &App) {
-    let mut rows = app.keymap.continuations(&app.keys_pending);
+    let mut rows = if app.mark_prefix.is_some() {
+        Vec::new()
+    } else {
+        app.keymap.continuations(&app.keys_pending)
+    };
     rows.extend(char_rows(app));
     if rows.is_empty() {
         let hint = match app.keymap.char_action(&app.keys_pending) {
@@ -104,11 +143,14 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
         })
         .collect();
 
-    let title = format!(
-        "{}{}",
-        app.count.map(|c| c.to_string()).unwrap_or_default(),
-        fmt_keys(&app.keys_pending, app.keymap.leader)
-    );
+    let title = match app.mark_prefix {
+        Some(c) => format!("'{c}"),
+        None => format!(
+            "{}{}",
+            app.count.map(|c| c.to_string()).unwrap_or_default(),
+            fmt_keys(&app.keys_pending, app.keymap.leader)
+        ),
+    };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(theme::fg(BORDER))

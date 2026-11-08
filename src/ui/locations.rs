@@ -1,7 +1,9 @@
 //! The Locations root as its own screen (docs/screens/02-locations.txt): a sectioned list
 //! (PINNED FOLDERS, DRIVES, SHARES) with reachability dots, and a detail panel.
 
-use super::columns::{draw_state, fmt_second, info_line, panel, scrolled_offset};
+use super::columns::{
+    draw_state, fmt_second, gutter_cell, gutter_width, info_line, panel, scrolled_offset,
+};
 use super::theme::{self, DIM, ERR, FG, NET, OK, SEL_BG};
 use super::{human_size, spinner, truncate, truncate_left, width};
 use crate::app::{App, REPROBE_EVERY, Reach};
@@ -69,16 +71,28 @@ fn draw_list(f: &mut Frame, area: Rect, app: &mut App) {
     };
 
     // Lines with section headers in between; remember where the cursor row lands.
-    let w = inner.width as usize;
+    // The relative-number gutter (`5j` read off the screen), as in the file columns: it
+    // counts entries, not the section headers between them.
+    let gw = gutter_width(app.view.len(), app.number, app.relative_number);
+    let lead = if gw > 0 { gw + 1 } else { 0 };
+    let w = (inner.width as usize).saturating_sub(lead);
+    let header = |s: Section| {
+        let mut line = header(s);
+        line.spans.insert(0, Span::raw(" ".repeat(lead)));
+        line
+    };
+    let hint = |text: &str| {
+        let pad = " ".repeat(lead + 2);
+        Line::from(Span::styled(format!("{pad}{text}"), theme::dim()))
+    };
     let mut lines: Vec<Line> = vec![Line::default()];
     let mut cursor_line = 0;
     let mut current: Option<Section> = None;
     if app.filter.is_empty() && !listing.entries.iter().any(|e| e.kind == EntryKind::Pin) {
         lines.push(header(Section::Pinned));
-        lines.push(Line::from(Span::styled(
-            "  none yet: in a folder, m{key} pins it ('{key} jumps back); M pins the item under the cursor",
-            theme::dim(),
-        )));
+        lines.push(hint(
+            "none yet: in a folder, m{key} pins it ('{key} jumps back); M pins the item under the cursor",
+        ));
         lines.push(Line::default());
     }
     for (row, &i) in app.view.iter().enumerate() {
@@ -94,18 +108,22 @@ fn draw_list(f: &mut Frame, area: Rect, app: &mut App) {
         if row == app.cursor {
             cursor_line = lines.len();
         }
-        lines.push(row_line(app, e, w, row == app.cursor));
+        let mut line = row_line(app, e, w, row == app.cursor);
+        if gw > 0 {
+            let number = gutter_cell(row, app.cursor, gw, app.number, app.relative_number);
+            line.spans.splice(0..0, [number, Span::raw(" ")]);
+        }
+        lines.push(line);
     }
     if app.view.is_empty() && !app.filter.is_empty() {
-        lines.push(Line::from(Span::styled("  no match", theme::dim())));
+        lines.push(hint("no match"));
     }
     if current != Some(Section::Shares) && app.filter.is_empty() {
         lines.push(Line::default());
         lines.push(header(Section::Shares));
-        lines.push(Line::from(Span::styled(
-            "  none yet: browse a \\\\server\\share once and it appears here",
-            theme::dim(),
-        )));
+        lines.push(hint(
+            "none yet: browse a \\\\server\\share once and it appears here",
+        ));
     }
 
     // Legend pinned to the bottom when there's room.
@@ -212,7 +230,7 @@ fn row_line(app: &App, e: &Entry, w: usize, is_cursor: bool) -> Line<'static> {
         EntryKind::Pin => {
             let key = app
                 .pin_of(e)
-                .and_then(|p| p.key_char())
+                .and_then(|p| p.key_str())
                 .map(|c| format!("'{c}"))
                 .unwrap_or_default();
             (key, e.detail.clone(), e.name.clone(), FG)
@@ -300,7 +318,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
                 .unwrap_or_default();
             lines.push(info_line("Kind", "folder pin".to_string()));
             lines.push(info_line("Path", truncate_left(&e.name, vw)));
-            let key = pin.and_then(|p| p.key_char());
+            let key = pin.and_then(|p| p.key_str());
             lines.push(info_line(
                 "Key",
                 key.map_or("none (m{key} in the folder sets one)".to_string(), |c| {

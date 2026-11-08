@@ -260,6 +260,12 @@ color = "#e3a857"
   - Each starts with a name prompt, then tags (with completion), then an optional key.
 - `'{key}` jumps or launches directly, like jumping to a vim mark. Pause after `'` and the
   which-key popup lists every pin key. `''` returns to the previous directory (as in vim).
+- A key is **one or two** letters or digits (`'h`, `'dl`); `m{key}` sets one-letter keys,
+  the key prompt either. A letter is a key *or* starts two-letter keys, never both, so
+  `'d` never has to wait and guess: with `'dd` and `'dl`, `'d` waits for the second
+  letter (the popup narrows to them). Giving a key that clashes (`'dd` while `'d` is
+  `D:\`) asks for the other pin's new key first, with a free one suggested; `Esc` saves
+  nothing. The CLI refuses a clash instead.
   `<leader>p` opens the pin picker.
 - In any picker, `Ctrl-e` edits, `Ctrl-x` (normal mode: `D` or `dd`, as in the file view) deletes (with confirmation), `Ctrl-t` edits the
   tags. `T` does the same on a pin in Locations.

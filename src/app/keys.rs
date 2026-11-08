@@ -34,6 +34,8 @@ pub enum PromptKind {
     PinName,
     PinTags,
     PinKey,
+    /// A key clash (`'dd` while `'d` is taken): the other pin's new key.
+    KeyMove,
     /// `y` unpins, any other key keeps the pin.
     ConfirmUnpin,
     /// A y/n for a store change (tag rename/delete, view delete).
@@ -130,7 +132,8 @@ impl Prompt {
             PromptKind::ContentSearch => "grep: ",
             PromptKind::PinName => "pin name: ",
             PromptKind::PinTags => "tags: ",
-            PromptKind::PinKey => "key (empty = none): ",
+            PromptKind::PinKey => "key, 1-2 letters (empty = none): ",
+            PromptKind::KeyMove => "move it to: ",
             PromptKind::ConfirmUnpin | PromptKind::Confirm => "",
             PromptKind::ViewName => "view name: ",
             PromptKind::ViewKey => "view key (empty = none): ",
@@ -205,6 +208,10 @@ impl App {
             self.quit = Some(Quit::Plain);
             return;
         }
+        // A `'d` still waiting belongs to normal mode only.
+        if self.mode != Mode::Normal {
+            self.mark_prefix = None;
+        }
         match self.mode {
             Mode::Help => self.on_help_key(key),
             Mode::Prompt => self.on_prompt_key(key),
@@ -227,6 +234,10 @@ impl App {
             return;
         }
         let key = Key::from_event(&ev);
+        // `'d` when keys start with d: this is the second letter.
+        if let Some(first) = self.mark_prefix.take() {
+            return self.mark_second_key(first, &key);
+        }
         // Pick mode: `p` takes this folder; `Esc` cancels, once nothing else (a filter, a
         // selection, a count) is there for it to clear.
         if self.pick.is_some() && self.keys_pending.is_empty() && self.count.is_none() {
@@ -301,13 +312,18 @@ impl App {
             }
             Some(Some(action)) => {
                 let (action, count) = (action.with_char(&key), self.count.take());
+                let shown = self.which_key;
                 self.clear_keys();
                 self.run(action, count);
+                // `'d` now waits for a second letter: a popup that was up stays up.
+                if self.mark_prefix.is_some() {
+                    self.which_key = shown;
+                }
             }
         }
     }
 
-    fn clear_keys(&mut self) {
+    pub(super) fn clear_keys(&mut self) {
         self.keys_pending.clear();
         self.keys_since = None;
         self.which_key = false;
@@ -319,6 +335,11 @@ impl App {
     pub(super) fn key_timeout(&mut self, now: Instant) {
         let Some(t) = self.keys_since else { return };
         if self.which_key || now.duration_since(t) < self.keymap.timeout {
+            return;
+        }
+        if self.mark_prefix.is_some() {
+            self.which_key = true;
+            self.dirty = true;
             return;
         }
         if let Lookup::Exact { action, .. } = self.keymap.lookup(&self.keys_pending) {
@@ -625,6 +646,7 @@ impl App {
             PromptKind::ConfirmUnpin | PromptKind::Confirm => p.note = self.pin_prompt_note(kind),
             PromptKind::Command
             | PromptKind::PinTags
+            | PromptKind::KeyMove
             | PromptKind::MachineUser
             | PromptKind::MachineName
             | PromptKind::Filter
@@ -814,6 +836,7 @@ impl App {
                     (false, Ok(_)) => format!("Tab: {}", shown.join(" · ")),
                 };
             }
+            PromptKind::KeyMove => p.note = self.key_move_note(&text),
             PromptKind::PinName
             | PromptKind::PinKey
             | PromptKind::ConfirmUnpin
@@ -878,6 +901,7 @@ impl App {
             PromptKind::PinName
             | PromptKind::PinTags
             | PromptKind::PinKey
+            | PromptKind::KeyMove
             | PromptKind::ConfirmUnpin
             | PromptKind::Confirm
             | PromptKind::ViewName
@@ -931,6 +955,7 @@ impl App {
             PromptKind::PinName
             | PromptKind::PinTags
             | PromptKind::PinKey
+            | PromptKind::KeyMove
             | PromptKind::ConfirmUnpin
             | PromptKind::Confirm
             | PromptKind::ViewName

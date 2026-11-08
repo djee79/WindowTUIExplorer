@@ -17,7 +17,7 @@ pub struct PinDraft {
     /// Editing this pin (rename / tags / unpin), None for a new one.
     editing: Option<usize>,
     /// The key: from `m{key}`, the pin being edited, or the key step.
-    key: Option<char>,
+    key: Option<String>,
     /// End with the key step (`M`, `^e` in the picker); `m{key}` already has one.
     ask_key: bool,
     /// One step only (rename or tags), then save.
@@ -31,8 +31,36 @@ pub struct PinDraft {
     name_last: bool,
 }
 
+/// Giving a key that clashes with others (`'dd` while `'d` is D:\, or `'d` while `'dd`
+/// and `'dl` exist): each of those is asked for a new key in turn, and only then is
+/// anything saved. `Esc` at any of them saves nothing.
+#[derive(Debug, Clone)]
+pub struct KeyMove {
+    /// The key being given, and to whom (by name, for the notes).
+    key: String,
+    name: String,
+    /// The pin or view getting it, when it's already in the store.
+    except: Option<KeyOwner>,
+    /// The ones still to move; the first is being asked.
+    queue: Vec<KeyOwner>,
+    /// New keys chosen so far (None: no key any more).
+    moves: Vec<(KeyOwner, Option<String>)>,
+    then: KeyThen,
+}
+
+/// What a [`KeyMove`] finishes once everyone has moved.
+#[derive(Debug, Clone)]
+enum KeyThen {
+    /// Save this pin draft (new or edited) with its key.
+    Draft(Box<PinDraft>),
+    /// `m{key}` on a folder or machine that's already pinned: give pin `idx` the key.
+    Mark(usize),
+    /// A saved view's key step.
+    View(super::tags::ViewDraft),
+}
+
 impl PinDraft {
-    fn new(pin: Pin, key: Option<char>, ask_key: bool) -> PinDraft {
+    fn new(pin: Pin, key: Option<String>, ask_key: bool) -> PinDraft {
         PinDraft {
             pin,
             editing: None,
@@ -116,7 +144,8 @@ impl App {
     /// `m{c}`: pin the current folder under `c`. An existing pin of this folder just
     /// gets the key; a new one asks for a name and tags first.
     pub(super) fn set_mark(&mut self, c: char) {
-        if !pins::valid_key(c) {
+        let k = c.to_string();
+        if !pins::valid_key(&k) {
             self.set_status(format!("m{c}: pin keys are letters or digits"), true);
             return;
         }
@@ -135,7 +164,7 @@ impl App {
             }
             Loc::Machine(host) => {
                 let host = host.clone();
-                return self.pin_machine(&host, Some(c));
+                return self.pin_machine(&host, Some(k));
             }
             Loc::Machines => {
                 self.set_status("M on a machine pins it".into(), false);
@@ -146,14 +175,30 @@ impl App {
             return;
         }
         if let Some(idx) = self.pins.find(PinKind::Folder, &loc) {
-            let moved = self.pins.set_key(idx, Some(c));
-            let name = self.pins.pins[idx].name.clone();
-            self.save_pins();
-            self.set_status(pinned_message(c, &name, moved.as_deref()), false);
-            return;
+            return self.give_mark(idx, k);
         }
         let pin = Pin::for_loc(PinKind::Folder, &loc.name(), &loc);
-        self.start_draft(PinDraft::new(pin, Some(c), false));
+        self.start_draft(PinDraft::new(pin, Some(k), false));
+    }
+
+    /// A saved view's key step: like a pin's, clashing keys move first.
+    pub(super) fn give_view_key(&mut self, d: super::tags::ViewDraft, k: Option<String>) {
+        match k {
+            Some(k) => {
+                let (name, except) = (d.name().to_string(), Some(KeyOwner::View(d.idx())));
+                self.give_key(k, name, except, KeyThen::View(d));
+            }
+            None => self.finish_view_key(d, None),
+        }
+    }
+
+    /// `m{key}` on something already pinned: it gets the key (moving clashing ones
+    /// first).
+    pub(super) fn give_mark(&mut self, idx: usize, k: String) {
+        let Some(name) = self.pins.pins.get(idx).map(|p| p.name.clone()) else {
+            return;
+        };
+        self.give_key(k, name, Some(KeyOwner::Pin(idx)), KeyThen::Mark(idx));
     }
 
     /// `:pin`: pin the current folder, asking for name, tags and key.
@@ -177,17 +222,47 @@ impl App {
     }
 
     /// `'{c}`: open the pin with that key, or the pin picker with that view's query.
+    /// When two-letter keys start with `c` (`'dd`, `'dl`), wait for the second letter;
+    /// a key never both is one and starts others, so this never has to guess.
     pub(super) fn jump_mark(&mut self, c: char) {
-        match self.pins.key_owner(c) {
+        if self.pins.key_owner(&c.to_string()).is_none() && self.pins.starts_keys(c) {
+            self.mark_prefix = Some(c);
+            self.keys_since = Some(std::time::Instant::now());
+            return;
+        }
+        self.jump_key(&c.to_string());
+    }
+
+    /// The second letter after `'d`: Esc cancels, Backspace goes back to `'`.
+    pub(super) fn mark_second_key(&mut self, first: char, key: &crate::keymap::Key) {
+        use ratatui::crossterm::event::KeyCode;
+        let shown = self.which_key;
+        self.clear_keys();
+        match (key.code, key.plain_char()) {
+            (KeyCode::Esc, _) => {}
+            (KeyCode::Backspace, _) => {
+                self.keys_pending
+                    .push(crate::keymap::Key::plain(KeyCode::Char('\'')));
+                self.keys_since = Some(std::time::Instant::now());
+                self.which_key = shown;
+            }
+            (_, Some(second)) => self.jump_key(&format!("{first}{second}")),
+            _ => self.set_status(format!("'{first}: no pin there"), false),
+        }
+    }
+
+    fn jump_key(&mut self, k: &str) {
+        match self.pins.key_owner(k) {
             Some(KeyOwner::Pin(idx)) => self.open_pin(idx),
             Some(KeyOwner::View(idx)) => {
                 if let Some(q) = self.pins.views.get(idx).map(|v| v.query.clone()) {
                     self.open_pin_picker(&format!("{q} "));
                 }
             }
-            None if self.pins_loaded => {
-                self.set_status(format!("no pin on '{c} (m{c} pins this folder)"), false)
+            None if self.pins_loaded && k.len() == 1 => {
+                self.set_status(format!("no pin on '{k} (m{k} pins this folder)"), false)
             }
+            None if self.pins_loaded => self.set_status(format!("no pin on '{k}"), false),
             None => self.set_status("pins are still loading".into(), false),
         }
     }
@@ -328,7 +403,7 @@ impl App {
     fn edit_draft(&self, idx: usize, reopen: Option<Reopen>) -> Option<PinDraft> {
         let pin = self.pins.pins.get(idx)?.clone();
         Some(PinDraft {
-            key: pin.key_char(),
+            key: pin.key_str().map(str::to_string),
             fields: self.preset_fields(&pin),
             pin,
             editing: Some(idx),
@@ -374,8 +449,9 @@ impl App {
     // ------------------------------------------------------------------ prompts
 
     /// A new machine pin through the usual prompts (name, tags, then a key unless given).
-    pub(super) fn pin_machine_draft(&mut self, pin: Pin, key: Option<char>) {
-        self.start_draft(PinDraft::new(pin, key, key.is_none()));
+    pub(super) fn pin_machine_draft(&mut self, pin: Pin, key: Option<String>) {
+        let ask_key = key.is_none();
+        self.start_draft(PinDraft::new(pin, key, ask_key));
     }
 
     /// `^a` on a file or folder row in a picker: a file / folder pin for it.
@@ -424,6 +500,9 @@ impl App {
                 | PromptKind::TagRename
         ) {
             return self.store_submit(kind, text);
+        }
+        if kind == PromptKind::KeyMove {
+            return self.key_move_submit(text);
         }
         let Some(mut d) = self.pin_draft.take() else {
             return Ok(());
@@ -476,19 +555,16 @@ impl App {
                     return Err(e);
                 }
             },
-            PromptKind::PinKey => {
-                let t = text.trim();
-                let mut chars = t.chars();
-                match (chars.next(), chars.next()) {
-                    (None, _) => d.key = None,
-                    (Some(c), None) if pins::valid_key(c) => d.key = Some(c),
-                    _ => {
-                        self.pin_draft = Some(d);
-                        return Err("one letter or digit, or empty for none".to_string());
-                    }
+            PromptKind::PinKey => match pins::parse_key(text) {
+                Ok(k) => {
+                    d.key = k;
+                    None
                 }
-                None
-            }
+                Err(e) => {
+                    self.pin_draft = Some(d);
+                    return Err(e);
+                }
+            },
             PromptKind::ConfirmUnpin => {
                 if let Some(idx) = d.editing {
                     self.unpin(idx);
@@ -502,7 +578,7 @@ impl App {
             Some(next) if !d.single => {
                 let prefill = match next {
                     PromptKind::PinTags => d.pin.tags.join(" "),
-                    PromptKind::PinKey => d.key.map(String::from).unwrap_or_default(),
+                    PromptKind::PinKey => d.key.clone().unwrap_or_default(),
                     PromptKind::Preset(f) => preset_value(&d.pin, f),
                     PromptKind::PinName => d.pin.name.clone(),
                     _ => String::new(),
@@ -534,6 +610,9 @@ impl App {
         ) {
             return self.store_cancel(kind);
         }
+        if kind == PromptKind::KeyMove {
+            return self.key_move_cancel();
+        }
         if let Some(d) = self.pin_draft.take() {
             let msg = match (kind, d.editing) {
                 (PromptKind::ConfirmUnpin, _) => format!("kept {}", d.pin.name),
@@ -555,7 +634,20 @@ impl App {
         }
     }
 
+    /// The last step of a draft: save it, once its key clashes with nothing.
     fn finish_draft(&mut self, d: PinDraft) {
+        let gives_key = d.ask_key || d.editing.is_none();
+        match d.key.clone().filter(|_| gives_key) {
+            Some(k) => {
+                let name = d.pin.name.clone();
+                let except = d.editing.map(KeyOwner::Pin);
+                self.give_key(k, name, except, KeyThen::Draft(Box::new(d)));
+            }
+            None => self.save_draft(d),
+        }
+    }
+
+    fn save_draft(&mut self, d: PinDraft) {
         let name = d.pin.name.clone();
         let (idx, edited) = match d.editing {
             Some(idx) if idx < self.pins.pins.len() => {
@@ -568,20 +660,224 @@ impl App {
                 (self.pins.pins.len() - 1, false)
             }
         };
-        let moved = if d.ask_key || !edited {
-            self.pins.set_key(idx, d.key)
+        let gives_key = d.ask_key || !edited;
+        let moved = if gives_key {
+            self.pins.set_key(idx, d.key.as_deref())
         } else {
             None
         };
         self.save_pins();
-        let msg = match (d.key, edited) {
-            (Some(c), _) if d.ask_key || !edited => pinned_message(c, &name, moved.as_deref()),
+        let msg = match (d.key.as_deref(), edited) {
+            (Some(k), _) if gives_key => pinned_message(k, &name, moved.as_deref()),
             (_, true) => format!("saved {name}"),
-            (None, false) => format!("pinned {name}"),
-            (Some(_), false) => format!("pinned {name}"),
+            (_, false) => format!("pinned {name}"),
         };
         self.set_status(msg, false);
         self.reopen_picker(d.reopen);
+    }
+
+    // ------------------------------------------------------------ key clashes
+
+    /// Gives key `k` to `name` (already in the store as `except`, or about to be) and
+    /// then finishes `then`. Keys it clashes with (`'d` for `'dd`) are moved first, each
+    /// through a prompt; nothing changes until the last one is answered.
+    fn give_key(&mut self, k: String, name: String, except: Option<KeyOwner>, then: KeyThen) {
+        let queue = self.pins.key_clashes(&k, except);
+        if queue.is_empty() {
+            return self.key_then(then, &k);
+        }
+        self.key_move = Some(KeyMove {
+            key: k,
+            name,
+            except,
+            queue,
+            moves: Vec::new(),
+            then,
+        });
+        self.ask_key_move();
+    }
+
+    fn ask_key_move(&mut self) {
+        let Some(m) = &self.key_move else { return };
+        let Some(&owner) = m.queue.first() else {
+            return;
+        };
+        let suggestion = self.suggest_key(m, owner).unwrap_or_default();
+        self.open_prompt_with(PromptKind::KeyMove, &suggestion);
+    }
+
+    /// The note under the move prompt: why it's asked, or what's wrong with the answer.
+    pub(super) fn key_move_note(&self, text: &str) -> String {
+        let Some(m) = &self.key_move else {
+            return String::new();
+        };
+        let Some(&owner) = m.queue.first() else {
+            return String::new();
+        };
+        let why = format!(
+            "'{} ({}) blocks '{} for {}: a key can't also start longer keys. Its new key, empty = none",
+            self.pins.owner_key(owner).unwrap_or_default(),
+            self.pins.owner_name(owner).unwrap_or_default(),
+            m.key,
+            m.name
+        );
+        match pins::parse_key(text).and_then(|k| self.check_move(m, owner, k.as_deref())) {
+            Ok(()) => why,
+            Err(e) => e,
+        }
+    }
+
+    /// The keys there will be once this move is done, but `owner`'s: (key, whose).
+    fn keys_after(&self, m: &KeyMove, owner: KeyOwner) -> Vec<(String, String)> {
+        let name = |o| self.pins.owner_name(o).unwrap_or_default().to_string();
+        let mut out: Vec<(String, String)> = self
+            .pins
+            .keyed()
+            .filter(|(o, k)| {
+                *o != owner
+                    && Some(*o) != m.except
+                    && *k != m.key
+                    && !m.queue.contains(o)
+                    && !m.moves.iter().any(|(mo, _)| mo == o)
+            })
+            .map(|(o, k)| (k.to_string(), name(o)))
+            .collect();
+        out.extend(
+            m.moves
+                .iter()
+                .filter_map(|(o, k)| Some((k.clone()?, name(*o)))),
+        );
+        out.push((m.key.clone(), m.name.clone()));
+        out
+    }
+
+    fn check_move(&self, m: &KeyMove, owner: KeyOwner, k: Option<&str>) -> Result<(), String> {
+        let Some(k) = k else { return Ok(()) };
+        for (other, whose) in self.keys_after(m, owner) {
+            if other == k {
+                return Err(format!("'{k} is {whose}"));
+            }
+            if pins::keys_clash(k, &other) {
+                return Err(format!("'{k} clashes with '{other} ({whose})"));
+            }
+        }
+        Ok(())
+    }
+
+    /// A free key for `owner`: its old letter plus a letter of its name (`'d` → `'dr`),
+    /// a letter of its name, or any free one.
+    fn suggest_key(&self, m: &KeyMove, owner: KeyOwner) -> Option<String> {
+        let old = self.pins.owner_key(owner).unwrap_or_default();
+        let letters: Vec<char> = self
+            .pins
+            .owner_name(owner)
+            .unwrap_or_default()
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
+        let any: Vec<char> = ('a'..='z').chain('0'..='9').collect();
+        let pool: Vec<char> = letters.iter().chain(&any).copied().collect();
+        let mut candidates: Vec<String> = Vec::new();
+        if let Some(f) = old.chars().next() {
+            candidates.extend(pool.iter().map(|l| format!("{f}{l}")));
+        }
+        candidates.extend(pool.iter().map(char::to_string));
+        if let Some(f) = letters.first() {
+            candidates.extend(pool.iter().map(|l| format!("{f}{l}")));
+        }
+        candidates
+            .into_iter()
+            .find(|k| k != old && self.check_move(m, owner, Some(k)).is_ok())
+    }
+
+    fn key_move_submit(&mut self, text: &str) -> Result<(), String> {
+        let Some(mut m) = self.key_move.take() else {
+            return Ok(());
+        };
+        let Some(&owner) = m.queue.first() else {
+            return Ok(());
+        };
+        let k = pins::parse_key(text).and_then(|k| {
+            self.check_move(&m, owner, k.as_deref())?;
+            Ok(k)
+        });
+        let k = match k {
+            Ok(k) => k,
+            Err(e) => {
+                self.key_move = Some(m);
+                return Err(e);
+            }
+        };
+        m.queue.remove(0);
+        m.moves.push((owner, k));
+        if !m.queue.is_empty() {
+            self.key_move = Some(m);
+            self.ask_key_move();
+            return Ok(());
+        }
+        for (o, k) in &m.moves {
+            self.pins.put_key(*o, k.as_deref());
+        }
+        let moved: Vec<String> = m
+            .moves
+            .iter()
+            .map(|(o, k)| {
+                let who = self.pins.owner_name(*o).unwrap_or_default();
+                match k {
+                    Some(k) => format!("{who} → '{k}"),
+                    None => format!("{who}: no key"),
+                }
+            })
+            .collect();
+        self.key_then(m.then, &m.key);
+        // After the "'dd → Desktop" message, say what moved for it.
+        if let Some(s) = self.status.as_mut() {
+            s.text = format!("{} · {}", s.text, moved.join(" · "));
+        }
+        Ok(())
+    }
+
+    fn key_move_cancel(&mut self) {
+        let Some(m) = self.key_move.take() else {
+            return;
+        };
+        let reopen = match m.then {
+            KeyThen::Draft(d) => {
+                let msg = if d.editing.is_some() {
+                    "unchanged"
+                } else {
+                    "not pinned"
+                };
+                self.set_status(msg.to_string(), false);
+                d.reopen
+            }
+            KeyThen::View(d) => {
+                self.set_status("view key unchanged".into(), false);
+                d.reopen()
+            }
+            KeyThen::Mark(_) => {
+                self.set_status("unchanged".into(), false);
+                None
+            }
+        };
+        self.reopen_picker(reopen);
+    }
+
+    /// Nothing clashes any more: give the key and save.
+    fn key_then(&mut self, then: KeyThen, k: &str) {
+        match then {
+            KeyThen::Draft(d) => self.save_draft(*d),
+            KeyThen::Mark(idx) => {
+                let moved = self.pins.set_key(idx, Some(k));
+                let name = self.pins.pins.get(idx).map(|p| p.name.clone());
+                self.save_pins();
+                if let Some(name) = name {
+                    self.set_status(pinned_message(k, &name, moved.as_deref()), false);
+                }
+            }
+            KeyThen::View(d) => self.finish_view_key(d, Some(k.to_string())),
+        }
     }
 
     fn unpin(&mut self, idx: usize) {
@@ -944,7 +1240,7 @@ fn last_word(text: &str) -> &str {
     text.rsplit([' ', ',']).next().unwrap_or_default()
 }
 
-fn pinned_message(c: char, name: &str, moved: Option<&str>) -> String {
+fn pinned_message(c: &str, name: &str, moved: Option<&str>) -> String {
     match moved {
         Some(old) if old != name => format!("'{c} → {name} (was {old})"),
         _ => format!("'{c} → {name}"),

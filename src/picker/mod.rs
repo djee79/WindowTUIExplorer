@@ -75,7 +75,7 @@ pub struct PickItem {
     /// Path, command, URL, or a view's query.
     pub detail: String,
     pub kind: ItemKind,
-    pub key: Option<char>,
+    pub key: Option<String>,
     pub tags: Vec<String>,
     pub unc: bool,
     pub local: bool,

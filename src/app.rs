@@ -238,6 +238,10 @@ pub struct App {
     pins_loaded: bool,
     /// A pin being made or edited through prompts.
     pin_draft: Option<pins::PinDraft>,
+    /// A key that clashes with others (`'dd` while `'d` is D:\): moving those first.
+    key_move: Option<pins::KeyMove>,
+    /// `'d` when keys start with d (`'dd`, `'dl`): waiting for the second letter.
+    pub mark_prefix: Option<char>,
     /// Pick mode: a preset folder chosen by going there (`p` takes it).
     pub pick: Option<pick::Pick>,
     /// The open picker, its pending count and keys (normal mode).
@@ -424,6 +428,8 @@ impl App {
             pins: crate::pins::PinStore::default(),
             pins_loaded: false,
             pin_draft: None,
+            key_move: None,
+            mark_prefix: None,
             pick: None,
             picker: None,
             picker_count: None,
@@ -538,7 +544,7 @@ impl App {
 
     /// True once a pending key sequence has waited long enough to show which-key.
     pub fn which_key_visible(&self) -> bool {
-        self.which_key && !self.keys_pending.is_empty()
+        self.which_key && (!self.keys_pending.is_empty() || self.mark_prefix.is_some())
     }
 
     pub fn at_root(&self) -> bool {
@@ -2372,6 +2378,46 @@ mod tests {
     }
 
     #[test]
+    fn locations_have_the_relative_number_gutter() {
+        let (mut app, _rt) = root_fixture();
+        let line_of = |screen: &str, what: &str| {
+            screen
+                .lines()
+                .find(|l| l.contains(what))
+                .unwrap_or_default()
+                .to_string()
+        };
+        let screen = render(&mut app, 160, 24);
+        // The cursor row: its absolute number, left-aligned; the others: the distance,
+        // counting entries only (the section headers in between don't count).
+        assert!(
+            line_of(&screen, "C:  Windows").contains("│1     ● C:"),
+            "{screen}"
+        );
+        assert!(
+            line_of(&screen, "archive                            timed out").contains("│  2   × "),
+            "{screen}"
+        );
+        assert!(!line_of(&screen, "DRIVES").contains('1'), "{screen}");
+        press(&mut app, "2j");
+        let screen = render(&mut app, 160, 24);
+        assert!(
+            line_of(&screen, "archive                            timed out").contains("│3     × "),
+            "{screen}"
+        );
+        assert!(
+            line_of(&screen, "C:  Windows").contains("│  2   ● C:"),
+            "{screen}"
+        );
+        press(&mut app, ":set nonu<CR>:set nornu<CR>");
+        let screen = render(&mut app, 160, 24);
+        assert!(
+            line_of(&screen, "C:  Windows").contains("│  ● C:"),
+            "{screen}"
+        );
+    }
+
+    #[test]
     fn unreachable_location_stays_put() {
         let (mut app, _rt) = root_fixture();
         let key = |c: KeyCode| AppEvent::Term(Event::Key(KeyEvent::from(c)));
@@ -2500,8 +2546,8 @@ mod pin_tests {
         assert!(app.prompt.is_none(), "m{{key}} has its key: no key step");
         let pin = &app.pins.pins[0];
         assert_eq!(
-            (pin.name.as_str(), pin.kind, pin.key_char()),
-            ("Work dir", PinKind::Folder, Some('a'))
+            (pin.name.as_str(), pin.kind, pin.key_str()),
+            ("Work dir", PinKind::Folder, Some("a"))
         );
         assert_eq!(pin.tags, ["aveva", "acme"]);
         assert_eq!(pin.path.as_deref(), Some(r"C:\work"));
@@ -2518,9 +2564,98 @@ mod pin_tests {
         press(&mut app, "'amb");
         assert!(app.prompt.is_none());
         assert_eq!(app.pins.pins.len(), 1);
-        assert_eq!(app.pins.pins[0].key_char(), Some('b'));
+        assert_eq!(app.pins.pins[0].key_str(), Some("b"));
         press(&mut app, "'z");
         assert!(status(&app).contains("no pin on 'z"));
+    }
+
+    /// `'d` is Work; giving Hit `'dd` asks Work to move first (a key is a key or starts
+    /// keys, never both), then `'d` waits for its second letter.
+    fn work_d_then_hit_dd(app: &mut App) {
+        press(app, "md<C-u>Work<CR><CR>");
+        press(app, ":cd HIT<CR>:pin<CR><C-u>Hit<CR><CR>dd<CR>");
+    }
+
+    #[test]
+    fn two_letter_key_moves_the_clashing_one_first() {
+        let (mut app, _rt) = loaded();
+        work_d_then_hit_dd(&mut app);
+        let asked = app.prompt.as_ref().map(|p| (p.kind, p.note.clone()));
+        assert!(
+            asked
+                .as_ref()
+                .is_some_and(|(k, n)| *k == keys::PromptKind::KeyMove
+                    && n.contains("'d (Work) blocks 'dd for Hit")),
+            "{asked:?}"
+        );
+        assert_eq!(
+            prompt_text(&app).as_deref(),
+            Some("dw"),
+            "a free key suggested"
+        );
+        assert_eq!(app.pins.pins.len(), 1, "nothing saved yet");
+
+        // A key that would clash again is refused, the prompt stays.
+        press(&mut app, "<C-u>d<CR>");
+        assert!(
+            app.prompt
+                .as_ref()
+                .is_some_and(|p| p.note.contains("clashes with 'dd (Hit)")),
+            "{:?}",
+            app.prompt.as_ref().map(|p| &p.note)
+        );
+        press(&mut app, "<C-u>dw<CR>");
+        assert!(app.prompt.is_none());
+        let keys: Vec<_> = app.pins.pins.iter().map(|p| p.key_str()).collect();
+        assert_eq!(keys, [Some("dw"), Some("dd")]);
+        assert!(status(&app).contains("'dd → Hit"), "{}", status(&app));
+        assert!(status(&app).contains("Work → 'dw"), "{}", status(&app));
+
+        // 'd waits for the second letter; Esc drops it.
+        press(&mut app, "'d");
+        assert_eq!(app.mark_prefix, Some('d'));
+        press(&mut app, "w");
+        assert_eq!(app.cwd.display(), r"C:\work");
+        press(&mut app, "'dd");
+        assert_eq!(app.cwd.display(), r"C:\work\HIT");
+        press(&mut app, "'d<Esc>");
+        assert_eq!(app.mark_prefix, None);
+        assert_eq!(app.cwd.display(), r"C:\work\HIT");
+        press(&mut app, "'dx");
+        assert!(status(&app).contains("no pin on 'dx"), "{}", status(&app));
+    }
+
+    #[test]
+    fn esc_on_the_move_saves_nothing() {
+        let (mut app, _rt) = loaded();
+        work_d_then_hit_dd(&mut app);
+        press(&mut app, "<Esc><Esc>");
+        assert!(app.prompt.is_none());
+        assert_eq!(app.pins.pins.len(), 1);
+        assert_eq!(app.pins.pins[0].key_str(), Some("d"), "Work keeps 'd");
+        assert_eq!(status(&app), "not pinned");
+    }
+
+    #[test]
+    fn quote_popup_groups_two_letter_keys() {
+        let (mut app, _rt) = loaded();
+        work_d_then_hit_dd(&mut app);
+        press(&mut app, "<CR>"); // the suggested 'dw
+        press(&mut app, "'");
+        app.tick(Instant::now() + app.keymap.timeout + Duration::from_millis(1));
+        let screen = render(&mut app, 120, 20);
+        assert!(screen.contains("+Hit · Work"), "{screen}");
+        press(&mut app, "d");
+        assert!(
+            app.which_key_visible(),
+            "the popup stays up for the second letter"
+        );
+        let screen = render(&mut app, 120, 20);
+        assert!(screen.contains("'d"), "{screen}");
+        assert!(
+            screen.contains("Hit") && screen.contains("Work"),
+            "{screen}"
+        );
     }
 
     #[test]
@@ -2535,13 +2670,13 @@ mod pin_tests {
         assert!(
             app.prompt
                 .as_ref()
-                .is_some_and(|p| p.note.contains("letter or digit")),
+                .is_some_and(|p| p.note.contains("letters or digits")),
             "stays open with a note"
         );
         press(&mut app, "<C-u>n<CR>");
         assert!(app.prompt.is_none());
         let pin = &app.pins.pins[0];
-        assert_eq!((pin.kind, pin.key_char()), (PinKind::File, Some('n')));
+        assert_eq!((pin.kind, pin.key_str()), (PinKind::File, Some("n")));
         assert_eq!(pin.path.as_deref(), Some(r"C:\work\notes.txt"));
 
         press(&mut app, "M");
@@ -2741,7 +2876,7 @@ mod pin_tests {
         );
         press(&mut app, "<C-u>x<CR>");
         assert_eq!(app.pins.pins[1].name, "HIT server");
-        assert_eq!(app.pins.pins[1].key_char(), Some('x'));
+        assert_eq!(app.pins.pins[1].key_str(), Some("x"));
 
         settle(&mut app);
         press(&mut app, "<C-x>n");
@@ -2785,8 +2920,8 @@ mod pin_tests {
         press(&mut app, "v<CR>");
         let v = &app.pins.views[0];
         assert_eq!(
-            (v.name.as_str(), v.query.as_str(), v.key_char()),
-            ("main server", "#servers", Some('v'))
+            (v.name.as_str(), v.query.as_str(), v.key_str()),
+            ("main server", "#servers", Some("v"))
         );
 
         // 'v opens the picker with the view's query.
@@ -2907,7 +3042,7 @@ mod pin_tests {
         press(&mut app, ":pin<CR>");
         assert_eq!(prompt_text(&app).as_deref(), Some("work"));
         press(&mut app, "<CR><CR>w<CR>");
-        assert_eq!(app.pins.pins[0].key_char(), Some('w'));
+        assert_eq!(app.pins.pins[0].key_str(), Some("w"));
         press(&mut app, ":pin<CR>");
         assert_eq!(
             prompt_text(&app).as_deref(),
@@ -3121,12 +3256,12 @@ mod pin_tests {
         assert_eq!(app.mode, Mode::Normal);
         let g = app.pins.pins[0].clone();
         assert_eq!(
-            (g.kind, g.url.as_deref(), g.browser.as_deref(), g.key_char()),
+            (g.kind, g.url.as_deref(), g.browser.as_deref(), g.key_str()),
             (
                 PinKind::Web,
                 Some("https://grafana.example/d/x"),
                 Some("chrome"),
-                Some('g')
+                Some("g")
             )
         );
 
@@ -4056,7 +4191,7 @@ mod machine_tests {
             pin.extra.get("auth").and_then(|v| v.as_str()),
             Some("admin")
         );
-        assert_eq!(pin.key_char(), Some('j'));
+        assert_eq!(pin.key_str(), Some("j"));
 
         press(&mut app, "gl'j");
         assert_eq!(app.cwd, Loc::Machine("PC-042".into()));
@@ -4220,7 +4355,7 @@ mod machine_tests {
             pin.extra.get("host").and_then(|v| v.as_str()),
             Some("PC-100")
         );
-        assert_eq!(pin.key_char(), Some('p'));
+        assert_eq!(pin.key_str(), Some("p"));
     }
 
     /// A machine never met: `a` in `gm` asks for its name; `Space m` + a name with no
@@ -5699,8 +5834,8 @@ mod job_tests {
         );
         assert!(p.include.is_empty(), "nothing selected: the whole folder");
         assert_eq!(
-            (pin.name.as_str(), pin.key_char(), pin.tags.clone()),
-            ("src → dst", Some('z'), vec!["aveva".to_string()])
+            (pin.name.as_str(), pin.key_str(), pin.tags.clone()),
+            ("src → dst", Some("z"), vec!["aveva".to_string()])
         );
 
         // ^e: the name, then each folder by going there (it starts where it was).
@@ -5717,7 +5852,7 @@ mod job_tests {
         assert_eq!(l.app.mode, Mode::Normal);
         let p = SyncPreset::from_pin(&l.app.pins.pins[0]).map(|p| p.mode);
         assert_eq!(p, Ok(SyncMode::Update));
-        assert_eq!(l.app.pins.pins[0].key_char(), Some('z'), "key kept");
+        assert_eq!(l.app.pins.pins[0].key_str(), Some("z"), "key kept");
 
         // A backup, with the engine offered because 7-Zip is "installed".
         l.app.seven_zip = Some(r"C:\Program Files\7-Zip\7z.exe".into());

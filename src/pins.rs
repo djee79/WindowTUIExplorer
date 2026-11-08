@@ -78,7 +78,7 @@ pub struct Pin {
     pub url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<String>,
-    /// The `'` jump key: one letter or digit.
+    /// The `'` jump key: one or two letters or digits (`'h`, `'dl`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -123,8 +123,9 @@ impl Pin {
         pin
     }
 
-    pub fn key_char(&self) -> Option<char> {
-        single_char(self.key.as_deref()?)
+    /// The `'` key, when it's a valid one.
+    pub fn key_str(&self) -> Option<&str> {
+        self.key.as_deref().filter(|k| valid_key(k))
     }
 
     /// Where a folder or file pin points (`~` is the home folder). None for other kinds
@@ -274,9 +275,25 @@ pub fn vars_starting(prefix: &str) -> Vec<String> {
     v
 }
 
-/// A pin key: one ASCII letter or digit, like a vim mark.
-pub fn valid_key(c: char) -> bool {
-    c.is_ascii_alphanumeric()
+/// A pin key: one or two ASCII letters or digits (`'h`, `'dl`).
+pub fn valid_key(k: &str) -> bool {
+    (1..=2).contains(&k.len()) && k.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+/// A key prompt's answer: empty for none, else one or two letters or digits.
+pub fn parse_key(text: &str) -> Result<Option<String>, String> {
+    match text.trim() {
+        "" => Ok(None),
+        k if valid_key(k) => Ok(Some(k.to_string())),
+        _ => Err("one or two letters or digits, or empty for none".to_string()),
+    }
+}
+
+/// Two different keys where one starts the other (`d` and `dl`): after `'d` sentier
+/// couldn't tell whether to jump or wait, so a letter is a key or starts keys, never
+/// both.
+pub fn keys_clash(a: &str, b: &str) -> bool {
+    a != b && (a.starts_with(b) || b.starts_with(a))
 }
 
 /// `#Aveva` → `aveva`. Tags are lowercase `a-z 0-9 - _ .`, stored without the `#`.
@@ -331,16 +348,8 @@ impl View {
         }
     }
 
-    pub fn key_char(&self) -> Option<char> {
-        single_char(self.key.as_deref()?)
-    }
-}
-
-fn single_char(s: &str) -> Option<char> {
-    let mut chars = s.chars();
-    match (chars.next(), chars.next()) {
-        (Some(c), None) => Some(c),
-        _ => None,
+    pub fn key_str(&self) -> Option<&str> {
+        self.key.as_deref().filter(|k| valid_key(k))
     }
 }
 
@@ -363,45 +372,77 @@ pub struct PinStore {
 }
 
 impl PinStore {
-    pub fn by_key(&self, c: char) -> Option<&Pin> {
-        self.pins.iter().find(|p| p.key_char() == Some(c))
+    /// Every pin and view with a key, pins first, in file order.
+    pub fn keyed(&self) -> impl Iterator<Item = (KeyOwner, &str)> {
+        let pins = self.pins.iter().enumerate();
+        let views = self.views.iter().enumerate();
+        pins.filter_map(|(i, p)| Some((KeyOwner::Pin(i), p.key_str()?)))
+            .chain(views.filter_map(|(i, v)| Some((KeyOwner::View(i), v.key_str()?))))
     }
 
-    /// The pin or view holding key `c`.
-    pub fn key_owner(&self, c: char) -> Option<KeyOwner> {
-        if let Some(i) = self.pins.iter().position(|p| p.key_char() == Some(c)) {
-            return Some(KeyOwner::Pin(i));
+    /// The pin or view holding key `k`.
+    pub fn key_owner(&self, k: &str) -> Option<KeyOwner> {
+        self.keyed().find(|(_, key)| *key == k).map(|(o, _)| o)
+    }
+
+    /// The pins and views (but `except`) whose key clashes with `k`: one starts the
+    /// other (see [`keys_clash`]).
+    pub fn key_clashes(&self, k: &str, except: Option<KeyOwner>) -> Vec<KeyOwner> {
+        self.keyed()
+            .filter(|(o, key)| Some(*o) != except && keys_clash(k, key))
+            .map(|(o, _)| o)
+            .collect()
+    }
+
+    /// True when some two-letter key starts with `c` (`'d` then waits for the second).
+    pub fn starts_keys(&self, c: char) -> bool {
+        self.keyed().any(|(_, k)| k.len() == 2 && k.starts_with(c))
+    }
+
+    pub fn owner_name(&self, o: KeyOwner) -> Option<&str> {
+        match o {
+            KeyOwner::Pin(i) => self.pins.get(i).map(|p| p.name.as_str()),
+            KeyOwner::View(i) => self.views.get(i).map(|v| v.name.as_str()),
         }
-        self.views
-            .iter()
-            .position(|v| v.key_char() == Some(c))
-            .map(KeyOwner::View)
     }
 
-    /// Takes key `c` away from everyone but `keep`; returns the name it was taken from.
-    fn release_key(&mut self, c: char, keep: KeyOwner) -> Option<String> {
+    pub fn owner_key(&self, o: KeyOwner) -> Option<&str> {
+        match o {
+            KeyOwner::Pin(i) => self.pins.get(i)?.key_str(),
+            KeyOwner::View(i) => self.views.get(i)?.key_str(),
+        }
+    }
+
+    /// Sets (or clears) one owner's key, nothing else.
+    pub fn put_key(&mut self, o: KeyOwner, k: Option<&str>) {
+        let slot = match o {
+            KeyOwner::Pin(i) => self.pins.get_mut(i).map(|p| &mut p.key),
+            KeyOwner::View(i) => self.views.get_mut(i).map(|v| &mut v.key),
+        };
+        if let Some(slot) = slot {
+            *slot = k.map(str::to_string);
+        }
+    }
+
+    /// Takes key `k` away from everyone but `keep`; returns the name it was taken from.
+    fn release_key(&mut self, k: &str, keep: KeyOwner) -> Option<String> {
+        let owners: Vec<KeyOwner> = self
+            .keyed()
+            .filter(|(o, key)| *o != keep && *key == k)
+            .map(|(o, _)| o)
+            .collect();
         let mut previous = None;
-        for (i, p) in self.pins.iter_mut().enumerate() {
-            if keep != KeyOwner::Pin(i) && p.key_char() == Some(c) {
-                p.key = None;
-                previous = Some(p.name.clone());
-            }
-        }
-        for (i, v) in self.views.iter_mut().enumerate() {
-            if keep != KeyOwner::View(i) && v.key_char() == Some(c) {
-                v.key = None;
-                previous = Some(v.name.clone());
-            }
+        for o in owners {
+            previous = self.owner_name(o).map(str::to_string);
+            self.put_key(o, None);
         }
         previous
     }
 
-    /// Gives view `idx` the key `c` (taken from whoever had it). Returns that name.
-    pub fn set_view_key(&mut self, idx: usize, c: Option<char>) -> Option<String> {
-        let previous = c.and_then(|c| self.release_key(c, KeyOwner::View(idx)));
-        if let Some(v) = self.views.get_mut(idx) {
-            v.key = c.map(String::from);
-        }
+    /// Gives view `idx` the key `k` (taken from whoever had it). Returns that name.
+    pub fn set_view_key(&mut self, idx: usize, k: Option<&str>) -> Option<String> {
+        let previous = k.and_then(|k| self.release_key(k, KeyOwner::View(idx)));
+        self.put_key(KeyOwner::View(idx), k);
         previous
     }
 
@@ -479,11 +520,9 @@ impl PinStore {
 
     /// Gives pin `idx` the key `c`, taking it from whichever pin had it (vim marks are
     /// overwritten the same way). Returns that pin's name.
-    pub fn set_key(&mut self, idx: usize, c: Option<char>) -> Option<String> {
-        let previous = c.and_then(|c| self.release_key(c, KeyOwner::Pin(idx)));
-        if let Some(p) = self.pins.get_mut(idx) {
-            p.key = c.map(String::from);
-        }
+    pub fn set_key(&mut self, idx: usize, k: Option<&str>) -> Option<String> {
+        let previous = k.and_then(|k| self.release_key(k, KeyOwner::Pin(idx)));
+        self.put_key(KeyOwner::Pin(idx), k);
         previous
     }
 
@@ -575,22 +614,9 @@ fn load_view(value: &toml::Value, so_far: &PinStore) -> Result<(View, Vec<String
         return Err(format!("pins.toml: {label}: empty name"));
     }
     let mut notes = Vec::new();
-    if view.key.is_some() {
-        match view.key_char().filter(|c| valid_key(*c)) {
-            Some(c) if so_far.key_owner(c).is_some() => {
-                notes.push(format!(
-                    "pins.toml: {label}: key '{c} is already used, dropped"
-                ));
-                view.key = None;
-            }
-            Some(_) => {}
-            None => {
-                notes.push(format!(
-                    "pins.toml: {label}: key must be one letter or digit, dropped"
-                ));
-                view.key = None;
-            }
-        }
+    if let Some(note) = check_loaded_key(view.key.as_deref(), &label, so_far) {
+        notes.push(note);
+        view.key = None;
     }
     Ok((view, notes))
 }
@@ -623,24 +649,32 @@ fn load_pin(value: &toml::Value, so_far: &PinStore) -> Result<(Pin, Vec<String>)
         }
     }
     pin.tags = tags;
-    if pin.key.is_some() {
-        match pin.key_char().filter(|c| valid_key(*c)) {
-            None => {
-                notes.push(format!(
-                    "pins.toml: {label}: key must be one letter or digit, dropped"
-                ));
-                pin.key = None;
-            }
-            Some(c) if so_far.by_key(c).is_some() => {
-                notes.push(format!(
-                    "pins.toml: {label}: key '{c} is already used, dropped"
-                ));
-                pin.key = None;
-            }
-            Some(_) => {}
-        }
+    if let Some(note) = check_loaded_key(pin.key.as_deref(), &label, so_far) {
+        notes.push(note);
+        pin.key = None;
     }
     Ok((pin, notes))
+}
+
+/// A hand-edited key that can't be used (malformed, taken, or clashing with an earlier
+/// one): the note saying so; the key is then dropped.
+fn check_loaded_key(key: Option<&str>, label: &str, so_far: &PinStore) -> Option<String> {
+    let k = key?;
+    if !valid_key(k) {
+        return Some(format!(
+            "pins.toml: {label}: key must be one or two letters or digits, dropped"
+        ));
+    }
+    if so_far.key_owner(k).is_some() {
+        return Some(format!(
+            "pins.toml: {label}: key '{k} is already used, dropped"
+        ));
+    }
+    let clash = so_far.key_clashes(k, None).into_iter().next()?;
+    let other = so_far.owner_key(clash).unwrap_or_default();
+    Some(format!(
+        "pins.toml: {label}: key '{k} clashes with '{other} (one starts the other), dropped"
+    ))
 }
 
 pub fn serialize(store: &PinStore) -> Result<String, String> {
@@ -793,13 +827,13 @@ color = "#7fa6f5"
 
         let a = &store.pins[0];
         assert_eq!(a.tags, ["aveva", "acme", "servers"], "normalized");
-        assert_eq!(a.key_char(), Some('a'));
+        assert_eq!(a.key_str(), Some("a"));
         assert_eq!(
             a.target().map(|l| l.display()).as_deref(),
             Some(r"\\srv01\aveva\projects")
         );
         assert_eq!(
-            store.by_key('a').map(|p| p.name.as_str()),
+            store.key_owner("a").and_then(|o| store.owner_name(o)),
             Some("AVEVA projects")
         );
         assert_eq!(
@@ -850,7 +884,7 @@ key  = "xy"
             panic!()
         };
         assert_eq!(store.pins.len(), 3);
-        assert_eq!(store.pins[0].key_char(), Some('x'));
+        assert_eq!(store.pins[0].key_str(), Some("x"));
         assert_eq!(store.pins[1].key, None, "duplicate key");
         assert_eq!(store.pins[1].tags, ["ok"]);
         assert_eq!(store.pins[2].key, None, "two letters");
@@ -886,12 +920,81 @@ key  = "xy"
     #[test]
     fn set_key_moves_it_like_a_vim_mark() {
         let (mut store, _) = sample();
-        let moved = store.set_key(1, Some('a'));
+        let moved = store.set_key(1, Some("a"));
         assert_eq!(moved.as_deref(), Some("AVEVA projects"));
-        assert_eq!(store.by_key('a').map(|p| p.name.as_str()), Some("grafana"));
+        assert_eq!(store.key_owner("a"), Some(KeyOwner::Pin(1)));
         assert_eq!(store.pins[0].key, None);
         assert_eq!(store.set_key(1, None), None);
-        assert!(store.by_key('a').is_none());
+        assert!(store.key_owner("a").is_none());
+    }
+
+    #[test]
+    fn two_letter_keys_and_clashes() {
+        for ok in ["a", "Z", "7", "dl", "D2"] {
+            assert!(valid_key(ok), "{ok}");
+        }
+        for bad in ["", "abc", "d-", "é", " d"] {
+            assert!(!valid_key(bad), "{bad:?}");
+        }
+        assert_eq!(parse_key("  dl "), Ok(Some("dl".to_string())));
+        assert_eq!(parse_key(""), Ok(None));
+        assert!(parse_key("abc").is_err());
+
+        let cases: &[(&str, &str, bool)] = &[
+            ("d", "dd", true),
+            ("dl", "d", true),
+            ("d", "d", false),
+            ("dl", "dd", false),
+            ("d", "e", false),
+            ("d", "Dd", false),
+        ];
+        for (a, b, want) in cases {
+            assert_eq!(keys_clash(a, b), *want, "{a} {b}");
+        }
+
+        let (mut store, _) = sample();
+        store.set_key(0, Some("d"));
+        store.set_key(1, Some("dl"));
+        assert_eq!(store.key_clashes("dd", None), [KeyOwner::Pin(0)]);
+        assert_eq!(
+            store.key_clashes("d", Some(KeyOwner::Pin(0))),
+            [KeyOwner::Pin(1)]
+        );
+        assert!(store.key_clashes("e", None).is_empty());
+        assert!(store.starts_keys('d'));
+        assert!(!store.starts_keys('e'));
+        assert_eq!(store.key_owner("dl"), Some(KeyOwner::Pin(1)));
+    }
+
+    #[test]
+    fn loader_drops_a_clashing_key() {
+        let text = r#"
+            [[pin]]
+            kind = "folder"
+            name = "D drive"
+            path = 'D:\'
+            key = "d"
+
+            [[pin]]
+            kind = "folder"
+            name = "Desktop"
+            path = 'C:\Users\me\Desktop'
+            key = "dd"
+
+            [[pin]]
+            kind = "folder"
+            name = "Docs"
+            path = 'C:\Docs'
+            key = "do"
+        "#;
+        let Ok((store, problems)) = parse(text) else {
+            panic!()
+        };
+        assert_eq!(store.pins[0].key_str(), Some("d"));
+        assert_eq!(store.pins[1].key, None);
+        assert_eq!(store.pins[2].key, None);
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].contains("clashes with 'd"), "{problems:?}");
     }
 
     #[test]
@@ -957,21 +1060,21 @@ key  = "xy"
         assert_eq!(store.views[0].query, "#aveva on:srv01");
 
         // 'a belongs to a pin; giving it to the view takes it away.
-        let moved = store.set_view_key(0, Some('a'));
+        let moved = store.set_view_key(0, Some("a"));
         assert_eq!(moved.as_deref(), Some("AVEVA projects"));
-        assert_eq!(store.key_owner('a'), Some(KeyOwner::View(0)));
-        assert!(store.by_key('a').is_none());
+        assert_eq!(store.key_owner("a"), Some(KeyOwner::View(0)));
+        assert!(!matches!(store.key_owner("a"), Some(KeyOwner::Pin(_))));
         // And back.
-        store.set_key(0, Some('a'));
-        assert_eq!(store.key_owner('a'), Some(KeyOwner::Pin(0)));
+        store.set_key(0, Some("a"));
+        assert_eq!(store.key_owner("a"), Some(KeyOwner::Pin(0)));
         assert_eq!(store.views[0].key, None);
 
         // Saving under the same name replaces the query, keeps the key.
-        store.set_view_key(0, Some('v'));
+        store.set_view_key(0, Some("v"));
         let i = store.save_view(View::new("MAIN server", "#aveva is:unc"));
         assert_eq!((i, store.views.len()), (0, 1));
         assert_eq!(store.views[0].query, "#aveva is:unc");
-        assert_eq!(store.views[0].key_char(), Some('v'));
+        assert_eq!(store.views[0].key_str(), Some("v"));
         store.save_view(View::new("other", "#acme"));
 
         let Ok(text) = serialize(&store) else {

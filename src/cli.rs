@@ -34,7 +34,7 @@ pub struct PinArgs {
     pub target: String,
     pub name: Option<String>,
     pub tags: Vec<String>,
-    pub key: Option<char>,
+    pub key: Option<String>,
 }
 
 pub fn parse_pin_args(args: &[String]) -> Result<PinArgs, String> {
@@ -51,11 +51,10 @@ pub fn parse_pin_args(args: &[String]) -> Result<PinArgs, String> {
             "--tag" => out.tags.push(normalize_tag(&value("--tag")?)?),
             "--key" => {
                 let k = value("--key")?;
-                let mut cs = k.chars();
-                match (cs.next(), cs.next()) {
-                    (Some(c), None) if valid_key(c) => out.key = Some(c),
-                    _ => return Err("--key is one letter or digit".into()),
+                if !valid_key(&k) {
+                    return Err("--key is one or two letters or digits".into());
                 }
+                out.key = Some(k);
             }
             flag if flag.starts_with("--") => return Err(format!("unknown option {flag}")),
             t if out.target.is_empty() => out.target = t.to_string(),
@@ -139,15 +138,25 @@ pub fn add_pin(
     {
         return Err(format!("already pinned as {:?}", same.name));
     }
+    // No prompt here to move the other pin, as the TUI offers: refuse instead.
+    if let Some(k) = &args.key
+        && let Some(o) = store.key_clashes(k, None).into_iter().next()
+    {
+        return Err(format!(
+            "'{k} clashes with '{} ({}): a letter is a key or starts keys, not both",
+            store.owner_key(o).unwrap_or_default(),
+            store.owner_name(o).unwrap_or_default()
+        ));
+    }
     let (name, kind) = (pin.name.clone(), pin.kind);
     store.pins.push(pin);
     let mut msg = format!("pinned {name} ({})", kind.label());
-    if let Some(c) = args.key {
+    if let Some(k) = &args.key {
         let idx = store.pins.len() - 1;
-        if let Some(moved) = store.set_key(idx, Some(c)) {
-            msg.push_str(&format!(" · '{c} moved from {moved}"));
+        if let Some(moved) = store.set_key(idx, Some(k)) {
+            msg.push_str(&format!(" · '{k} moved from {moved}"));
         } else {
-            msg.push_str(&format!(" · '{c}"));
+            msg.push_str(&format!(" · '{k}"));
         }
     }
     Ok(msg)
@@ -213,7 +222,7 @@ pub fn to_json(pins: &[&Pin]) -> Result<String, String> {
 /// One line per pin: `folder  AVEVA projects  \\srv01\aveva\projects  'a #aveva`.
 pub fn to_lines(pins: &[&Pin], out: &mut dyn Write) {
     for p in pins {
-        let key = p.key_char().map(|c| format!(" '{c}")).unwrap_or_default();
+        let key = p.key_str().map(|k| format!(" '{k}")).unwrap_or_default();
         let tags: String = p.tags.iter().map(|t| format!(" #{t}")).collect();
         let _ = writeln!(
             out,
@@ -241,7 +250,7 @@ mod tests {
 
     fn probe(path: &str) -> Option<bool> {
         match path {
-            r"C:\work\HIT" | r"\\srv01\p" => Some(true),
+            r"C:\work\HIT" | r"\\srv01\p" | r"C:\work\dl" | r"C:\work\hx" => Some(true),
             r"C:\work\a.pdf" | r"C:\work\tool.exe" => Some(false),
             _ => None,
         }
@@ -276,7 +285,13 @@ mod tests {
         assert!(add(&mut store, &["HIT"]).is_err_and(|e| e.contains("already pinned as \"HIT\"")));
         assert!(add(&mut store, &[r"C:\nope"]).is_err_and(|e| e.contains("not found")));
         assert!(add(&mut store, &["just words"]).is_err());
-        assert!(parse_pin_args(&s(&["x", "--key", "ab"])).is_err());
+        assert!(parse_pin_args(&s(&["x", "--key", "abc"])).is_err());
+        // Two-letter keys; one that clashes with 'h (HIT) is refused.
+        assert!(add(&mut store, &[r"C:\work\dl", "--key", "dl"]).is_ok_and(|m| m.ends_with("'dl")));
+        assert!(
+            add(&mut store, &[r"C:\work\hx", "--key", "hx"])
+                .is_err_and(|e| e.contains("clashes with 'h (HIT)"))
+        );
         assert!(parse_pin_args(&s(&["x", "--tag", "a b"])).is_err());
         assert!(parse_pin_args(&s(&[])).is_err());
         assert!(parse_pin_args(&s(&["x", "--colour"])).is_err());

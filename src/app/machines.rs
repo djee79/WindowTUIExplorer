@@ -477,7 +477,7 @@ impl App {
     // ------------------------------------------------------------------ pins
 
     /// `M` on a machine, or `m{key}` in its view: pin it (`kind = "machine"`).
-    pub(super) fn pin_machine(&mut self, host: &str, key: Option<char>) {
+    pub(super) fn pin_machine(&mut self, host: &str, key: Option<String>) {
         if !self.pins_ready() {
             return;
         }
@@ -489,11 +489,7 @@ impl App {
                     .is_some_and(|h| h.eq_ignore_ascii_case(host))
         }) {
             match key {
-                Some(c) => {
-                    self.pins.set_key(idx, Some(c));
-                    self.save_pins();
-                    self.set_status(format!("'{c} → {host}"), false);
-                }
+                Some(k) => self.give_mark(idx, k),
                 None => self.set_status(format!("{host} is already pinned"), false),
             }
             return;
