@@ -369,7 +369,10 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     if let (Mode::Prompt, Some(d)) = (app.mode, app.dialog_view()) {
         left.push(badge(" CONFIRM ", if d.danger { ERR } else { ACCENT }));
         left.push(Span::styled(
-            "  y yes  ·  n / Esc no  ·  h l Tab choose  ·  Enter presses the highlighted one",
+            format!(
+                "  {}  ·  Enter presses the highlighted one",
+                d.keys.replace(" · ", "  ·  ")
+            ),
             theme::dim(),
         ));
         bar(f, area, left, Vec::new());

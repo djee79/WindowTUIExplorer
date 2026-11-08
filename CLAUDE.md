@@ -376,10 +376,15 @@ paths, tags are the main way to narrow things down.
     name is asked, suggested (`report.pdf` → `report.zip`, a folder → its name, several
     → the folder's name). Written as `.partial`, read back (every CRC), then renamed; a
     name in use gets a number.
-  - `<leader>zx` / `:unzip` extracts the archive under the cursor here: into a folder
-    named after it (`HIT.zip` → `HIT\`), or, when it holds one top folder, that folder as
-    it is (no `HIT\HIT\`); a name in use gets a number (`HIT_1`). `.zip` natively, every
-    CRC checked; an entry that would land outside the folder refuses the archive.
+  - `<leader>zx` / `:unzip` extracts the archive under the cursor here, into a folder
+    named by the archive: its one top folder (`aveva.zip` holding `aveva\…` → `aveva`,
+    no `aveva\aveva\`), else the archive's name (`HIT.zip` → `HIT\`). The name is read
+    first (off-thread); when that folder exists, a popup asks: `m` merge into it (files
+    with the same name replaced, nothing else touched, never removed on a failure), `n`
+    a new folder (`aveva_1`, the default for Enter), `Esc` cancel. A `.zip` extracts
+    straight into the folder (no rename at the end, which Windows refuses while
+    antivirus has new files open). `.zip` natively, every CRC checked; an entry that
+    would land outside the folder refuses the archive.
     `.7z .rar .tar .gz .tgz .bz2 .xz .cab` through 7-Zip when it's installed (a
     `.tar.gz` is unpacked both ways), else "needs 7-Zip".
   - Also in the `O` menu ("Compress to zip" / "Extract here"). Admin shares: the usual

@@ -10,8 +10,11 @@
 //!   the archive holds one top folder, that folder lands here as it is (no `HIT\HIT\`).
 //!   A name already taken gets a number (`HIT_1`), as paste does.
 //!
-//! Both write under a `.partial` name and rename at the end, so a half-done result never
-//! looks finished; a failure or a cancel removes it.
+//! A zip is written as `<name>.partial` and renamed when verified. A `.zip` extracts
+//! straight into its final (new) folder, decided up front from the entry names: no
+//! folder rename at the end, which Windows refuses while antivirus or the indexer still
+//! has one of the new files open. 7-Zip formats go through `<name>.partial` and a rename
+//! that is tried again for a while. A failure or a cancel removes what was made.
 //!
 //! Everything above [`run`] is pure.
 
@@ -103,7 +106,87 @@ pub fn free_folder(name: &str, taken: &HashSet<String>) -> String {
     }
 }
 
+// ------------------------------------------------------------------ the target
+
+/// Where an archive's files go, named by the archive: its one top folder (`aveva.zip`
+/// holding `aveva\…` → `aveva`), else the archive's own name. Read before extracting
+/// (on the blocking pool), so an existing folder can be asked about first.
+pub fn target_folder(archive: &str, seven: Option<&Path>) -> Result<String, String> {
+    let name = name_of(archive);
+    let entries = match format_of(name) {
+        Some(Format::Zip) => zip_entries(archive)?,
+        Some(Format::SevenZip) => match seven {
+            Some(exe) => list_7z(exe, archive)?,
+            None => return Err("this kind of archive needs 7-Zip (7z.exe), not found".into()),
+        },
+        None => return Err(format!("{name} isn't an archive sentier knows")),
+    };
+    Ok(top_folder(&entries).unwrap_or_else(|| archive_stem(name)))
+}
+
+/// A `.zip`'s entries (path, is a folder); an entry that would land outside the target
+/// folder refuses the archive.
+fn zip_entries(archive: &str) -> Result<Vec<(PathBuf, bool)>, String> {
+    let bad = |e: &dyn std::fmt::Display| format!("{}: {e}", name_of(archive));
+    let file = std::fs::File::open(long(archive)).map_err(|e| bad(&e))?;
+    let mut za = ::zip::ZipArchive::new(std::io::BufReader::new(file)).map_err(|e| bad(&e))?;
+    let mut out = Vec::with_capacity(za.len());
+    for i in 0..za.len() {
+        let f = za.by_index_raw(i).map_err(|e| bad(&e))?;
+        let Some(rel) = f.enclosed_name() else {
+            return Err(format!(
+                "{}: the entry {:?} would land outside the folder; nothing extracted",
+                name_of(archive),
+                f.name()
+            ));
+        };
+        out.push((rel, f.is_dir()));
+    }
+    Ok(out)
+}
+
+/// `7z l -ba -slt`: each entry's `Path = …` and `Folder = +`.
+fn list_7z(exe: &Path, archive: &str) -> Result<Vec<(PathBuf, bool)>, String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let out = std::process::Command::new(exe)
+        .args(["l", "-ba", "-slt", archive])
+        .stdin(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("7-Zip didn't start: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("7-Zip can't read {}", name_of(archive)));
+    }
+    Ok(parse_7z_list(&crate::platform::oem_to_string(&out.stdout)))
+}
+
+/// The entries in `7z l -slt` output.
+pub fn parse_7z_list(text: &str) -> Vec<(PathBuf, bool)> {
+    let mut out: Vec<(PathBuf, bool)> = Vec::new();
+    for line in text.lines() {
+        if let Some(p) = line.strip_prefix("Path = ") {
+            out.push((PathBuf::from(p.trim()), false));
+        } else if let Some(f) = line.strip_prefix("Folder = ")
+            && let Some(last) = out.last_mut()
+        {
+            last.1 = f.trim() == "+";
+        }
+    }
+    out
+}
+
 // ------------------------------------------------------------------ the run
+
+/// Extract into a new folder, or into one that's there already (asked first).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtractTo {
+    /// A new folder by this name (`_1` if it got taken meanwhile).
+    New(String),
+    /// Into this existing folder: files with the same name are replaced, nothing else
+    /// is touched, and the folder is never removed (not even on a failure).
+    Merge(String),
+}
 
 /// A compress or extract job, run on the blocking pool.
 #[derive(Debug, Clone)]
@@ -119,6 +202,7 @@ pub enum ArchiveJob {
     Extract {
         archive: String,
         dest_dir: String,
+        to: ExtractTo,
         /// 7-Zip, for anything but a `.zip`.
         seven: Option<PathBuf>,
         log: String,
@@ -135,7 +219,12 @@ impl ArchiveJob {
                 [one] => format!("zip {} into {zip_name}", name_of(one)),
                 _ => format!("zip {} items into {zip_name}", items.len()),
             },
-            ArchiveJob::Extract { archive, .. } => format!("extract {}", name_of(archive)),
+            ArchiveJob::Extract { archive, to, .. } => match to {
+                ExtractTo::New(f) => format!("extract {} into {f}", name_of(archive)),
+                ExtractTo::Merge(f) => {
+                    format!("extract {} into the existing {f}", name_of(archive))
+                }
+            },
         }
     }
 
@@ -190,11 +279,13 @@ pub fn run(job: &ArchiveJob, ctl: &Control, send: &dyn Fn(JobEvent)) {
         ArchiveJob::Extract {
             archive,
             dest_dir,
+            to,
             seven,
             ..
         } => extract(
             archive,
             dest_dir,
+            to,
             seven.as_deref(),
             log,
             &mut partial,
@@ -268,11 +359,8 @@ fn compress(
     send(JobEvent::Stage(BackupStep::Verifying));
     let entries = verify(&part, files, total, cancel, send)?;
     let fin = free_name(dir, zip_name);
-    std::fs::rename(
-        long(&part.display().to_string()),
-        long(&fin.display().to_string()),
-    )
-    .map_err(|e| format!("can't rename the zip to {}: {e}", fin.display()))?;
+    rename_retry(&part, &fin, cancel)
+        .map_err(|e| rename_failed(&format!("can't rename the zip to {}", fin.display()), &e))?;
     *partial = None;
     let bytes = std::fs::metadata(long(&fin.display().to_string())).map_or(0, |m| m.len());
     send(JobEvent::Produced {
@@ -294,9 +382,47 @@ fn taken_in(dir: &str) -> HashSet<String> {
         .unwrap_or_default()
 }
 
+/// Renames `from` to `to`, trying again for ~10 s while Windows says "access denied" or
+/// "in use": right after thousands of files were written, antivirus, the search
+/// indexer or a sync client often still has some open, and a folder holding an open
+/// file can't be renamed.
+fn rename_retry(from: &Path, to: &Path, cancel: &CancelToken) -> std::io::Result<()> {
+    let (from, to) = (
+        long(&from.display().to_string()),
+        long(&to.display().to_string()),
+    );
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(&from, &to) {
+            Err(e)
+                if matches!(e.raw_os_error(), Some(5 | 32 | 33))
+                    && tries < 25
+                    && !cancel.is_cancelled() =>
+            {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(400));
+            }
+            r => return r,
+        }
+    }
+}
+
+/// Why a final rename failed, in words.
+fn rename_failed(what: &str, e: &std::io::Error) -> String {
+    match e.raw_os_error() {
+        Some(5 | 32 | 33) => format!(
+            "{what}: {e}. Something still has files in it open (antivirus, the search \
+             indexer, OneDrive?); try again in a moment"
+        ),
+        _ => format!("{what}: {e}"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn extract(
     archive: &str,
     dest_dir: &str,
+    to: &ExtractTo,
     seven: Option<&Path>,
     log: &str,
     partial: &mut Option<PathBuf>,
@@ -305,57 +431,24 @@ fn extract(
 ) -> Result<(), String> {
     send(JobEvent::Stage(BackupStep::Extracting));
     let name = name_of(archive);
-    let mut taken = taken_in(dest_dir);
-    let part_name = free_folder(&format!("{}.partial", archive_stem(name)), &taken);
-    taken.insert(part_name.to_lowercase());
-    let part = Path::new(dest_dir).join(&part_name);
-    *partial = Some(part.clone());
-    std::fs::create_dir_all(long(&part.display().to_string()))
-        .map_err(|e| format!("can't create {}: {e}", part.display()))?;
+    let taken = taken_in(dest_dir);
+    // The folder: new (numbered if it got taken since it was asked), or the existing one.
+    let fin = match to {
+        ExtractTo::New(f) => Path::new(dest_dir).join(free_folder(f, &taken)),
+        ExtractTo::Merge(f) => Path::new(dest_dir).join(f),
+    };
+    let merge = matches!(to, ExtractTo::Merge(_));
     let (entries, bytes) = match format_of(name) {
-        Some(Format::Zip) => unzip(archive, &part, cancel, send)?,
+        Some(Format::Zip) => unzip(archive, &fin, merge, partial, cancel, send)?,
         Some(Format::SevenZip) => {
             let exe = seven.ok_or("this kind of archive needs 7-Zip (7z.exe), not found")?;
-            unpack_7z(exe, archive, &part, log, cancel, send)?
+            extract_7z(exe, archive, &fin, merge, taken, log, partial, cancel, send)?
         }
         None => return Err(format!("{name} isn't an archive sentier knows")),
     };
     if cancel.is_cancelled() {
         return Err("cancelled".into());
     }
-    // One folder at the top: it lands here as it is. Anything else: in a folder named
-    // after the archive.
-    let inside: Vec<std::fs::DirEntry> = std::fs::read_dir(long(&part.display().to_string()))
-        .map_err(|e| format!("can't read {}: {e}", part.display()))?
-        .flatten()
-        .collect();
-    let single_dir = match inside.as_slice() {
-        [one] if one.file_type().is_ok_and(|t| t.is_dir()) => {
-            Some(one.file_name().to_string_lossy().to_string())
-        }
-        _ => None,
-    };
-    let fin = match &single_dir {
-        Some(top) => {
-            let fin = Path::new(dest_dir).join(free_folder(top, &taken));
-            std::fs::rename(
-                long(&part.join(top).display().to_string()),
-                long(&fin.display().to_string()),
-            )
-            .map_err(|e| format!("can't move {top} into place: {e}"))?;
-            let _ = std::fs::remove_dir(long(&part.display().to_string()));
-            fin
-        }
-        None => {
-            let fin = Path::new(dest_dir).join(free_folder(&archive_stem(name), &taken));
-            std::fs::rename(
-                long(&part.display().to_string()),
-                long(&fin.display().to_string()),
-            )
-            .map_err(|e| format!("can't rename to {}: {e}", fin.display()))?;
-            fin
-        }
-    };
     *partial = None;
     log_line(
         log,
@@ -373,28 +466,55 @@ fn extract(
     Ok(())
 }
 
-/// A `.zip` into `into`: (entries, bytes). Reading each entry to its end checks its CRC.
+/// The one folder every entry is in (`HIT`, `HIT/a.txt` → `HIT`), if there is one.
+/// A file at the top (`a.txt`) means there is none. Entries: (path, is a folder).
+pub fn top_folder(entries: &[(PathBuf, bool)]) -> Option<String> {
+    let mut top: Option<String> = None;
+    for (path, is_dir) in entries {
+        let mut parts = path.components();
+        let first = parts.next()?.as_os_str().to_string_lossy().to_string();
+        if parts.next().is_none() && !is_dir {
+            return None;
+        }
+        match &top {
+            None => top = Some(first),
+            Some(t) if *t == first => {}
+            Some(_) => return None,
+        }
+    }
+    top
+}
+
+/// A `.zip` straight into `fin`: (entries, bytes). Its one top folder, if any, is `fin`
+/// itself (no `HIT\HIT`). Nothing is renamed at the end: Windows refuses to rename a
+/// folder while antivirus or the indexer has one of the new files open. A new `fin` is
+/// removed on a failure or a cancel (`partial`); a merged-into one never is. Reading
+/// each entry to its end checks its CRC.
 fn unzip(
     archive: &str,
-    into: &Path,
+    fin: &Path,
+    merge: bool,
+    partial: &mut Option<PathBuf>,
     cancel: &CancelToken,
     send: &dyn Fn(JobEvent),
 ) -> Result<(u64, u64), String> {
     let bad = |e: &dyn std::fmt::Display| format!("{}: {e}", name_of(archive));
+    // Every name checked before anything is written.
+    let names = zip_entries(archive)?;
     let file = std::fs::File::open(long(archive)).map_err(|e| bad(&e))?;
     let mut za = ::zip::ZipArchive::new(std::io::BufReader::new(file)).map_err(|e| bad(&e))?;
-    // Every name checked before anything is written.
     let mut total = 0u64;
     for i in 0..za.len() {
-        let f = za.by_index_raw(i).map_err(|e| bad(&e))?;
-        if f.enclosed_name().is_none() {
-            return Err(format!(
-                "{}: the entry {:?} would land outside the folder; nothing extracted",
-                name_of(archive),
-                f.name()
-            ));
-        }
-        total += f.size();
+        total += za.by_index_raw(i).map_err(|e| bad(&e))?.size();
+    }
+    let top = top_folder(&names);
+    let fin_s = fin.display().to_string();
+    if merge {
+        std::fs::create_dir_all(long(&fin_s)).map_err(|e| format!("can't open {fin_s}: {e}"))?;
+    } else {
+        // `create_dir`, not `_all`: it must be new, since a failure deletes it.
+        std::fs::create_dir(long(&fin_s)).map_err(|e| format!("can't create {fin_s}: {e}"))?;
+        *partial = Some(fin.to_path_buf());
     }
     let mut p = Progress {
         send,
@@ -403,7 +523,7 @@ fn unzip(
         last: Instant::now(),
     };
     let mut buf = vec![0u8; 1 << 20];
-    let root = into.display().to_string();
+    let root = fin.display().to_string();
     for i in 0..za.len() {
         if cancel.is_cancelled() {
             return Err("cancelled".into());
@@ -412,6 +532,17 @@ fn unzip(
         let Some(rel) = f.enclosed_name() else {
             continue;
         };
+        // The top folder is `fin` itself.
+        let rel = match &top {
+            Some(t) => match rel.strip_prefix(t) {
+                Ok(r) => r.to_path_buf(),
+                Err(_) => continue,
+            },
+            None => rel,
+        };
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
         let rel = rel.display().to_string().replace('/', "\\");
         let target = long(&format!("{root}\\{rel}"));
         if f.is_dir() {
@@ -444,6 +575,80 @@ fn unzip(
     }
     p.tick("", true);
     Ok((za.len() as u64, total))
+}
+
+/// Anything 7-Zip reads: unpacked into `<name>.partial` next to `fin`, then into `fin`
+/// (a single folder at the top of what came out is `fin` itself): renamed to it when
+/// new, its files moved in when merging. Moves are tried again while files are busy.
+#[allow(clippy::too_many_arguments)]
+fn extract_7z(
+    exe: &Path,
+    archive: &str,
+    fin: &Path,
+    merge: bool,
+    taken: HashSet<String>,
+    log: &str,
+    partial: &mut Option<PathBuf>,
+    cancel: &CancelToken,
+    send: &dyn Fn(JobEvent),
+) -> Result<(u64, u64), String> {
+    let name = name_of(archive);
+    let dir = fin.parent().unwrap_or(fin);
+    let part = dir.join(free_folder(
+        &format!("{}.partial", archive_stem(name)),
+        &taken,
+    ));
+    std::fs::create_dir(long(&part.display().to_string()))
+        .map_err(|e| format!("can't create {}: {e}", part.display()))?;
+    *partial = Some(part.clone());
+    let (entries, bytes) = unpack_7z(exe, archive, &part, log, cancel, send)?;
+    if cancel.is_cancelled() {
+        return Err("cancelled".into());
+    }
+    let inside: Vec<std::fs::DirEntry> = std::fs::read_dir(long(&part.display().to_string()))
+        .map_err(|e| format!("can't read {}: {e}", part.display()))?
+        .flatten()
+        .collect();
+    let src = match inside.as_slice() {
+        [one] if one.file_type().is_ok_and(|t| t.is_dir()) => part.join(one.file_name()),
+        _ => part.clone(),
+    };
+    if merge {
+        merge_into(&src, fin, cancel)?;
+        let _ = crate::fs::ops::remove(&long(&part.display().to_string()));
+        *partial = None;
+    } else {
+        rename_retry(&src, fin, cancel)
+            .map_err(|e| rename_failed(&format!("can't move it to {}", fin.display()), &e))?;
+        if src != part {
+            let _ = std::fs::remove_dir(long(&part.display().to_string()));
+        }
+    }
+    Ok((entries, bytes))
+}
+
+/// Every file under `src` moved into the same place under `dst`, replacing a file with
+/// the same name; folders made as needed. Nothing else in `dst` is touched.
+fn merge_into(src: &Path, dst: &Path, cancel: &CancelToken) -> Result<(), String> {
+    let found = walk(&long(&src.display().to_string()), cancel)
+        .map_err(|e| format!("can't read {}: {e}", src.display()))?;
+    std::fs::create_dir_all(long(&dst.display().to_string()))
+        .map_err(|e| format!("can't open {}: {e}", dst.display()))?;
+    for f in found {
+        if cancel.is_cancelled() {
+            return Err("cancelled".into());
+        }
+        let rel = f.rel.trim_end_matches('/').replace('/', "\\");
+        let to = dst.join(&rel);
+        if f.rel.ends_with('/') {
+            std::fs::create_dir_all(long(&to.display().to_string()))
+                .map_err(|e| format!("{rel}: {e}"))?;
+        } else {
+            rename_retry(&f.path, &to, cancel)
+                .map_err(|e| rename_failed(&format!("can't move {rel} into place"), &e))?;
+        }
+    }
+    Ok(())
 }
 
 /// A zip entry's local time.
@@ -637,6 +842,158 @@ mod tests {
     }
 
     #[test]
+    fn top_folder_rule() {
+        let v = |s: &[(&str, bool)]| -> Vec<(PathBuf, bool)> {
+            s.iter().map(|(p, d)| (PathBuf::from(p), *d)).collect()
+        };
+        type Case<'a> = (&'a [(&'a str, bool)], Option<&'a str>);
+        let cases: &[Case] = &[
+            (
+                &[("HIT", true), ("HIT/a.txt", false), ("HIT/sub/b", false)],
+                Some("HIT"),
+            ),
+            (&[("HIT/a.txt", false)], Some("HIT")),
+            (&[("HIT", true)], Some("HIT")),
+            (&[("HIT/a.txt", false), ("b.txt", false)], None),
+            (&[("a.txt", false)], None),
+            (&[("A/x", false), ("B/y", false)], None),
+            (&[], None),
+        ];
+        for (entries, want) in cases {
+            assert_eq!(top_folder(&v(entries)).as_deref(), *want, "{entries:?}");
+        }
+    }
+
+    #[test]
+    fn a_damaged_zip_leaves_nothing_behind() {
+        let dir = temp("crc");
+        let s = |p: &Path| p.display().to_string();
+        let zip = dir.join("bad.zip");
+        let Ok(file) = std::fs::File::create(&zip) else {
+            panic!()
+        };
+        let mut zw = ::zip::ZipWriter::new(file);
+        let opts = ::zip::write::SimpleFileOptions::default()
+            .compression_method(::zip::CompressionMethod::Stored);
+        let ok = zw
+            .start_file("good.txt", opts)
+            .and_then(|()| zw.write_all(b"fine").map_err(Into::into))
+            .and_then(|()| zw.start_file("bad.txt", opts))
+            .and_then(|()| zw.write_all(b"MARKER-DATA").map_err(Into::into))
+            .and_then(|()| zw.finish().map(|_| ()));
+        assert!(ok.is_ok(), "{ok:?}");
+        // Flip a byte of the stored data: its CRC no longer matches.
+        let mut bytes = std::fs::read(&zip).unwrap_or_default();
+        let at = bytes.windows(11).position(|w| w == b"MARKER-DATA");
+        let Some(at) = at else {
+            panic!("data not found")
+        };
+        bytes[at] = b'X';
+        let _ = std::fs::write(&zip, bytes);
+        let (_, r) = run_job(&ArchiveJob::Extract {
+            archive: s(&zip),
+            dest_dir: s(&dir),
+            to: ExtractTo::New("bad".into()),
+            seven: None,
+            log: s(&dir.join("job.log")),
+        });
+        assert!(r.is_err(), "a CRC error fails the job");
+        assert!(!dir.join("bad").exists(), "the half-made folder is removed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_7z_list_names_its_entries() {
+        let text = "Path = aveva\nFolder = +\nSize = 0\n\nPath = aveva\\a.txt\nFolder = -\n";
+        assert_eq!(
+            parse_7z_list(text),
+            [
+                (PathBuf::from("aveva"), true),
+                (PathBuf::from(r"aveva\a.txt"), false)
+            ]
+        );
+        assert_eq!(top_folder(&parse_7z_list(text)).as_deref(), Some("aveva"));
+    }
+
+    /// `name.zip` in `dir` holding these (path, contents); a path ending in `/` is a folder.
+    fn make_zip(dir: &Path, name: &str, entries: &[(&str, &str)]) -> PathBuf {
+        let zip = dir.join(name);
+        let Ok(file) = std::fs::File::create(&zip) else {
+            panic!()
+        };
+        let mut zw = ::zip::ZipWriter::new(file);
+        let opts = ::zip::write::SimpleFileOptions::default();
+        for (path, body) in entries {
+            let r = if path.ends_with('/') {
+                zw.add_directory(*path, opts)
+            } else {
+                zw.start_file(*path, opts)
+                    .and_then(|()| zw.write_all(body.as_bytes()).map_err(Into::into))
+            };
+            assert!(r.is_ok(), "{r:?}");
+        }
+        assert!(zw.finish().is_ok());
+        zip
+    }
+
+    #[test]
+    fn the_zip_names_its_folder() {
+        let dir = temp("target");
+        let s = |p: &Path| p.display().to_string();
+        let one = make_zip(&dir, "export.zip", &[("aveva/", ""), ("aveva/a.txt", "a")]);
+        assert_eq!(target_folder(&s(&one), None), Ok("aveva".into()));
+        let loose = make_zip(&dir, "loose.zip", &[("a.txt", "a"), ("sub/b.txt", "b")]);
+        assert_eq!(target_folder(&s(&loose), None), Ok("loose".into()));
+        assert!(target_folder(&s(&dir.join("x.7z")), None).is_err_and(|e| e.contains("7-Zip")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merge_replaces_same_names_and_keeps_the_rest() {
+        let dir = temp("merge");
+        let s = |p: &Path| p.display().to_string();
+        let _ = std::fs::create_dir_all(dir.join(r"aveva\sub"));
+        let _ = std::fs::write(dir.join(r"aveva\a.txt"), "old");
+        let _ = std::fs::write(dir.join(r"aveva\mine.txt"), "keep me");
+        let zip = make_zip(
+            &dir,
+            "aveva.zip",
+            &[("aveva/a.txt", "new"), ("aveva/sub/b.txt", "b")],
+        );
+        let (events, r) = run_job(&ArchiveJob::Extract {
+            archive: s(&zip),
+            dest_dir: s(&dir),
+            to: ExtractTo::Merge("aveva".into()),
+            seven: None,
+            log: s(&dir.join("job.log")),
+        });
+        assert_eq!(r, Ok(()));
+        assert_eq!(produced(&events), Some(s(&dir.join("aveva"))));
+        let read = |p: &str| std::fs::read_to_string(dir.join(p)).ok();
+        assert_eq!(read(r"aveva\a.txt").as_deref(), Some("new"), "replaced");
+        assert_eq!(
+            read(r"aveva\mine.txt").as_deref(),
+            Some("keep me"),
+            "untouched"
+        );
+        assert_eq!(read(r"aveva\sub\b.txt").as_deref(), Some("b"));
+        assert!(!dir.join("aveva_1").exists() && !dir.join(r"aveva\aveva").exists());
+
+        // A merge that fails never removes the folder that was there.
+        let _ = std::fs::write(dir.join("broken.zip"), "not a zip");
+        let (_, r) = run_job(&ArchiveJob::Extract {
+            archive: s(&dir.join("broken.zip")),
+            dest_dir: s(&dir),
+            to: ExtractTo::Merge("aveva".into()),
+            seven: None,
+            log: s(&dir.join("job.log")),
+        });
+        assert!(r.is_err());
+        assert_eq!(read(r"aveva\mine.txt").as_deref(), Some("keep me"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn free_folder_numbers() {
         let taken: HashSet<String> = ["hit".to_string(), "hit_1".to_string()].into();
         assert_eq!(free_folder("HIT", &taken), "HIT_2");
@@ -697,6 +1054,7 @@ mod tests {
         let (events, r) = run_job(&ArchiveJob::Extract {
             archive: s(&dir.join("both.zip")),
             dest_dir: s(&dir),
+            to: ExtractTo::New("both".into()),
             seven: None,
             log: log.clone(),
         });
@@ -726,6 +1084,7 @@ mod tests {
         let (events, r) = run_job(&ArchiveJob::Extract {
             archive: s(&dir.join("HIT.zip")),
             dest_dir: s(&dir),
+            to: ExtractTo::New("HIT".into()),
             seven: None,
             log: log.clone(),
         });
@@ -779,6 +1138,7 @@ mod tests {
         let (_, r) = run_job(&ArchiveJob::Extract {
             archive: s(&zip),
             dest_dir: s(&dir),
+            to: ExtractTo::New("evil".into()),
             seven: None,
             log: s(&dir.join("job.log")),
         });
@@ -796,6 +1156,7 @@ mod tests {
         let (_, r) = run_job(&ArchiveJob::Extract {
             archive: s(&dir.join("x.7z")),
             dest_dir: s(&dir),
+            to: ExtractTo::New("x".into()),
             seven: None,
             log: s(&dir.join("job.log")),
         });

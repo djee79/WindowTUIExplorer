@@ -142,6 +142,9 @@ pub struct DialogView {
     pub danger: bool,
     /// The button Enter presses.
     pub yes: bool,
+    /// The two buttons (`Yes` `No`, `Merge` `New folder`) and the keys that answer.
+    pub buttons: [&'static str; 2],
+    pub keys: &'static str,
 }
 
 /// The last `/` or `?` search, for `n` / `N` and match highlighting.
@@ -241,6 +244,9 @@ pub struct App {
     pin_draft: Option<pins::PinDraft>,
     /// What `<leader>zc` zips while its name is asked.
     zip_draft: Option<archive::ZipDraft>,
+    /// `<leader>zx`: the archive whose target folder is being read, or asked about.
+    extract_ask: Option<archive::ExtractAsk>,
+    extract_token: u64,
     /// A key that clashes with others (`'dd` while `'d` is D:\): moving those first.
     key_move: Option<pins::KeyMove>,
     /// `'d` when keys start with d (`'dd`, `'dl`): waiting for the second letter.
@@ -432,6 +438,8 @@ impl App {
             pins_loaded: false,
             pin_draft: None,
             zip_draft: None,
+            extract_ask: None,
+            extract_token: 0,
             key_move: None,
             mark_prefix: None,
             pick: None,
@@ -1148,6 +1156,7 @@ impl App {
             AppEvent::FileOpDone { op, result } => self.on_file_op_done(op, result),
             AppEvent::JobReports(reports) => self.on_job_reports(reports),
             AppEvent::AvevaChecked { token, hits } => self.on_aveva_checked(token, hits),
+            AppEvent::ArchiveTarget { token, result } => self.on_archive_target(token, result),
             AppEvent::SyncPreviewed { token, result } => self.on_sync_previewed(token, result),
             AppEvent::SevenZip(path) => self.seven_zip = path,
             AppEvent::OpenConfig {
@@ -4649,9 +4658,27 @@ mod job_tests {
             status(&l.app)
         );
 
-        // <leader>zx on it: one folder at the top, and proj exists → proj_1.
+        // <leader>zx on it: its folder is proj (named by the zip), which exists: asked.
         l.goto("proj.zip");
         press(&mut l.app, "<Space>zx");
+        l.until(|a| a.prompt.is_some());
+        let d = l.app.dialog_view();
+        assert!(
+            d.as_ref()
+                .is_some_and(|d| d.buttons == ["Merge", "New folder"]
+                    && !d.yes
+                    && d.message.starts_with("proj already exists here")
+                    && d.message.contains("new folder proj_1")),
+            "{d:?}"
+        );
+        // Esc: nothing.
+        press(&mut l.app, "<Esc>");
+        assert_eq!(status(&l.app), "not extracted");
+        assert_eq!(l.app.jobs.len(), 1);
+        // n: a new folder, proj_1.
+        press(&mut l.app, "<Space>zx");
+        l.until(|a| a.prompt.is_some());
+        press(&mut l.app, "n");
         l.until(|a| a.jobs.iter().all(|j| j.phase.is_over()) && listed(a, "proj_1"));
         assert_eq!(
             std::fs::read_to_string(src.join(r"proj_1\sub\c.txt"))
@@ -4664,6 +4691,20 @@ mod job_tests {
             "{}",
             status(&l.app)
         );
+        // m: into proj itself; a file of mine there stays, no proj_2.
+        let _ = std::fs::write(src.join(r"proj\mine.txt"), "mine");
+        let jobs_before = l.app.jobs.len();
+        l.goto("proj.zip");
+        press(&mut l.app, "<Space>zx");
+        l.until(|a| a.prompt.is_some());
+        press(&mut l.app, "m");
+        l.until(|a| a.jobs.len() > jobs_before && a.jobs.iter().all(|j| j.phase.is_over()));
+        assert!(
+            status(&l.app).contains("extracted to proj ·"),
+            "{}",
+            status(&l.app)
+        );
+        assert!(src.join(r"proj\mine.txt").exists() && !src.join("proj_2").exists());
 
         // :zip with a name, on a selection; the name gets its .zip.
         l.goto("a.txt");

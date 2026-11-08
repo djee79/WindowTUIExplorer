@@ -267,6 +267,9 @@ impl App {
     /// items it touches, and whether it destroys something (red, No pre-selected).
     pub fn dialog_view(&self) -> Option<super::DialogView> {
         let p = self.prompt.as_ref()?;
+        if p.kind == PromptKind::ExtractExists {
+            return self.extract_dialog(p.yes);
+        }
         let mut items: Vec<String> = Vec::new();
         let name = |s: &str| {
             s.trim_end_matches('\\')
@@ -348,6 +351,8 @@ impl App {
             items,
             danger,
             yes: p.yes,
+            buttons: ["Yes", "No"],
+            keys: "y yes · n/Esc no · h/l Tab choose · Enter",
         })
     }
 

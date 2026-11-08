@@ -1052,6 +1052,32 @@ impl Worker {
         ctl
     }
 
+    /// The folder `archive` extracts into (`jobs::archive::target_folder`) and whether
+    /// `dest_dir` has it already: one `ArchiveTarget`. Reading a big zip's directory
+    /// over SMB can take a moment; 20 s at most.
+    pub fn archive_target(
+        &self,
+        token: u64,
+        archive: String,
+        dest_dir: String,
+        seven: Option<std::path::PathBuf>,
+    ) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let read = tokio::task::spawn_blocking(move || {
+                let folder = crate::jobs::archive::target_folder(&archive, seven.as_deref())?;
+                let path = std::path::Path::new(&dest_dir).join(&folder);
+                Ok((folder, path.exists()))
+            });
+            let result = match tokio::time::timeout(Duration::from_secs(20), read).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(_) => Err("reading the archive timed out".to_string()),
+            };
+            let _ = tx.send(AppEvent::ArchiveTarget { token, result });
+        });
+    }
+
     /// A compress / extract job on the blocking pool; events come back as `Job`. With
     /// `audit` (an admin share's machine and user) the outcome goes to `audit.log`.
     pub fn start_archive(

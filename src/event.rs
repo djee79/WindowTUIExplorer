@@ -154,6 +154,12 @@ pub enum AppEvent {
     SevenZip(Option<String>),
     /// The presets' last runs, from `presets.json`.
     PresetRuns(crate::jobs::preset::Runs),
+    /// The folder an archive extracts into (named by the archive), and whether it's
+    /// there already; or why the archive can't be read.
+    ArchiveTarget {
+        token: u64,
+        result: Result<(String, bool), String>,
+    },
     /// Which pasted folders look like AVEVA projects.
     AvevaChecked {
         token: u64,

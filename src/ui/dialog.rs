@@ -70,13 +70,14 @@ pub fn draw(f: &mut Frame, body: Rect, d: &DialogView) {
         };
         Span::styled(format!("  {label}  "), style)
     };
-    let buttons_w = 2 + 7 + 3 + 6;
+    let [yes, no] = d.buttons;
+    let buttons_w = width(yes) + 4 + 3 + width(no) + 4;
     let pad = (iw.saturating_sub(buttons_w)) / 2;
     lines.push(Line::from(vec![
         Span::raw(" ".repeat(pad + 1)),
-        button("Yes", d.yes, d.danger),
+        button(yes, d.yes, d.danger),
         Span::raw("   "),
-        button("No", !d.yes, false),
+        button(no, !d.yes, false),
     ]));
     lines.push(Line::default());
 
@@ -97,11 +98,7 @@ pub fn draw(f: &mut Frame, body: Rect, d: &DialogView) {
             Span::raw(" "),
         ]))
         .title_bottom(
-            Line::from(Span::styled(
-                " y yes · n/Esc no · h/l Tab choose · Enter ",
-                theme::dim(),
-            ))
-            .right_aligned(),
+            Line::from(Span::styled(format!(" {} ", d.keys), theme::dim())).right_aligned(),
         );
     f.render_widget(Clear, area);
     f.render_widget(Paragraph::new(lines).block(block), area);

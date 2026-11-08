@@ -58,6 +58,8 @@ pub enum PromptKind {
     NewDir,
     /// `<leader>zc`: the zip's name.
     ZipName,
+    /// `<leader>zx` when the archive's folder exists: m merge, n new folder, Esc cancel.
+    ExtractExists,
     /// One field of a sync / backup preset (`:sync new`, `:backup new`, `^e`).
     Preset(PresetField),
 }
@@ -136,7 +138,7 @@ impl Prompt {
             PromptKind::PinTags => "tags: ",
             PromptKind::PinKey => "key, 1-2 letters (empty = none): ",
             PromptKind::KeyMove => "move it to: ",
-            PromptKind::ConfirmUnpin | PromptKind::Confirm => "",
+            PromptKind::ConfirmUnpin | PromptKind::Confirm | PromptKind::ExtractExists => "",
             PromptKind::ViewName => "view name: ",
             PromptKind::ViewKey => "view key (empty = none): ",
             PromptKind::TagRename => "rename tag to: ",
@@ -674,6 +676,34 @@ impl App {
             self.mode = Mode::Normal;
             return;
         };
+        // The archive's folder exists: `m` merge, `n` a new folder, Esc / `q` cancel;
+        // `h` `l` Tab ← → pick a button and Enter presses it.
+        if p.kind == PromptKind::ExtractExists {
+            let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
+            let answer = match ev.code {
+                KeyCode::Char('m' | 'M') if !ctrl => Some(Some(true)),
+                KeyCode::Char('n' | 'N') if !ctrl => Some(Some(false)),
+                KeyCode::Char('q') | KeyCode::Esc => Some(None),
+                KeyCode::Enter => Some(Some(p.yes)),
+                KeyCode::Char('h' | 'l')
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Tab
+                | KeyCode::BackTab => {
+                    p.yes = !p.yes;
+                    None
+                }
+                _ => None,
+            };
+            match answer {
+                Some(merge) => {
+                    self.mode = Mode::Normal;
+                    self.extract_answer(merge);
+                }
+                None => self.prompt = Some(p),
+            }
+            return;
+        }
         // A yes/no popup: `y` yes, `n` / Esc / `q` no, `h` `l` Tab ← → pick a button and
         // Enter presses it. Other keys do nothing (a stray key isn't an answer).
         if matches!(p.kind, PromptKind::ConfirmUnpin | PromptKind::Confirm) {
@@ -846,6 +876,7 @@ impl App {
             PromptKind::PinName
             | PromptKind::PinKey
             | PromptKind::ConfirmUnpin
+            | PromptKind::ExtractExists
             | PromptKind::Confirm
             | PromptKind::ViewName
             | PromptKind::ViewKey
@@ -932,6 +963,7 @@ impl App {
                     self.mode = Mode::Prompt;
                 }
             }
+            PromptKind::ExtractExists => self.extract_answer(Some(p.yes)),
             PromptKind::ZipName => {
                 if let Err(note) = self.zip_named(&text) {
                     let mut p = p;
@@ -982,6 +1014,7 @@ impl App {
             PromptKind::MachineName => self.set_status("no machine opened".into(), false),
             PromptKind::Rename | PromptKind::NewFile | PromptKind::NewDir => self.fileop_cancel(),
             PromptKind::ZipName => self.zip_cancel(),
+            PromptKind::ExtractExists => self.extract_answer(None),
         }
     }
 

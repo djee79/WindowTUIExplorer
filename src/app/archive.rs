@@ -7,7 +7,7 @@ use super::keys::PromptKind;
 use super::tags::Confirm;
 use super::{App, Loc};
 use crate::fs::EntryKind;
-use crate::jobs::archive::{self, ArchiveJob, Format};
+use crate::jobs::archive::{self, ArchiveJob, ExtractTo, Format};
 use crate::jobs::robocopy::{Overwrite, Step};
 use crate::jobs::zip::{BackupState, StepSet};
 use crate::jobs::{self, Backend, Job, Op, Plan};
@@ -18,6 +18,29 @@ pub struct ZipDraft {
     /// Full paths.
     items: Vec<String>,
     dest_dir: String,
+}
+
+/// `<leader>zx` while the folder it extracts into is read, then asked about.
+#[derive(Debug, Clone)]
+pub struct ExtractAsk {
+    token: u64,
+    archive: String,
+    dest_dir: String,
+    seven: Option<std::path::PathBuf>,
+    /// The folder, named by the archive (once read).
+    folder: String,
+}
+
+impl ExtractAsk {
+    fn job(&self, to: ExtractTo) -> ArchiveJob {
+        ArchiveJob::Extract {
+            archive: self.archive.clone(),
+            dest_dir: self.dest_dir.clone(),
+            to,
+            seven: self.seven.clone(),
+            log: String::new(),
+        }
+    }
 }
 
 fn name_of(path: &str) -> &str {
@@ -167,12 +190,85 @@ impl App {
         let Some(dest_dir) = jobs::parent_of(&path).map(str::to_string) else {
             return self.set_status(format!("no folder to extract {name} into"), true);
         };
-        self.confirm_archive(ArchiveJob::Extract {
-            archive: path,
-            dest_dir,
-            seven,
-            log: String::new(),
+        // First the folder it extracts into, named by the archive (read off-thread), and
+        // whether it's there: if so, ask.
+        self.extract_token += 1;
+        let token = self.extract_token;
+        self.extract_ask = Some(ExtractAsk {
+            token,
+            archive: path.clone(),
+            dest_dir: dest_dir.clone(),
+            seven: seven.clone(),
+            folder: String::new(),
         });
+        self.set_status(format!("reading {name}…"), false);
+        self.worker.archive_target(token, path, dest_dir, seven);
+    }
+
+    /// The worker named the folder: extract into it if it's new, else ask.
+    pub(super) fn on_archive_target(&mut self, token: u64, result: Result<(String, bool), String>) {
+        let Some(mut ask) = self.extract_ask.take().filter(|a| a.token == token) else {
+            return;
+        };
+        let (folder, exists) = match result {
+            Ok(r) => r,
+            Err(e) => return self.set_status(e, true),
+        };
+        if !exists {
+            return self.confirm_archive(ask.job(ExtractTo::New(folder)));
+        }
+        ask.folder = folder;
+        self.extract_ask = Some(ask);
+        self.open_prompt_with(PromptKind::ExtractExists, "");
+        // A new folder is the default: Enter alone never writes into an existing one.
+        if let Some(p) = self.prompt.as_mut() {
+            p.yes = false;
+        }
+    }
+
+    /// The popup when the folder exists.
+    pub(super) fn extract_dialog(&self, merge: bool) -> Option<super::DialogView> {
+        let a = self.extract_ask.as_ref()?;
+        let new = self.free_folder_here(&a.folder, &a.dest_dir);
+        Some(super::DialogView {
+            title: "Extract".to_string(),
+            message: format!(
+                "{} already exists here. Merge into it (files with the same name are \
+                 replaced, nothing else is touched), or extract into a new folder {new}?",
+                a.folder
+            ),
+            items: vec![name_of(&a.archive).to_string()],
+            danger: false,
+            yes: merge,
+            buttons: ["Merge", "New folder"],
+            keys: "m merge · n new folder · Esc cancel · h/l Tab · Enter",
+        })
+    }
+
+    /// `aveva_1` (what the job will most likely pick), from the folder shown when it's
+    /// the one extracted into.
+    fn free_folder_here(&self, folder: &str, dest_dir: &str) -> String {
+        let here = self
+            .cwd
+            .as_fs()
+            .is_some_and(|p| p.display().eq_ignore_ascii_case(dest_dir));
+        let taken: std::collections::HashSet<String> = match (&self.view_listing, here) {
+            (Some(l), true) => l.entries.iter().map(|e| e.name.to_lowercase()).collect(),
+            _ => [folder.to_lowercase()].into(),
+        };
+        archive::free_folder(folder, &taken)
+    }
+
+    /// The answer: merge (Some(true)), a new folder (Some(false)), or cancel (None).
+    pub(super) fn extract_answer(&mut self, merge: Option<bool>) {
+        let Some(a) = self.extract_ask.take() else {
+            return;
+        };
+        match merge {
+            None => self.set_status("not extracted".into(), false),
+            Some(true) => self.confirm_archive(a.job(ExtractTo::Merge(a.folder.clone()))),
+            Some(false) => self.confirm_archive(a.job(ExtractTo::New(a.folder.clone()))),
+        }
     }
 
     /// On an admin share, a y/n naming the machine first; elsewhere straight on.
@@ -214,17 +310,17 @@ impl App {
                 )
             }
             ArchiveJob::Extract {
-                archive, dest_dir, ..
+                archive,
+                dest_dir,
+                to,
+                ..
             } => {
                 let name = name_of(archive).to_string();
+                let (ExtractTo::New(folder) | ExtractTo::Merge(folder)) = to;
                 (
                     name.clone(),
                     StepSet::Extract,
-                    format!(
-                        "{}\\{}",
-                        dest_dir.trim_end_matches('\\'),
-                        archive::archive_stem(&name)
-                    ),
+                    format!("{}\\{folder}", dest_dir.trim_end_matches('\\')),
                     Step {
                         src: dest_dir.clone(),
                         dst: dest_dir.clone(),
