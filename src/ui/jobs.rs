@@ -934,9 +934,16 @@ fn draw_live(f: &mut Frame, area: Rect, j: &Job, now: Instant) {
             ),
             None => (
                 "no bytes moved; robocopy is still running".to_string(),
-                match j.tracker.current.as_ref() {
-                    Some(c) => format!("It's on {} ({:.0}%).", c.path, c.pct),
-                    None => "It's between files (listing folders on a slow share?).".to_string(),
+                match (j.tracker.current.as_ref(), j.tracker.last_path()) {
+                    (Some(c), _) if c.pct < 100.0 => {
+                        format!("It's on {} ({:.0}%).", c.path, c.pct)
+                    }
+                    // `/MT` reports files when they're done: big ones take a while.
+                    (_, Some(p)) => format!(
+                        "Last file done: {p}. A large file may still be copying, or a slow \
+                         share is being listed."
+                    ),
+                    _ => "It's between files (listing folders on a slow share?).".to_string(),
                 },
                 &[("p", "pause"), ("c", "cancel job"), ("o", "open log")],
             ),
@@ -1013,6 +1020,14 @@ fn draw_live(f: &mut Frame, area: Rect, j: &Job, now: Instant) {
             Span::styled("now  ", theme::dim()),
             Span::styled(truncate_left(&c.path, w.saturating_sub(16)), theme::fg(FG)),
             Span::styled(format!("  {:.0}%", c.pct), theme::dim()),
+        ]));
+    } else if let Some(p) = j.tracker.last_path().filter(|_| later.is_none())
+        && !j.phase.is_over()
+    {
+        // `/MT` names a file only once it's done: show the latest one.
+        lines.push(Line::from(vec![
+            Span::styled("last ", theme::dim()),
+            Span::styled(truncate_left(p, w.saturating_sub(16)), theme::fg(FG)),
         ]));
     }
 

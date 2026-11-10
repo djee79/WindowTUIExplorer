@@ -292,8 +292,9 @@ paths, tags are the main way to narrow things down.
 - **Tag bar:** pickers show a one-line bar of the most-used tags with counts, under the
   prompt. The active filters are highlighted.
   - In picker normal mode, `]t` / `[t` cycle a single-tag filter through the bar.
-  - `<leader>t` opens a tag picker to multi-select tags. `Tab` toggles, `Enter` applies the
-    filter.
+  - `<leader>t` opens a tag picker to multi-select tags, each row with its pin count.
+    `Tab` toggles, `Enter` opens the pins with **any** of the chosen tags
+    (`#code,library`); typing `#code #library` in a picker still requires both.
 - **Saved views:** `:view save <name>` stores the current query (e.g.
   `#aveva on:srv01`) in `pins.toml` as `[[view]]`. It shows up in the launcher as
   `[view]` and can have a `'` key, so `'v` can open "all AVEVA paths on the main server".
@@ -323,18 +324,33 @@ paths, tags are the main way to narrow things down.
 - **Backend choice:** any directory, or any file ≥ 256 MB → robocopy. Small file-only
   selections → native backend.
 - **robocopy backend** (`jobs/robocopy.rs`):
-  - Base args: `/E /Z /R:0 /W:0 /BYTES /FP /TEE /UNILOG:<job log>` (+ `/MOV` for moves of
-    files, `/MOVE` for directories). `/MT:n` is configurable (default off). **Verify** how
-    `/MT` changes stdout (per-file % output may be suppressed) and make the parser handle
-    both modes.
-  - Parse stdout into events: file started (path, size), file % progress, retry
+  - Base args: `/E /J /R:0 /W:0 /BYTES /FP /NP /TEE /MT:n /UNILOG+:<job log>` (+ `/MOV`
+    for moves of files, `/MOVE` for directories). These defaults are about speed: `/Z` made
+    copies crawl (≈5 MB/s instead of > 100 MB/s), so it is **opt-in** per preset with
+    `restartable = true`. `/J` is unbuffered I/O. `n` is `jobs.robocopy_threads`
+    (default 8, 1–128). The `/L` dry runs run without `/MT`.
+  - **Output under `/MT /NP`** (verified on Windows 11): no per-file %, and each file's
+    line is written when that file is **done**, its `ERROR` block (if any) right after it.
+    So a file counts as copied the moment its line arrives, and an error for it taken
+    straight back out. Progress = the `/L` dry run's totals (files, bytes) advanced by each
+    finished file; the panel's %, MB/s and ETA come from that. With no in-file progress,
+    one large file shows no movement until it's done (the stall banner says so).
+  - Parse stdout into events: file copied (path, size), retry / locked
     (`ERROR 32 ... being used by another process` → `Locked`), errors (any `ERROR n (0x...)`
-    line → captured with the Windows message), summary table.
+    line → captured with the Windows message), summary table. The serial form (file
+    started, then `%` lines) is still parsed, for `/L` and robocopy run by hand.
+  - **stdout is drained on a dedicated thread** that only reads the pipe into an unbounded
+    channel, so robocopy never blocks on a full pipe. Parsing happens on the job's thread,
+    and UI updates are **coalesced**: at most one batch per 50 ms (~20/s), runs of finished
+    files merged into one (counts summed, the latest file wins), only the last `%` kept.
+    The UI can never slow robocopy down.
   - **Exit codes are a bitmask:** 0 nothing copied, 1 files copied, 2 extra files, 4
     mismatches, 8 some copies failed, 16 fatal. ≥ 8 is a failure. Map these to a clear
     final state; never show raw numbers alone.
-  - Keep fixture files of real robocopy output (success, locked file, access denied,
-    unreachable dest, /MT mode) in `tests/fixtures/robocopy/` and unit-test the parser
+  - Keep fixture files of real robocopy output, captured with sentier's own arguments
+    (`/MT:8 /NP /J`): success, nothing to copy, many files (thread interleaving),
+    restartable (`/Z`), mirror with extras, `/L`, locked file, access denied, missing
+    source, unreachable dest. They live in `tests/fixtures/robocopy/`; unit-test the parser
     against them.
 - **Job panel shows:** source → dest, phase (`Scanning` / `Copying` / `Retrying` / `Finishing`
   / `Done` / `Failed` / `Cancelled`), **current file path**, bytes + files done/total,
@@ -346,10 +362,18 @@ paths, tags are the main way to narrow things down.
   "stuck at 99 %" case. It must never look frozen.
 - **Final report:** counts (copied / skipped / failed / extra), the list of failed files with
   reasons, and a key to open the full log (`o`). Reports persist in
-  `%LOCALAPPDATA%\sentier\jobs\` until dismissed.
+  `%LOCALAPPDATA%\sentier\jobs\` until dismissed; dismissing deletes the job's log too.
+- **Self-cleaning:** at startup (off the UI thread) sentier deletes job logs older than
+  `jobs.keep_logs_days` (default 30, `0` keeps all) unless a listed report still points
+  to them. It also deletes staging folders untouched for a day (a backup killed midway;
+  not sooner, because a scheduled `sentier run` may be using one).
+  The app log rotates daily (7 kept), `logs\openers.log` moves to `openers.old.log` past
+  1 MB, and the rename journal keeps 100 batches. `audit.log` is never trimmed: it's
+  the audit trail.
 - `c` cancels a job (kills robocopy; the report says which files were done).
   `r` retries failed files only. `p` pauses (robocopy is stopped and holds no locks) and
-  resumes (the step runs again with `/Z`: copied files skipped, a half-copied one resumed).
+  resumes (the step runs again: copied files skipped; a half-copied file starts over, or
+  resumes where it stopped when the preset is `restartable`, which adds `/Z`).
   `O` opens the job's source / destination (the places menu, section 9).
 - **sentier owns retries** (docs/JOBS_PANEL_SPEC.md): robocopy never waits (`/R:0`), so a
   locked file (error 32/33) doesn't hold the copy up. The locked files are tried again
@@ -487,13 +511,17 @@ exclude_dirs  = []            # robocopy /XD
 exclude_files = []            # robocopy /XF
 include       = []            # only these names in source (folders end in \): the selection
 check_in_use  = true          # see "In-use check" below
+restartable   = false         # true adds robocopy /Z: resumable, but many times slower
 ```
 
-- `mode = "update"` → `robocopy /E /Z ...` copies new and changed files and never deletes
-  anything in `dest`.
-- `mode = "mirror"` → `robocopy /MIR /Z ...` makes `dest` an exact copy, **deleting local
-  files that aren't on the server**. Because that's destructive, mirror always runs the
-  preview first.
+- `mode = "update"` → `robocopy /E /J /MT:n ...` copies new and changed files and never
+  deletes anything in `dest`.
+- `mode = "mirror"` → `robocopy /MIR /J /MT:n ...` makes `dest` an exact copy, **deleting
+  local files that aren't on the server**. Because that's destructive, mirror always runs
+  the preview first.
+- `restartable = true` adds `/Z` (section 4): a file cut off by a pause or a dropped link
+  resumes where it stopped instead of starting over. Worth it only for huge files on a
+  flaky link; it costs most of the speed.
 - **Preview (dry run) first:** Enter on a sync pin runs robocopy with `/L` (list only) and
   shows a summary before anything is touched: `412 files to copy (3.8 GB) · 17 newer on
   server · 6 local files will be DELETED (mirror)`. The list can be expanded per category.
@@ -536,6 +564,7 @@ file_name = "{name}_{date:%Y-%m-%d_%H%M}.zip"   # {name} = last path component o
 keep      = 10                                  # retention: keep the newest N; 0 = keep all
 compression = "default"                         # store | fast | default | best
 check_in_use = true
+restartable = false                             # true: staging uses robocopy /Z (slow)
 ```
 
 - **Pipeline:**
@@ -1198,7 +1227,7 @@ reported in the status bar at startup, never a crash.
 ## Config
 
 `%APPDATA%\sentier\config.toml`, every field optional with defaults:
-`show_hidden`, `numbers` (hybrid | relative | absolute | off), `timeouts.local_ms`, `timeouts.network_ms`, `jobs.robocopy_threads`,
+`show_hidden`, `numbers` (hybrid | relative | absolute | off), `timeouts.local_ms`, `timeouts.network_ms`, `jobs.robocopy_threads` (robocopy `/MT:n`, default 8, 1–128), `jobs.keep_logs_days` (30),
 `jobs.native_max_bytes`, `aveva.project_markers`, `preview.protocol` (auto | kitty | sixel |
 iterm2 | halfblocks), `preview.cell_px`, `preview.max_network_mb`, `preview.cache_mb`,
 `theme.key` / `theme.header` (`"#rrggbb"`: key chips and section headers in `g?`).
@@ -1255,8 +1284,9 @@ Development happens on **Windows 11** (WezTerm + PowerShell, Rust via rustup).
    All Win32 calls live in `src/platform/`.
 2. **CI:** GitHub Actions on `windows-latest` runs fmt + clippy + tests on every push.
 3. **Capture robocopy fixtures once, at work:** the `examples/capture_robocopy.rs` probe runs
-   the scenarios (success, locked file, access denied, unreachable dest, `/MT`, `/L`) and
-   writes stdout + exit code into `tests/fixtures/robocopy/`.
+   the scenarios with sentier's own arguments (success, many files, restartable, mirror,
+   `/L`, locked file, access denied, missing source, unreachable dest) and writes stdout +
+   exit code into `tests/fixtures/robocopy/`.
 4. **Dead-share testing:** use a non-routable host (`\\10.255.255.1\x`) or a test share
    whose SMB service you can stop.
 5. **Debugging:** `tracing` logs to `%LOCALAPPDATA%\sentier\logs\sentier.log`, with

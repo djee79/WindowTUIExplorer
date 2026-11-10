@@ -6,7 +6,13 @@
 //! and `Esc`/`q` close. In both: `^j`/`^k` `^n`/`^p` move, `Enter` opens, `^e` edits,
 //! `^t` edits tags, `^x` (normal mode: `D` / `dd`) deletes (asks first). Editing returns to the picker.
 //! In the tag picker `Tab` chooses tags and `Enter` opens the pin picker filtered to
-//! pins carrying all of them.
+//! pins carrying any of them (`#a,b,c`; typing `#a #b` there narrows to all of them).
+
+/// The pin-picker query for tags chosen in the tag picker: `#a,b,c ` (any of them).
+/// Ticking several tags gathers pins; requiring all of them usually leaves none.
+fn tag_query(tags: &[String]) -> String {
+    format!("#{} ", tags.join(","))
+}
 
 use super::{App, Mode};
 use crate::fs::EntryKind;
@@ -404,7 +410,7 @@ impl App {
             return;
         };
         if p.source == Source::Tags {
-            // The chosen tags (or the one under the cursor), all required.
+            // The chosen tags (or the one under the cursor): pins with any of them.
             let mut tags: Vec<String> = p
                 .view
                 .iter()
@@ -417,9 +423,8 @@ impl App {
             if tags.is_empty() {
                 return;
             }
-            let query: Vec<String> = tags.iter().map(|t| format!("#{t}")).collect();
             self.close_picker();
-            self.open_pin_picker(&format!("{} ", query.join(" ")));
+            self.open_pin_picker(&tag_query(&tags));
             return;
         }
         // The launcher with nothing matching: run what was typed (wtm), as Win+R would.
@@ -659,5 +664,39 @@ impl App {
             })
             .map(|(i, _)| i)
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tag_query;
+    use crate::picker::query::{Facts, PinQuery};
+    use crate::pins::PinKind;
+
+    /// Ticking `#code #library #mainpool` used to require all three (no pin had them):
+    /// now it's pins with any of them.
+    #[test]
+    fn chosen_tags_find_pins_with_any_of_them() {
+        let chosen = ["code", "library", "mainpool"].map(String::from);
+        let text = tag_query(&chosen);
+        assert_eq!(text, "#code,library,mainpool ");
+        let q = PinQuery::parse(&text);
+        let has = |tags: &[&str]| {
+            let tags: Vec<String> = tags.iter().map(|t| t.to_string()).collect();
+            q.matches(&Facts {
+                kind: Some(PinKind::Folder),
+                view: false,
+                machine: false,
+                online: None,
+                tags: &tags,
+                unc: false,
+                local: true,
+                unreachable: false,
+                server: None,
+            })
+        };
+        assert!(has(&["code"]) && has(&["library", "web"]) && has(&["mainpool"]));
+        assert!(!has(&["web", "game"]));
+        assert_eq!(tag_query(&["web".into()]), "#web ");
     }
 }

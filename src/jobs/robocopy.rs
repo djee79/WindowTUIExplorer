@@ -13,6 +13,13 @@
 //! A retry is the same file starting again after an error; a file fails when another one
 //! starts (or the output ends) while its last attempt had an error. So the English
 //! "Waiting 30 seconds... Retrying..." lines are never needed.
+//!
+//! **`/MT` (sentier's default) changes what a file line means.** Each thread writes a
+//! file's output as one block once the file is done: its line, then its `ERROR` block if
+//! it failed. With `/NP` there is no `%` at all. So a [`Parser::threaded`] parser turns
+//! file lines into [`Event::Copied`] (counted the moment they arrive), and an error for
+//! that same file right after takes it back (verified on Windows 11; see the `mt_*`
+//! fixtures). Without `/MT` (the `/L` dry runs) a file line is the file *starting*.
 
 use std::sync::LazyLock;
 
@@ -93,10 +100,53 @@ pub enum Event {
         size: u64,
         path: String,
     },
+    /// `/MT`: files robocopy has finished (a file line arrives when its copy is done).
+    /// [`coalesce`] merges a run of them into one, so `files` / `bytes` add up and
+    /// `path` / `size` are the latest file's (latest wins).
+    Copied {
+        files: u64,
+        bytes: u64,
+        path: String,
+        size: u64,
+    },
     /// Percent of the current file.
     Progress(f32),
     Error(RcError),
     Summary(Summary),
+}
+
+/// One batch for the UI: runs of [`Event::Copied`] become one (counts summed, the latest
+/// file kept) and runs of [`Event::Progress`] keep only the last. Errors, extras and the
+/// summary pass through in order, so nothing that counts is lost, and an error still
+/// comes right after the file it is about.
+pub fn coalesce(events: Vec<Event>) -> Vec<Event> {
+    let mut out: Vec<Event> = Vec::with_capacity(events.len().min(16));
+    for ev in events {
+        match (out.last_mut(), ev) {
+            (
+                Some(Event::Copied {
+                    files,
+                    bytes,
+                    path,
+                    size,
+                }),
+                Event::Copied {
+                    files: f,
+                    bytes: b,
+                    path: p,
+                    size: s,
+                },
+            ) => {
+                *files += f;
+                *bytes += b;
+                *path = p;
+                *size = s;
+            }
+            (Some(Event::Progress(last)), Event::Progress(p)) => *last = p,
+            (_, ev) => out.push(ev),
+        }
+    }
+    out
 }
 
 static ERROR_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
@@ -115,11 +165,21 @@ pub struct Parser {
     /// An error line waiting for its message line.
     pending: Option<RcError>,
     rows: Vec<Row>,
+    /// `/MT` output: a file line means the file is done ([`Event::Copied`]).
+    threaded: bool,
 }
 
 impl Parser {
     pub fn new() -> Parser {
         Parser::default()
+    }
+
+    /// For a run with `/MT:n` (and without `/L`).
+    pub fn threaded() -> Parser {
+        Parser {
+            threaded: true,
+            ..Parser::default()
+        }
     }
 
     pub fn feed(&mut self, chunk: &str) -> Vec<Event> {
@@ -172,8 +232,19 @@ impl Parser {
             return;
         }
         if frag.starts_with('\t') {
-            if let Some(ev) = item_line(frag) {
-                out.push(ev);
+            match item_line(frag) {
+                Some(Event::File { class, size, path })
+                    if self.threaded && class != FileClass::Extra =>
+                {
+                    out.push(Event::Copied {
+                        files: 1,
+                        bytes: size,
+                        path,
+                        size,
+                    });
+                }
+                Some(ev) => out.push(ev),
+                None => {}
             }
             return;
         }
@@ -313,6 +384,12 @@ pub struct Tracker {
     pub summary: Option<Summary>,
     /// `/L`: nothing is copied, so a file line doesn't mean it was done.
     pub list_only: bool,
+    /// The file finished last (latest wins): what the panel shows under `/MT`, where
+    /// robocopy reports files when they're done, not while they copy.
+    pub last: Option<String>,
+    /// The last [`Event::Copied`] file and its size, until the next event: an error for
+    /// it right after means it wasn't copied after all.
+    just_copied: Option<(String, u64)>,
 }
 
 impl Tracker {
@@ -379,7 +456,44 @@ impl Tracker {
     }
 
     pub fn apply(&mut self, ev: Event) {
+        let just_copied = self.just_copied.take();
         match ev {
+            Event::Copied {
+                files,
+                bytes,
+                path,
+                size,
+            } => {
+                self.settle();
+                self.files_done += files;
+                self.bytes_done += bytes;
+                self.just_copied = Some((path.clone(), size));
+                self.last = Some(path);
+            }
+            // `/MT`: the error block follows its file's line, which was counted as copied.
+            // Take it back; the file is then the current one, with this error, and fails
+            // (or is retried) like any other.
+            Event::Error(e)
+                if just_copied.as_ref().is_some_and(|(p, _)| {
+                    e.path.as_deref().is_some_and(|x| x.eq_ignore_ascii_case(p))
+                }) =>
+            {
+                if let Some((path, size)) = just_copied {
+                    self.files_done = self.files_done.saturating_sub(1);
+                    self.bytes_done = self.bytes_done.saturating_sub(size);
+                    if self.last.as_deref() == Some(path.as_str()) {
+                        self.last = None;
+                    }
+                    self.current = Some(Current {
+                        path,
+                        size,
+                        pct: 0.0,
+                        attempt: 1,
+                        error: None,
+                    });
+                }
+                self.apply(Event::Error(e));
+            }
             Event::Dir { path, extra } => {
                 if extra {
                     self.extra_dirs.push(path);
@@ -426,6 +540,7 @@ impl Tracker {
                 if c.pct >= 100.0 {
                     self.files_done += 1;
                     self.bytes_done += c.size;
+                    self.last = Some(c.path.clone());
                     if c.error.take().is_some()
                         && let Some(r) = self
                             .retries
@@ -523,6 +638,7 @@ impl Tracker {
             None => {
                 self.files_done += 1;
                 self.bytes_done += c.size;
+                self.last = Some(c.path);
             }
         }
     }
@@ -538,6 +654,11 @@ impl Tracker {
             .as_ref()
             .filter(|c| c.pct < 100.0)
             .map(|c| c.path.as_str())
+    }
+
+    /// The file finished last (under `/MT`, the only file robocopy names while it runs).
+    pub fn last_path(&self) -> Option<&str> {
+        self.last.as_deref()
     }
 }
 
@@ -625,8 +746,13 @@ pub struct Options {
     pub overwrite: Overwrite,
     pub mirror: bool,
     pub list_only: bool,
-    /// `/MT:n` (0: off).
+    /// `/MT:n` (0: off, as for the `/L` dry runs). Jobs use `jobs.robocopy_threads`
+    /// (default [`DEFAULT_THREADS`]).
     pub threads: u32,
+    /// `/Z` (restartable mode): a half-copied file resumes where it stopped after a pause
+    /// or a dropped connection, at a large cost in speed (≈5 MB/s instead of 100+ on a
+    /// LAN). Off unless a preset says `restartable = true`.
+    pub restartable: bool,
     pub log: Option<String>,
     /// `/XD`: folder names or paths left out (and, with `/MIR`, never deleted).
     pub exclude_dirs: Vec<String>,
@@ -634,20 +760,32 @@ pub struct Options {
     pub exclude_files: Vec<String>,
 }
 
-/// `src dst [files] /E|/MIR /Z /R:0 /W:0 /BYTES /FP /TEE [/XD …] [/XF …] [/MOV|/MOVE]
-/// [/XC /XN /XO | /IS /IT] [/MT:n] [/L] /UNILOG+:<log>`
+/// `/MT:n` when `jobs.robocopy_threads` isn't set.
+pub const DEFAULT_THREADS: u32 = 8;
+/// robocopy's own limit for `/MT:n`.
+pub const MAX_THREADS: u32 = 128;
+
+/// `src dst [files] /E|/MIR [/Z] /J /R:0 /W:0 /BYTES /FP /NP /TEE [/XD …] [/XF …]
+/// [/MOV|/MOVE] [/XC /XN /XO | /IS /IT] [/MT:n] [/L] /UNILOG+:<log>`
+///
+/// `/J` (unbuffered I/O) and `/MT` are what make it fast; `/Z` is opt-in (`restartable`)
+/// because it cuts throughput to a few MB/s. `/NP`: `/MT` prints no per-file % anyway,
+/// and progress comes from the `/L` totals plus each finished file.
 pub fn args(step: &Step, o: &Options) -> Vec<String> {
     let mut a = vec![step.src.clone(), step.dst.clone()];
     a.extend(step.files.iter().cloned());
     if step.files.is_empty() {
         a.push(if o.mirror { "/MIR" } else { "/E" }.into());
     }
+    if o.restartable {
+        a.push("/Z".into());
+    }
+    a.push("/J".into());
     // Never wait inside robocopy: a locked file fails at once, the rest is copied, and
     // sentier retries the locked ones itself at the end (so they can be skipped, retried
     // now, or the job paused).
-    a.push("/Z".into());
     a.extend(["/R:0", "/W:0"].map(String::from));
-    for s in ["/BYTES", "/FP", "/TEE"] {
+    for s in ["/BYTES", "/FP", "/NP", "/TEE"] {
         a.push(s.into());
     }
     if !o.exclude_dirs.is_empty() {
@@ -674,7 +812,7 @@ pub fn args(step: &Step, o: &Options) -> Vec<String> {
         Overwrite::Changed => {}
     }
     if o.threads > 0 {
-        a.push(format!("/MT:{}", o.threads.min(128)));
+        a.push(format!("/MT:{}", o.threads.min(MAX_THREADS)));
     }
     if o.list_only {
         a.push("/L".into());
@@ -703,24 +841,38 @@ mod tests {
         (String::from_utf8_lossy(&out).to_string(), code)
     }
 
-    /// Feeds the fixture in small chunks (as a pipe would) and tracks it.
+    /// Feeds the fixture in small chunks (as a pipe would) and tracks it the way the
+    /// runner does: a threaded parser for copies (every copy fixture runs `/MT:8`, as
+    /// sentier does), a plain one for `/L`, and each chunk's events coalesced.
     fn track(name: &str, list_only: bool) -> (Tracker, i32) {
         let (text, code) = fixture(name);
         assert!(!text.is_empty(), "fixture {name} missing");
-        let mut p = Parser::new();
+        let mut p = if list_only {
+            Parser::new()
+        } else {
+            Parser::threaded()
+        };
         let mut t = Tracker::new(list_only);
         let chars: Vec<char> = text.chars().collect();
         for chunk in chars.chunks(37) {
             let s: String = chunk.iter().collect();
-            for ev in p.feed(&s) {
+            for ev in coalesce(p.feed(&s)) {
                 t.apply(ev);
             }
         }
-        for ev in p.finish() {
+        for ev in coalesce(p.finish()) {
             t.apply(ev);
         }
         t.finish();
         (t, code)
+    }
+
+    /// The fixture's text up to (not including) the first line containing `stop`.
+    fn upto(name: &str, stop: &str) -> String {
+        let (text, _) = fixture(name);
+        let at = text.find(stop).unwrap_or(text.len());
+        let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+        text[..line_start].to_string()
     }
 
     #[test]
@@ -729,11 +881,50 @@ mod tests {
         assert_eq!(code, 1);
         assert_eq!((t.files_done, t.bytes_done), (4, 41_943_050));
         assert!(t.failed.is_empty() && t.retries.is_empty() && t.errors.is_empty());
+        assert_eq!(t.current_path(), None, "/MT has no file in progress");
+        assert!(t.last_path().is_some_and(|p| p.ends_with(r"deep\c.pmlmac")));
         let s = t.summary.unwrap_or_default();
         assert_eq!((s.files.total, s.files.copied), (4, 4));
         assert_eq!(s.bytes.copied, 41_943_050);
         assert_eq!(s.dirs.copied, 3);
         assert!(!exit_meaning(code).failed);
+        // /Z changes nothing in the output: the same counts.
+        let (r, code) = track("restartable", false);
+        assert_eq!(code, 1);
+        assert_eq!((r.files_done, r.bytes_done), (4, 41_943_050));
+    }
+
+    /// The point of `/MT /NP` parsing: a file counts the moment its line arrives (it's
+    /// printed when done), not when the next one shows up.
+    #[test]
+    fn mt_counts_a_file_when_its_line_arrives() {
+        let head = upto("success", r"deep\c.pmlmac");
+        let mut p = Parser::threaded();
+        let mut t = Tracker::new(false);
+        for ev in coalesce(p.feed(&head)) {
+            t.apply(ev);
+        }
+        assert_eq!(
+            (t.files_done, t.bytes_done),
+            (3, 6 + 2 + 41_943_040),
+            "big.bin is counted without waiting for another line"
+        );
+        assert!(t.last_path().is_some_and(|x| x.ends_with(r"sub\big.bin")));
+    }
+
+    /// 300 small files over 8 threads: every line counted once, matching robocopy's
+    /// own summary.
+    #[test]
+    fn mt_many_files_add_up_to_the_summary() {
+        let (t, code) = track("many", false);
+        assert_eq!(code, 1);
+        let s = t.summary.unwrap_or_default();
+        assert_eq!(s.files.copied, 300);
+        assert_eq!(
+            (t.files_done, t.bytes_done),
+            (300, 6 * (1..=50).sum::<u64>())
+        );
+        assert_eq!(t.bytes_done, s.bytes.copied);
     }
 
     #[test]
@@ -746,18 +937,26 @@ mod tests {
         assert_eq!(exit_meaning(0).word, "nothing to copy");
     }
 
+    /// `/MT /R:0`: the locked file's line, then its error block; it's taken back out of
+    /// the count and fails (sentier then retries it itself).
     #[test]
-    fn locked_file_retries_then_fails() {
+    fn mt_locked_file_is_taken_back_and_fails() {
         let (t, code) = track("locked", false);
         assert_eq!(code, 9);
         assert_eq!(t.files_done, 3);
+        assert_eq!(t.bytes_done, 41_943_048, "b.txt's 2 bytes not counted");
         assert_eq!(t.failed.len(), 1);
         let f = &t.failed[0];
         assert!(f.path.ends_with(r"sub\b.txt"), "{f:?}");
         assert_eq!(f.code, 32);
         assert!(f.message.contains("being used by another process"));
         assert_eq!(t.retries.len(), 1);
-        assert_eq!((t.retries[0].attempts, t.retries[0].ok), (2, Some(false)));
+        assert_eq!((t.retries[0].attempts, t.retries[0].ok), (1, Some(false)));
+        assert!(
+            t.errors.is_empty(),
+            "about a file, not the job: {:?}",
+            t.errors
+        );
         assert_eq!(t.summary.map(|s| s.files.failed), Some(1));
         let m = exit_meaning(code);
         assert!(m.failed);
@@ -765,14 +964,14 @@ mod tests {
     }
 
     #[test]
-    fn access_denied() {
+    fn mt_access_denied() {
         let (t, code) = track("denied", false);
         assert_eq!(code, 9);
         assert_eq!(t.failed.len(), 1);
         assert_eq!(t.failed[0].code, 5);
         assert!(t.failed[0].path.ends_with(r"src\a.txt"));
         assert_eq!(t.failed[0].message, "Access is denied.");
-        assert_eq!(t.files_done, 3);
+        assert_eq!((t.files_done, t.bytes_done), (3, 41_943_044));
     }
 
     #[test]
@@ -781,7 +980,8 @@ mod tests {
         assert_eq!(code, 3);
         assert_eq!(t.extras.len(), 2);
         assert!(t.extras.iter().any(|(_, e)| e.ends_with(r"old\stale.txt")));
-        assert_eq!(t.files_done, 4);
+        assert_eq!(t.extra_dirs.len(), 1, "*EXTRA Dir is a folder, not a copy");
+        assert_eq!((t.files_done, t.bytes_done), (4, 41_943_050));
         assert_eq!(t.summary.map(|s| s.files.extras), Some(2));
     }
 
@@ -805,10 +1005,81 @@ mod tests {
     }
 
     #[test]
-    fn multithreaded() {
-        let (t, code) = track("mt", false);
-        assert_eq!(code, 1);
-        assert_eq!((t.files_done, t.bytes_done), (4, 41_943_050));
+    fn coalesce_sums_copies_and_keeps_the_latest() {
+        let copied = |p: &str, size: u64| Event::Copied {
+            files: 1,
+            bytes: size,
+            path: p.into(),
+            size,
+        };
+        let err = Event::Error(RcError {
+            code: 32,
+            action: "Copying File".into(),
+            path: Some(r"S:\c".into()),
+            message: "in use".into(),
+        });
+        let out = coalesce(vec![
+            copied(r"S:\a", 10),
+            copied(r"S:\b", 20),
+            copied(r"S:\c", 5),
+            err.clone(),
+            copied(r"S:\d", 1),
+            Event::Progress(10.0),
+            Event::Progress(55.0),
+        ]);
+        assert_eq!(
+            out,
+            vec![
+                Event::Copied {
+                    files: 3,
+                    bytes: 35,
+                    path: r"S:\c".into(),
+                    size: 5
+                },
+                err,
+                copied(r"S:\d", 1),
+                Event::Progress(55.0),
+            ],
+            "the error still follows its file"
+        );
+        // Applied, the error takes back only c.
+        let mut t = Tracker::new(false);
+        for e in out {
+            t.apply(e);
+        }
+        t.finish();
+        assert_eq!((t.files_done, t.bytes_done), (3, 31));
+        assert_eq!(t.failed.len(), 1);
+        assert_eq!(t.failed[0].path, r"S:\c");
+    }
+
+    /// The error's message line can arrive in the next batch: the take-back still works.
+    #[test]
+    fn mt_error_in_the_next_batch_still_takes_the_file_back() {
+        let mut p = Parser::threaded();
+        let mut t = Tracker::new(false);
+        let batches = [
+            "\t    New File  \t\t      10\tS:\\a.dbx\r\n\
+             2026/11/09 18:54:34 ERROR 32 (0x00000020) Copying File S:\\a.dbx\r\n",
+            "The process cannot access the file because it is being used by another \
+             process.\r\n\r\nERROR: RETRY LIMIT EXCEEDED.\r\n\r\n",
+            "\t    New File  \t\t       7\tS:\\b.txt\r\n",
+        ];
+        let mut after_first = (0, 0);
+        for (i, b) in batches.iter().enumerate() {
+            for e in coalesce(p.feed(b)) {
+                t.apply(e);
+            }
+            if i == 0 {
+                after_first = (t.files_done, t.bytes_done);
+            }
+        }
+        t.finish();
+        assert_eq!(after_first, (1, 10), "counted until its error is complete");
+        assert_eq!((t.files_done, t.bytes_done), (1, 7));
+        assert_eq!(t.failed.len(), 1);
+        assert_eq!(t.failed[0].path, r"S:\a.dbx");
+        assert_eq!(t.last_path(), Some(r"S:\b.txt"));
     }
 
     #[test]
@@ -940,6 +1211,7 @@ Accès refusé.\r\n";
             mirror: false,
             list_only: false,
             threads: 0,
+            restartable: false,
             log: Some(r"C:\l\j.log".into()),
             exclude_dirs: vec![],
             exclude_files: vec![],
@@ -947,6 +1219,23 @@ Accès refusé.\r\n";
         let a = args(&dir, &o);
         assert_eq!(&a[..3], [r"\\srv01\p\HIT", r"D:\HIT", "/E"]);
         assert!(a.contains(&"/XO".to_string()) && a.last() == Some(&r"/UNILOG+:C:\l\j.log".into()));
+        // The fast defaults: unbuffered, no per-file %, and no /Z unless asked for.
+        assert!(a.contains(&"/J".to_string()) && a.contains(&"/NP".to_string()));
+        assert!(!a.contains(&"/Z".to_string()), "/Z is opt-in (restartable)");
+        assert!(!a.iter().any(|s| s.starts_with("/MT")), "threads 0: no /MT");
+        let restartable = Options {
+            restartable: true,
+            ..o.clone()
+        };
+        assert!(args(&dir, &restartable).contains(&"/Z".to_string()));
+        let many = Options {
+            threads: 500,
+            ..o.clone()
+        };
+        assert!(
+            args(&dir, &many).contains(&"/MT:128".to_string()),
+            "robocopy's limit"
+        );
         let moving = Options {
             moving: true,
             overwrite: Overwrite::Always,

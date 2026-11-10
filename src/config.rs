@@ -21,7 +21,8 @@ pub struct Config {
     /// `[machines]`: `recent_days`, `watch`.
     #[serde(default)]
     pub machines: MachinesSection,
-    /// `[jobs]`: `robocopy_threads` (`/MT:n`, default off), `native_max_bytes`.
+    /// `[jobs]`: `robocopy_threads` (`/MT:n`, default 8, 1 to 128), `native_max_bytes`,
+    /// `keep_logs_days` (30).
     #[serde(default)]
     pub jobs: JobsSection,
     /// `[aveva]`: `project_markers`, the globs a project folder has at its top level.
@@ -155,6 +156,25 @@ pub struct MachinesSection {
 pub struct JobsSection {
     pub robocopy_threads: Option<u32>,
     pub native_max_bytes: Option<u64>,
+    /// Job logs older than this are deleted at startup (default 30; 0 keeps them all).
+    pub keep_logs_days: Option<u32>,
+}
+
+impl JobsSection {
+    /// Days a job's log is kept (its report still listed keeps it longer).
+    pub fn keep_logs_days(&self) -> u32 {
+        self.keep_logs_days
+            .unwrap_or(crate::jobs::DEFAULT_KEEP_LOGS_DAYS)
+    }
+
+    /// robocopy `/MT:n` for copy jobs, sync and backup presets: `robocopy_threads`, else
+    /// 8, kept within 1 to 128 (robocopy's own range).
+    pub fn threads(&self) -> u32 {
+        use crate::jobs::robocopy::{DEFAULT_THREADS, MAX_THREADS};
+        self.robocopy_threads
+            .unwrap_or(DEFAULT_THREADS)
+            .clamp(1, MAX_THREADS)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -214,6 +234,15 @@ pub fn store_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn robocopy_threads_default_8_within_1_to_128() {
+        let threads = |text: &str| parse(text).map(|c| c.jobs.threads());
+        assert_eq!(threads(""), Ok(8));
+        assert_eq!(threads("[jobs]\nrobocopy_threads = 32"), Ok(32));
+        assert_eq!(threads("[jobs]\nrobocopy_threads = 0"), Ok(1));
+        assert_eq!(threads("[jobs]\nrobocopy_threads = 500"), Ok(128));
+    }
 
     #[test]
     fn display_timeouts_preview_and_editor() {

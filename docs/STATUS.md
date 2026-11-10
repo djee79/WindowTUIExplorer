@@ -1266,3 +1266,49 @@ the destination holds (the listing on screen) and `free_name` picks the first fr
 also between items of the same paste. In-place files go through the native backend at
 any size (robocopy can't rename a file); folders through robocopy into the new name; a
 paste with both is split into two jobs. A cut pasted where it is still says so.
+
+## Fast robocopy defaults: `/J /MT:8 /NP`, `/Z` opt-in (code complete 2026-11-09, manual check pending)
+
+Sync and backup presets ran at ≈5 MB/s where > 100 MB/s was possible. robocopy now runs
+`/E /J /R:0 /W:0 /BYTES /FP /NP /TEE /MT:n` for every robocopy job (pastes, syncs, backup
+staging, `sentier run`). `/Z` only with `restartable = true` on a sync or backup preset.
+`n` is `[jobs] robocopy_threads`: default 8, kept within 1–128. `sentier run` uses it
+unless `--threads` is given. The `/L` dry runs stay serial.
+
+- **What `/MT /NP` prints**, captured here: no `%`. A file's line comes when the file is
+  done (a 1.5 GB file's line arrived at 0.62 s, just before the summary). A failed
+  file's `ERROR` block follows its line, because each thread writes a file's output as
+  one block. `Parser::threaded` turns those lines into `Event::Copied`. The tracker counts
+  each one at once and takes it back if the next event is an error for that file (even
+  when the message line lands in the next batch).
+- Progress: the `/L` totals plus each finished file give the bar, MB/s and ETA. The panel
+  shows `last <file>` instead of `now <file> NN%`. With no in-file progress, one large
+  file shows no movement until it's done. The stall banner (after 10 s) says a large file
+  may still be copying.
+- Pipe and UI: a `robocopy-stdout` thread only drains the pipe (64 KB reads, unbounded
+  channel). The job thread parses and sends at most every 50 ms, coalesced
+  (`robocopy::coalesce`: runs of finished files summed with the latest one named, only
+  the last `%` kept). The ACTIVITY line reads `big.bin (40 MB) and 12 files more`.
+- Fixtures recaptured with sentier's own arguments (`/MT:8 /NP /J`), plus `many` (300
+  files across 8 threads; the counts match robocopy's summary) and `restartable`; `mt`
+  dropped (every copy fixture is `/MT` now). `unreachable` kept from before: in this
+  session `\10.255.255.1\x` resolved to a local `C:\10.255.255.1`, so it couldn't be
+  recaptured. Rerun `cargo run --example capture_robocopy -- unreachable` at work. The
+  `run.rs` tests that drive real robocopy now use `/MT:8` (locked-file retry, skip,
+  pause).
+- **Measured on a NAS over 1 Gbit** (2026-11-09; folders of 0.4–10 MB files and a
+  694 MB mix of video and photos):
+
+  | flags | MB/s (694 MB folder) |
+  |---|---|
+  | old `/Z` | 32 |
+  | `/J /MT:8` (new default) | 102–103 |
+  | no `/J`, `/MT:8` | 104 |
+  | `/J` or no `/J`, `/MT:32` | 105–106 |
+  | `Copy-Item` (1 thread) | 105 |
+  | sentier job, new default | 113 (panel, copy time only) |
+
+  `/Z` was the whole problem (3× slower here; ≈5 MB/s at the office). On 1 Gbit every
+  other variant hits the link limit, so `/J` and the thread count make no measurable
+  difference; they're kept for big files on faster links and for folders of many small
+  files. Sub-second runs on small folders were noise and showed the NAS cache.

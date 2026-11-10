@@ -631,6 +631,21 @@ impl Job {
                     format!("{} ({})", file_name(path), human_bytes(*size)),
                 ))
             }
+            // `/MT`: one line per batch, the latest file standing for the rest.
+            Event::Copied {
+                files, path, size, ..
+            } => Some((
+                ActKind::Copy,
+                match files.saturating_sub(1) {
+                    0 => format!("{} ({})", file_name(path), human_bytes(*size)),
+                    more => format!(
+                        "{} ({}) and {} more",
+                        file_name(path),
+                        human_bytes(*size),
+                        files_word(more)
+                    ),
+                },
+            )),
             _ => None,
         };
         let err = match &e {
@@ -1345,8 +1360,108 @@ pub fn load_reports(dir: &std::path::Path) -> Vec<Report> {
         .collect()
 }
 
-pub fn delete_report(dir: &std::path::Path, id: u64) {
+/// Dismissing a job: its report, and its log when the log is one of ours (a file right in
+/// the jobs folder, never anything else).
+pub fn delete_report(dir: &std::path::Path, id: u64, log: Option<&str>) {
     let _ = std::fs::remove_file(dir.join(format!("{id}.json")));
+    if let Some(log) = log
+        && is_job_log(dir, std::path::Path::new(log))
+    {
+        let _ = std::fs::remove_file(log);
+    }
+}
+
+// ------------------------------------------------------------------ housekeeping
+
+/// Job logs older than this many days are deleted at startup (`jobs.keep_logs_days`).
+pub const DEFAULT_KEEP_LOGS_DAYS: u32 = 30;
+/// A staging folder untouched this long is a leftover (sentier was killed mid-backup).
+/// Not sooner: a `sentier run` backup from Task Scheduler may be using it right now.
+pub const STAGING_STALE: Duration = Duration::from_secs(24 * 3600);
+
+/// A `.log` file directly in the jobs folder.
+fn is_job_log(dir: &std::path::Path, path: &std::path::Path) -> bool {
+    let in_dir = path.parent().is_some_and(|p| {
+        p.display()
+            .to_string()
+            .eq_ignore_ascii_case(&dir.display().to_string())
+    });
+    in_dir
+        && path
+            .extension()
+            .is_some_and(|x| x.eq_ignore_ascii_case("log"))
+}
+
+/// Which job logs to delete: the `.log` files in `dir` (with their last-write time) older
+/// than `days`, except those a kept report still points to (its `o` opens the log).
+/// `days` 0 keeps everything.
+pub fn stale_logs(
+    dir: &std::path::Path,
+    files: &[(std::path::PathBuf, SystemTime)],
+    kept: &[String],
+    now: SystemTime,
+    days: u32,
+) -> Vec<std::path::PathBuf> {
+    if days == 0 {
+        return Vec::new();
+    }
+    let max_age = Duration::from_secs(u64::from(days) * 24 * 3600);
+    files
+        .iter()
+        .filter(|(p, _)| is_job_log(dir, p))
+        .filter(|(_, t)| now.duration_since(*t).is_ok_and(|age| age > max_age))
+        .filter(|(p, _)| {
+            let p = p.display().to_string();
+            !kept.iter().any(|k| k.eq_ignore_ascii_case(&p))
+        })
+        .map(|(p, _)| p.clone())
+        .collect()
+}
+
+/// What a sweep removed.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Swept {
+    pub logs: usize,
+    pub staging: usize,
+}
+
+/// The startup clean-up (blocking; the worker runs it): job logs past `days` (see
+/// [`stale_logs`]) and staging folders untouched for [`STAGING_STALE`].
+pub fn sweep(
+    jobs: Option<&std::path::Path>,
+    staging: Option<&std::path::Path>,
+    days: u32,
+    now: SystemTime,
+) -> Swept {
+    let mut out = Swept::default();
+    let modified = |e: &std::fs::DirEntry| e.metadata().and_then(|m| m.modified()).ok();
+    if let Some(dir) = jobs
+        && let Ok(rd) = std::fs::read_dir(dir)
+    {
+        let files: Vec<_> = rd
+            .flatten()
+            .filter_map(|e| Some((e.path(), modified(&e)?)))
+            .collect();
+        let kept: Vec<String> = load_reports(dir).into_iter().map(|r| r.log).collect();
+        for p in stale_logs(dir, &files, &kept, now, days) {
+            if std::fs::remove_file(&p).is_ok() {
+                out.logs += 1;
+            }
+        }
+    }
+    if let Some(root) = staging
+        && let Ok(rd) = std::fs::read_dir(root)
+    {
+        for e in rd.flatten() {
+            let old = modified(&e)
+                .and_then(|t| now.duration_since(t).ok())
+                .is_some_and(|age| age > STAGING_STALE);
+            if old && e.path().is_dir() && std::fs::remove_dir_all(e.path()).is_ok() {
+                out.staging += 1;
+            }
+        }
+    }
+    out
 }
 #[cfg(test)]
 mod tests {
@@ -1771,8 +1886,88 @@ mod tests {
         assert_eq!(save_report(&dir, &r), Ok(()));
         std::fs::write(dir.join("junk.json"), "{").ok();
         assert_eq!(load_reports(&dir), vec![r]);
-        delete_report(&dir, 42);
+        // Dismissing takes the job's log along; a log outside the jobs folder is
+        // never touched.
+        let log = dir.join("2026-11-09_120000_t.log");
+        let elsewhere = std::env::temp_dir().join(format!("sentier-x-{}.log", std::process::id()));
+        std::fs::write(&log, "x").ok();
+        std::fs::write(&elsewhere, "x").ok();
+        delete_report(&dir, 42, Some(&log.display().to_string()));
         assert!(load_reports(&dir).is_empty());
+        assert!(!log.exists(), "the log goes with the report");
+        delete_report(&dir, 7, Some(&elsewhere.display().to_string()));
+        assert!(elsewhere.exists(), "not one of ours");
+        let _ = std::fs::remove_file(&elsewhere);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_logs_are_old_unkept_job_logs() {
+        let dir = std::path::Path::new(r"C:\x\jobs");
+        let now = SystemTime::now();
+        let days = |n: u64| now - Duration::from_secs(n * 24 * 3600);
+        let f = |name: &str, t: SystemTime| (dir.join(name), t);
+        let files = [
+            f("old.log", days(31)),
+            f("recent.log", days(29)),
+            f("old-but-kept.log", days(90)),
+            f("old.json", days(90)),
+        ];
+        let kept = [dir.join("OLD-BUT-KEPT.log").display().to_string()];
+        assert_eq!(
+            stale_logs(dir, &files, &kept, now, 30),
+            [dir.join("old.log")],
+            "recent, kept (any case) and non-log files stay"
+        );
+        assert!(
+            stale_logs(dir, &files, &kept, now, 0).is_empty(),
+            "0 keeps all"
+        );
+        // A log somewhere else is never ours to delete.
+        let away = [(std::path::PathBuf::from(r"C:\other\old.log"), days(99))];
+        assert!(stale_logs(dir, &away, &[], now, 30).is_empty());
+    }
+
+    #[test]
+    fn sweep_removes_old_logs_and_leftover_staging() {
+        let base = std::env::temp_dir().join(format!("sentier-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (jobs, staging) = (base.join("jobs"), base.join("staging"));
+        std::fs::create_dir_all(&jobs).ok();
+        std::fs::create_dir_all(staging.join("111").join("deep")).ok();
+        std::fs::create_dir_all(staging.join("222")).ok();
+        std::fs::write(jobs.join("a.log"), "a").ok();
+        std::fs::write(jobs.join("b.log"), "b").ok();
+        std::fs::write(staging.join("111").join("deep").join("f.bin"), "f").ok();
+        // Pretend it's 40 days from now: everything written above is "old".
+        let later = SystemTime::now() + Duration::from_secs(40 * 24 * 3600);
+        // Keep b.log: a report still points to it.
+        let pl = Plan {
+            backend: Backend::Native,
+            steps: vec![],
+            pairs: vec![],
+            title: "t".into(),
+        };
+        let now = Instant::now();
+        let b = jobs.join("b.log").display().to_string();
+        let mut j = Job::new(5, &pl, Op::Copy, "D:".into(), Overwrite::Never, b);
+        j.apply(JobEvent::Finished { cancelled: false }, now);
+        assert_eq!(save_report(&jobs, &j.report(now)), Ok(()));
+
+        // Today: nothing is old enough.
+        let today = sweep(Some(&jobs), Some(&staging), 30, SystemTime::now());
+        assert_eq!(today, Swept::default());
+        let swept = sweep(Some(&jobs), Some(&staging), 30, later);
+        assert_eq!(
+            swept,
+            Swept {
+                logs: 1,
+                staging: 2
+            }
+        );
+        assert!(!jobs.join("a.log").exists());
+        assert!(jobs.join("b.log").exists(), "its report is kept");
+        assert!(!staging.join("111").exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

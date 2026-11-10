@@ -56,6 +56,9 @@ pub struct SyncPreset {
     /// Only these, if any (names in the source, folders ending in ``): what was
     /// selected when the preset was made. Each folder is its own step; the files one more.
     pub include: Vec<String>,
+    /// `restartable = true`: robocopy `/Z`. A half-copied file resumes after a pause or a
+    /// dropped link, but copying is many times slower, so it's off by default.
+    pub restartable: bool,
 }
 
 fn fs_path(field: &str, text: &str) -> Result<FsPath, String> {
@@ -80,6 +83,15 @@ fn strings(pin: &Pin, key: &str) -> Result<Vec<String>, String> {
             })
             .collect(),
         Some(_) => Err(format!("{key} must be a list of strings")),
+    }
+}
+
+/// A `true` / `false` field, false when absent.
+pub fn flag(pin: &Pin, key: &str) -> Result<bool, String> {
+    match pin.extra.get(key) {
+        None => Ok(false),
+        Some(toml::Value::Boolean(b)) => Ok(*b),
+        Some(_) => Err(format!("{key} must be true or false")),
     }
 }
 
@@ -137,6 +149,7 @@ impl SyncPreset {
             exclude_dirs: strings(pin, "exclude_dirs")?,
             exclude_files: strings(pin, "exclude_files")?,
             include: includes(pin)?,
+            restartable: flag(pin, "restartable")?,
         })
     }
 
@@ -498,9 +511,11 @@ mod tests {
             mode = "Mirror"
             exclude_dirs = ["tmp", "old"]
             exclude_files = "*.bak"
+            restartable = true
         "#));
         let Ok(pr) = pr else { panic!("{pr:?}") };
         assert_eq!(pr.mode, SyncMode::Mirror);
+        assert!(pr.restartable);
         assert_eq!(pr.exclude_dirs, ["tmp", "old"]);
         assert_eq!(pr.exclude_files, ["*.bak"]);
         assert_eq!(pr.key(), r"sync|\\srv01\project\hit|d:\aveva\local\hit");

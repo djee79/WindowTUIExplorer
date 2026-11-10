@@ -5,32 +5,25 @@
    ROBOCOPY     ::     Robust File Copy for Windows                              
 -------------------------------------------------------------------------------
 
-  Started : Friday, November 6, 2026 10:50:36 AM
+  Started : Monday, November 9, 2026 7:00:20 PM
    Source : C:\capture\denied\src\
      Dest : C:\capture\denied\dst\
 
     Files : *.*
 	    
-  Options : *.* /FP /BYTES /TEE /S /E /DCOPY:DA /COPY:DAT /Z /R:1 /W:1 
+  Options : *.* /FP /BYTES /TEE /S /E /DCOPY:DA /COPY:DAT /J /NP /MT:8 /R:0 /W:0 
 
 ------------------------------------------------------------------------------
 
-	  New Dir          1	C:\capture\denied\src\
 	    New File  		       6	C:\capture\denied\src\a.txt
-2026/11/06 10:50:36 ERROR 5 (0x00000005) Copying File C:\capture\denied\src\a.txt
-Access is denied.
-Waiting 1 seconds... Retrying...
-	    New File  		       6	C:\capture\denied\src\a.txt
-2026/11/06 10:50:37 ERROR 5 (0x00000005) Copying File C:\capture\denied\src\a.txt
+2026/11/09 19:00:20 ERROR 5 (0x00000005) Copying File C:\capture\denied\src\a.txt
 Access is denied.
 
 ERROR: RETRY LIMIT EXCEEDED.
 
-	  New Dir          2	C:\capture\denied\src\sub\
-	    New File  		       2	C:\capture\denied\src\sub\b.txt100%  
-	    New File  		41943040	C:\capture\denied\src\sub\big.bin  2.5%  5.0%  7.5% 10.0% 12.5% 15.0% 17.5% 20.0% 22.5% 25.0% 27.5% 30.0% 32.5% 35.0% 37.5% 40.0% 42.5% 45.0% 47.5% 50.0% 52.5% 55.0% 57.5% 60.0% 62.5% 65.0% 67.5% 70.0% 72.5% 75.0% 77.5% 80.0% 82.5% 85.0% 87.5% 90.0% 92.5% 95.0% 97.5%100%  
-	  New Dir          1	C:\capture\denied\src\sub\deep\
-	    New File  		       2	C:\capture\denied\src\sub\deep\c.pmlmac100%  
+	    New File  		       2	C:\capture\denied\src\sub\b.txt
+	    New File  		41943040	C:\capture\denied\src\sub\big.bin
+	    New File  		       2	C:\capture\denied\src\sub\deep\c.pmlmac
 
 ------------------------------------------------------------------------------
 
@@ -38,10 +31,10 @@ ERROR: RETRY LIMIT EXCEEDED.
     Dirs :         3         3         0         0         0         0
    Files :         4         3         0         0         1         0
    Bytes :  41943050  41943044         0         0         6         0
-   Times :   0:00:01   0:00:00                       0:00:01   0:00:00
+   Times :   0:00:00   0:00:00                       0:00:00   0:00:00
 
 
-   Speed :           1,997,287,809 Bytes/sec.
-   Speed :             114,285.727 MegaBytes/min.
-   Ended : Friday, November 6, 2026 10:50:37 AM
+   Speed :           2,621,440,250 Bytes/sec.
+   Speed :             150,000.016 MegaBytes/min.
+   Ended : Monday, November 9, 2026 7:00:20 PM
 

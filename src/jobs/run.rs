@@ -1,8 +1,10 @@
 //! Runs a job's plan (blocking: the worker puts it on the blocking pool) and reports
-//! through `send`. robocopy runs as a hidden child process; its stdout is read on its
-//! own thread, decoded from the OEM code page, parsed, and sent in batches about every
-//! 100 ms. The native and rename backends make the same events, so the app tracks every
-//! job the same way.
+//! through `send`. robocopy runs as a hidden child process. A dedicated thread does
+//! nothing but drain its stdout into an unbounded channel, so robocopy never blocks on a
+//! full pipe whatever the UI is doing. This thread decodes (OEM code page), parses, and
+//! sends what it found at most every [`BATCH_EVERY`] (~20 a second), coalesced
+//! ([`robocopy::coalesce`]: finished files summed, latest file and % win). The native
+//! and rename backends make the same events, so the app tracks every job the same way.
 //!
 //! **sentier owns retries** (docs/JOBS_PANEL_SPEC.md): robocopy runs with `/R:0`, so a
 //! locked file (error 32 / 33) fails at once and everything else is copied first. The
@@ -11,8 +13,9 @@
 //! file (`s`), try it now (`R`), pause or cancel.
 //!
 //! **Pause** (`p`) stops robocopy (its file handles and the server's locks go with it);
-//! resuming runs the same step again, which skips what's already copied and restarts a
-//! half-copied file where it stopped (`/Z`). The native backend pauses between files.
+//! resuming runs the same step again, which skips what's already copied. A half-copied
+//! file starts over, or resumes where it stopped with `restartable = true` (`/Z`). The
+//! native backend pauses between files.
 
 use super::robocopy::{
     self, Event, FileClass, Options, Overwrite, Parser, RcError, Row, Step, Summary, Tracker,
@@ -26,7 +29,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-const BATCH_EVERY: Duration = Duration::from_millis(100);
+/// At most ~20 UI updates a second per job.
+const BATCH_EVERY: Duration = Duration::from_millis(50);
 /// How often, and how many times, sentier tries a locked file again.
 pub const RETRY_TRIES: u32 = 5;
 pub const RETRY_EVERY: Duration = if cfg!(test) {
@@ -43,6 +47,8 @@ pub struct Spec {
     pub overwrite: Overwrite,
     /// `/MT:n`, 0 = off.
     pub threads: u32,
+    /// `/Z`: presets with `restartable = true`.
+    pub restartable: bool,
     pub log: String,
     /// Sync presets: `/MIR` instead of `/E`.
     pub mirror: bool,
@@ -150,6 +156,7 @@ pub(super) fn run_robocopy(spec: &Spec, ctl: &Control, send: &dyn Fn(JobEvent)) 
         mirror: spec.mirror,
         list_only,
         threads: if list_only { 0 } else { spec.threads },
+        restartable: spec.restartable && !list_only,
         log: (!list_only).then(|| spec.log.clone()),
         exclude_dirs: spec.exclude_dirs.clone(),
         exclude_files: spec.exclude_files.clone(),
@@ -449,6 +456,7 @@ pub fn dry_run(
     let opts = Options {
         list_only: true,
         threads: 0,
+        restartable: false,
         log: None,
         ..opts.clone()
     };
@@ -476,6 +484,7 @@ pub fn dry_run_steps(
     let opts = Options {
         list_only: true,
         threads: 0,
+        restartable: false,
         log: None,
         ..opts.clone()
     };
@@ -528,13 +537,16 @@ fn quote_args(args: &[String]) -> String {
         .join(" ")
 }
 
-/// One robocopy run: its parsed output goes to `on_events` in batches. Returns the exit
-/// code (-1 when killed) and whether it was killed (`stop` said so: cancel or pause).
+/// One robocopy run: its parsed output goes to `on_events` in coalesced batches, at most
+/// every [`BATCH_EVERY`]. Returns the exit code (-1 when killed) and whether it was
+/// killed (`stop` said so: cancel or pause).
 fn robocopy_once(
     args: &[String],
     stop: &dyn Fn() -> bool,
     on_events: &mut dyn FnMut(Vec<Event>),
 ) -> Result<(i32, bool), String> {
+    // `/MT` without `/L`: a file line means the file is done.
+    let threaded = args.iter().any(|a| a.starts_with("/MT:")) && !args.iter().any(|a| a == "/L");
     let mut child = Command::new("robocopy")
         .args(args)
         .stdin(Stdio::null())
@@ -543,28 +555,49 @@ fn robocopy_once(
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map_err(|e| format!("robocopy didn't start: {e}"))?;
+    // The drain: reads the pipe and hands the bytes over through an unbounded channel,
+    // nothing else, so robocopy's writes never wait on parsing or the UI.
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let mut stdout = child.stdout.take();
-    let reader = std::thread::spawn(move || {
-        let mut buf = [0u8; 8192];
-        while let Some(out) = stdout.as_mut() {
-            match out.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if tx.send(buf[..n].to_vec()).is_err() {
-                        break;
+    let reader = std::thread::Builder::new()
+        .name("robocopy-stdout".into())
+        .spawn(move || {
+            let mut buf = [0u8; 64 * 1024];
+            while let Some(out) = stdout.as_mut() {
+                match out.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
                     }
                 }
             }
-        }
-    });
-    let mut parser = Parser::new();
+        })
+        .map_err(|e| format!("robocopy's output reader didn't start: {e}"))?;
+    let mut parser = if threaded {
+        Parser::threaded()
+    } else {
+        Parser::new()
+    };
     let mut batch: Vec<Event> = Vec::new();
     let mut last_send = Instant::now();
     let mut killed = false;
+    let mut feed = |bytes: &[u8], batch: &mut Vec<Event>| {
+        batch.extend(parser.feed(&crate::platform::oem_to_string(bytes)));
+    };
     loop {
-        match rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(bytes) => batch.extend(parser.feed(&crate::platform::oem_to_string(&bytes))),
+        let wait = BATCH_EVERY
+            .saturating_sub(last_send.elapsed())
+            .max(POLL / 5);
+        match rx.recv_timeout(wait) {
+            Ok(bytes) => {
+                feed(&bytes, &mut batch);
+                // Catch up on everything already read before deciding to send.
+                while let Ok(more) = rx.try_recv() {
+                    feed(&more, &mut batch);
+                }
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
@@ -573,13 +606,13 @@ fn robocopy_once(
             killed = true;
         }
         if !batch.is_empty() && last_send.elapsed() >= BATCH_EVERY {
-            on_events(std::mem::take(&mut batch));
+            on_events(robocopy::coalesce(std::mem::take(&mut batch)));
             last_send = Instant::now();
         }
     }
     batch.extend(parser.finish());
     if !batch.is_empty() {
-        on_events(batch);
+        on_events(robocopy::coalesce(batch));
     }
     let _ = reader.join();
     let status = child.wait().map_err(|e| e.to_string())?;
@@ -677,6 +710,7 @@ fn run_pairs(spec: &Spec, ctl: &Control, send: &dyn Fn(JobEvent), rename: bool) 
         mirror: false,
         list_only: false,
         threads: 0,
+        restartable: false,
         log: None,
         exclude_dirs: Vec::new(),
         exclude_files: Vec::new(),
@@ -733,7 +767,9 @@ mod tests {
             plan: plan.clone(),
             moving,
             overwrite,
-            threads: 0,
+            // What jobs run with: /MT:8 (the output and tracking differ from serial).
+            threads: robocopy::DEFAULT_THREADS,
+            restartable: false,
             log: log.to_string(),
             mirror: false,
             exclude_dirs: vec![],
@@ -815,16 +851,23 @@ mod tests {
                 .as_deref(),
             Some("é")
         );
-        assert!(
-            job.tracker
-                .listed
-                .iter()
-                .any(|(_, _, p)| p.ends_with("é.txt")),
-            "OEM output decoded: {:?}",
-            job.tracker.listed
-        );
+        assert_eq!(job.tracker.bytes_done, 5 + "é".len() as u64);
         let text = std::fs::read(&log).unwrap_or_default();
         assert!(!text.is_empty(), "robocopy and sentier both log");
+        // Its one file, so the name robocopy printed is known: OEM output decoded.
+        let solo = drive(
+            tree_plan(&src.join("sub"), &dir.join("solo")),
+            false,
+            Overwrite::Never,
+            &log,
+        );
+        assert!(
+            solo.tracker
+                .last_path()
+                .is_some_and(|p| p.ends_with("é.txt")),
+            "OEM output decoded: {:?}",
+            solo.tracker.last_path()
+        );
 
         // Again: everything is there, nothing to copy.
         let job = drive(plan, false, Overwrite::Never, &log);

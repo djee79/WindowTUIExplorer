@@ -34,7 +34,8 @@ usage: sentier run <preset name> [--allow-mirror] [--threads n]
 
   --allow-mirror     let a mirror-mode sync delete local files not on the server
                      (without it, a mirror preset runs as update)
-  --threads n        robocopy /MT:n
+  --threads n        robocopy /MT:n, 1 to 128 (default: jobs.robocopy_threads in
+                     config.toml, else 8)
 
   exit codes: 0-7 ok (1 = copied / zip made), 8 failed or cancelled, 16 couldn't run
 ";
@@ -43,6 +44,7 @@ usage: sentier run <preset name> [--allow-mirror] [--threads n]
 pub struct RunArgs {
     pub name: Option<String>,
     pub allow_mirror: bool,
+    /// `--threads n`; 0 when not given (the caller fills in config.toml's).
     pub threads: u32,
 }
 
@@ -184,6 +186,7 @@ fn prepare_sync(preset: SyncPreset, args: &RunArgs, out: &mut dyn Write) -> (Job
         moving: false,
         overwrite: Overwrite::Changed,
         threads: args.threads,
+        restartable: preset.restartable,
         log,
         mirror: mode == SyncMode::Mirror,
         exclude_dirs: preset.exclude_dirs.clone(),
@@ -251,6 +254,7 @@ fn prepare_backup(
         compression: preset.compression,
         engine: preset.engine,
         threads: args.threads,
+        restartable: preset.restartable,
         log,
     };
     Ok((

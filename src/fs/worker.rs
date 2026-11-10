@@ -1594,10 +1594,33 @@ impl Worker {
         });
     }
 
-    pub fn delete_report(&self, id: u64) {
+    /// Dismissing a job: its report and its log.
+    pub fn delete_report(&self, id: u64, log: Option<String>) {
         self.rt.spawn_blocking(move || {
             if let Some(dir) = crate::jobs::jobs_dir() {
-                crate::jobs::delete_report(&dir, id);
+                crate::jobs::delete_report(&dir, id, log.as_deref());
+            }
+        });
+    }
+
+    /// The startup clean-up: job logs older than `keep_log_days` (0 keeps them) unless
+    /// a kept report points to them, and staging folders left by a killed backup.
+    pub fn housekeeping(&self, keep_log_days: u32) {
+        self.rt.spawn_blocking(move || {
+            let jobs = crate::jobs::jobs_dir();
+            let staging = crate::jobs::zip::staging_root();
+            let swept = crate::jobs::sweep(
+                jobs.as_deref(),
+                staging.as_deref(),
+                keep_log_days,
+                std::time::SystemTime::now(),
+            );
+            if swept != crate::jobs::Swept::default() {
+                tracing::info!(
+                    logs = swept.logs,
+                    staging = swept.staging,
+                    "housekeeping: removed old job logs and staging leftovers"
+                );
             }
         });
     }

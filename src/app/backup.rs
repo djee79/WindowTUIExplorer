@@ -121,7 +121,8 @@ impl App {
             keep: preset.keep,
             compression: preset.compression,
             engine: preset.engine,
-            threads: self.config.jobs.robocopy_threads.unwrap_or(0),
+            threads: self.config.jobs.threads(),
+            restartable: preset.restartable,
             log,
         };
         let cancel = self.worker.start_backup(id, spec);

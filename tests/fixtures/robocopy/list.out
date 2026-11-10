@@ -5,13 +5,13 @@
    ROBOCOPY     ::     Robust File Copy for Windows                              
 -------------------------------------------------------------------------------
 
-  Started : Friday, November 6, 2026 10:50:35 AM
+  Started : Monday, November 9, 2026 7:00:20 PM
    Source : C:\capture\list\src\
      Dest : C:\capture\list\dst\
 
     Files : *.*
 	    
-  Options : *.* /FP /BYTES /L /TEE /S /E /DCOPY:DA /COPY:DAT /PURGE /MIR /Z /R:1 /W:1 
+  Options : *.* /FP /BYTES /L /TEE /S /E /DCOPY:DA /COPY:DAT /PURGE /MIR /J /NP /R:0 /W:0 
 
 ------------------------------------------------------------------------------
 
@@ -31,5 +31,5 @@
    Files :         4         4         0         0         0         1
    Bytes :  41943050  41943050         0         0         0         5
    Times :   0:00:00   0:00:00                       0:00:00   0:00:00
-   Ended : Friday, November 6, 2026 10:50:35 AM
+   Ended : Monday, November 9, 2026 7:00:20 PM
 

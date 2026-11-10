@@ -233,7 +233,7 @@ fn cli_open(pin: &pins::Pin) -> Result<String, String> {
 fn run_headless(args: &[String]) -> u8 {
     use jobs::headless::{self, EXIT_FATAL};
     let fatal = EXIT_FATAL as u8;
-    let args = match headless::parse_args(args) {
+    let mut args = match headless::parse_args(args) {
         Ok(Some(a)) => a,
         Ok(None) => {
             print!("{}", headless::USAGE);
@@ -244,6 +244,14 @@ fn run_headless(args: &[String]) -> u8 {
             return fatal;
         }
     };
+    if args.threads == 0 {
+        // No --threads: config.toml's jobs.robocopy_threads, else the default (8).
+        let (config, problem) = config::load_early();
+        if let Some(p) = problem {
+            eprintln!("note: {p}");
+        }
+        args.threads = config.jobs.threads();
+    }
     let _log_guard = init_logging();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), ?args, "headless run");
     let Some(path) = pins::store_path() else {

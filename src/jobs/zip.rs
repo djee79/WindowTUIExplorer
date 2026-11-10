@@ -138,6 +138,8 @@ pub struct BackupPreset {
     pub keep: u32,
     pub compression: Compression,
     pub engine: Engine,
+    /// `restartable = true`: staging uses robocopy `/Z` (slow; off by default).
+    pub restartable: bool,
 }
 
 fn fs_path(field: &str, text: &str) -> Result<FsPath, String> {
@@ -188,6 +190,7 @@ impl BackupPreset {
             keep,
             compression,
             engine,
+            restartable: super::preset::flag(pin, "restartable")?,
         };
         // A bad template is refused now, not at 2 a.m.
         preset.zip_name(chrono::Local::now())?;
@@ -482,19 +485,25 @@ pub struct BackupSpec {
     pub engine: Engine,
     /// robocopy `/MT:n` for staging.
     pub threads: u32,
+    /// robocopy `/Z` for staging.
+    pub restartable: bool,
     pub log: String,
 }
 
-/// `%LOCALAPPDATA%\sentier\staging\<job id>`.
-pub fn staging_dir(id: u64) -> Option<String> {
-    let base = if cfg!(test) {
+/// `%LOCALAPPDATA%\sentier\staging`: one folder per backup job.
+pub fn staging_root() -> Option<PathBuf> {
+    Some(if cfg!(test) {
         std::env::temp_dir().join("sentier-test-staging")
     } else {
         PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
             .join("sentier")
             .join("staging")
-    };
-    Some(base.join(id.to_string()).display().to_string())
+    })
+}
+
+/// `%LOCALAPPDATA%\sentier\staging\<job id>`.
+pub fn staging_dir(id: u64) -> Option<String> {
+    Some(staging_root()?.join(id.to_string()).display().to_string())
 }
 
 /// `C:\x` → `\\?\C:\x`, `\\srv\s\x` → `\\?\UNC\srv\s\x`: no 260-character limit.
@@ -785,6 +794,7 @@ fn stage(
         mirror: false,
         list_only: true,
         threads: 0,
+        restartable: false,
         log: None,
         exclude_dirs: Vec::new(),
         exclude_files: Vec::new(),
@@ -817,6 +827,7 @@ fn stage(
         moving: false,
         overwrite: Overwrite::Changed,
         threads: spec.threads,
+        restartable: spec.restartable,
         log: spec.log.clone(),
         mirror: false,
         exclude_dirs: Vec::new(),
@@ -1127,6 +1138,7 @@ mod tests {
         "#));
         let Ok(pr) = pr else { panic!("{pr:?}") };
         assert_eq!((pr.keep, pr.compression), (10, Compression::Best));
+        assert!(!pr.restartable, "/Z is opt-in");
         assert_eq!(pr.file_name, DEFAULT_FILE_NAME);
         assert_eq!(
             pr.zip_name(at(5, 19, 45)),
@@ -1312,6 +1324,7 @@ mod tests {
             compression: Compression::Default,
             engine: Engine::Builtin,
             threads: 0,
+            restartable: false,
             log: dir.join("job.log").display().to_string(),
         };
         let job = drive(&spec);
@@ -1367,6 +1380,7 @@ mod tests {
             compression: Compression::Store,
             engine: Engine::Builtin,
             threads: 0,
+            restartable: false,
             log: dir.join("job.log").display().to_string(),
         };
         let data = dir.join("data");
@@ -1448,6 +1462,7 @@ mod tests {
             compression: Compression::Best,
             engine: Engine::SevenZip,
             threads: 0,
+            restartable: false,
             log: dir.join("job.log").display().to_string(),
         };
         let job = drive(&spec);
@@ -1482,6 +1497,7 @@ mod tests {
             compression: Compression::Store,
             engine: Engine::Builtin,
             threads: 0,
+            restartable: false,
             log: dir.join("job.log").display().to_string(),
         };
         let job = drive(&spec);

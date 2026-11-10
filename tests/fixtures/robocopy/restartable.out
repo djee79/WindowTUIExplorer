@@ -1,24 +1,24 @@
 
- Log File : C:\capture\mt.log
+ Log File : C:\capture\restartable.log
 
 -------------------------------------------------------------------------------
    ROBOCOPY     ::     Robust File Copy for Windows                              
 -------------------------------------------------------------------------------
 
-  Started : Friday, November 6, 2026 10:50:35 AM
-   Source : C:\capture\mt\src\
-     Dest : C:\capture\mt\dst\
+  Started : Monday, November 9, 2026 7:00:20 PM
+   Source : C:\capture\restartable\src\
+     Dest : C:\capture\restartable\dst\
 
     Files : *.*
 	    
-  Options : *.* /FP /BYTES /TEE /S /E /DCOPY:DA /COPY:DAT /Z /MT:4 /R:1 /W:1 
+  Options : *.* /FP /BYTES /TEE /S /E /DCOPY:DA /COPY:DAT /Z /J /NP /MT:8 /R:0 /W:0 
 
 ------------------------------------------------------------------------------
 
-	    New File  		       6	C:\capture\mt\src\a.txt  0%  100%  
-	    New File  		       2	C:\capture\mt\src\sub\b.txt100%  
-	    New File  		41943040	C:\capture\mt\src\sub\big.bin100%  
-	    New File  		       2	C:\capture\mt\src\sub\deep\c.pmlmac100%  
+	    New File  		       6	C:\capture\restartable\src\a.txt
+	    New File  		       2	C:\capture\restartable\src\sub\b.txt
+	    New File  		41943040	C:\capture\restartable\src\sub\big.bin
+	    New File  		       2	C:\capture\restartable\src\sub\deep\c.pmlmac
 
 ------------------------------------------------------------------------------
 
@@ -29,7 +29,7 @@
    Times :   0:00:00   0:00:00                       0:00:00   0:00:00
 
 
-   Speed :           6,990,508,333 Bytes/sec.
-   Speed :             400,000.094 MegaBytes/min.
-   Ended : Friday, November 6, 2026 10:50:35 AM
+   Speed :           5,991,864,285 Bytes/sec.
+   Speed :             342,857.219 MegaBytes/min.
+   Ended : Monday, November 9, 2026 7:00:20 PM
 

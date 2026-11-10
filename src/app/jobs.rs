@@ -366,7 +366,8 @@ impl App {
             plan: plan.clone(),
             moving: req.op == Op::Move,
             overwrite: req.overwrite,
-            threads: self.config.jobs.robocopy_threads.unwrap_or(0),
+            threads: self.config.jobs.threads(),
+            restartable: false,
             log,
             mirror: false,
             exclude_dirs: Vec::new(),
@@ -694,26 +695,29 @@ impl App {
         }
     }
 
-    /// `Enter` / `dd` on a finished job: forget it (its log stays).
+    /// `Enter` / `dd` on a finished job: forget it, its report and its log.
     fn dismiss_job(&mut self) {
         let Some(row) = self.selected_job_row() else {
             return;
         };
-        let id = match row {
+        let (id, log) = match row {
             JobRow::Live(i) => match self.jobs.get(i) {
                 Some(j) if j.phase.is_over() => {
-                    let id = j.id;
+                    let (id, log) = (j.id, j.log.clone());
                     self.jobs.remove(i);
-                    id
+                    (id, log)
                 }
                 Some(j) => {
                     return self.set_status(format!("{} is running: c cancels it", j.title), false);
                 }
                 None => return,
             },
-            JobRow::Old(i) => self.old_reports.remove(i).id,
+            JobRow::Old(i) => {
+                let r = self.old_reports.remove(i);
+                (r.id, r.log)
+            }
         };
-        self.worker.delete_report(id);
+        self.worker.delete_report(id, Some(log));
         let n = self.job_rows().len();
         self.jobs_cursor = self.jobs_cursor.min(n.saturating_sub(1));
     }

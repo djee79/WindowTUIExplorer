@@ -3040,9 +3040,16 @@ mod pin_tests {
         press(&mut app, "<Tab><Tab><CR>");
         assert_eq!(
             app.picker.as_ref().map(|p| p.editor.text()).as_deref(),
-            Some("#aveva #servers "),
-            "both chosen tags, all required"
+            Some("#aveva,servers "),
+            "both chosen tags, any of them"
         );
+        settle(&mut app);
+        let mut names = picker_names(&app);
+        names.sort();
+        assert_eq!(names, ["HIT", "Work dir"]);
+        press(&mut app, "<Esc>q");
+        // Typed by hand, `#a #b` still means all of them.
+        press(&mut app, "<Space>p#aveva #servers ");
         settle(&mut app);
         assert_eq!(picker_names(&app), ["HIT"]);
         press(&mut app, "<Esc>q");

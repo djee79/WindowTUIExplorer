@@ -208,7 +208,7 @@ fn top_bar(p: &crate::picker::Picker, w: usize) -> Line<'static> {
             Span::styled(" Tab", theme::bold(FG)),
             Span::styled(" choose   ", theme::dim()),
             Span::styled("Enter", theme::bold(FG)),
-            Span::styled(" pins with all of them   ", theme::dim()),
+            Span::styled(" pins with any of them   ", theme::dim()),
             Span::styled(chosen, theme::fg(ACCENT)),
         ]);
     }
@@ -368,12 +368,16 @@ fn result_line(
         .as_ref()
         .map(|k| format!("'{k}"))
         .unwrap_or_default();
-    let tags = item
-        .tags
-        .iter()
-        .map(|t| format!("#{t}"))
-        .collect::<Vec<_>>()
-        .join(" ");
+    // A tag row shows how many pins carry it where a pin shows its tags.
+    let tags = if item.kind == ItemKind::Tag {
+        item.detail.clone()
+    } else {
+        item.tags
+            .iter()
+            .map(|t| format!("#{t}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
     let name_w = (w.saturating_sub(used + 4 + width(&tags) + 1)).clamp(10, 40);
     let name = truncate(&item.name, name_w);
     // Highlight the matched characters of the name (they come first in the haystack).
@@ -394,7 +398,12 @@ fn result_line(
     let tags = truncate(&tags, w.saturating_sub(used + 2));
     let pad = w.saturating_sub(used + width(&tags) + 1);
     spans.push(Span::styled(" ".repeat(pad), base));
-    spans.push(Span::styled(tags, base.fg(NET)));
+    let tags_style = if item.kind == ItemKind::Tag {
+        base.fg(theme::DIM)
+    } else {
+        base.fg(NET)
+    };
+    spans.push(Span::styled(tags, tags_style));
     spans.push(Span::styled(" ", base));
     Line::from(spans)
 }

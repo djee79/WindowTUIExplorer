@@ -445,6 +445,8 @@ impl App {
             .clone()
             .filter(|p| !p.trim().eq_ignore_ascii_case("auto"));
         self.graphics = crate::preview::graphics_with(protocol.as_deref());
+        // Once per start: old job logs and staging leftovers go (off the UI thread).
+        self.worker.housekeeping(cfg.jobs.keep_logs_days());
         self.config = cfg;
         self.apply_config();
         if let Some(p) = problem {

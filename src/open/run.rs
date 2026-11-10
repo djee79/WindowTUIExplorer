@@ -71,6 +71,10 @@ pub fn resolve_all(cfg: &super::rules::OpenConfig) -> BTreeMap<String, Option<St
         .collect()
 }
 
+/// `openers.log` past this size becomes `openers.old.log` (replacing the previous one),
+/// so the two never take more than about twice this.
+const OPENER_LOG_MAX: u64 = 1024 * 1024;
+
 /// `%LOCALAPPDATA%\sentier\logs\openers.log`: what detached programs print.
 fn opener_log() -> Option<std::fs::File> {
     let dir = if cfg!(test) {
@@ -81,11 +85,21 @@ fn opener_log() -> Option<std::fs::File> {
             .join("logs")
     };
     std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join("openers.log");
+    rotate(&path, &dir.join("openers.old.log"), OPENER_LOG_MAX);
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(dir.join("openers.log"))
+        .open(path)
         .ok()
+}
+
+/// `path` over `max` bytes: moved to `old` (replacing it), so writing starts afresh.
+fn rotate(path: &std::path::Path, old: &std::path::Path, max: u64) {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > max) {
+        let _ = std::fs::remove_file(old);
+        let _ = std::fs::rename(path, old);
+    }
 }
 
 /// Starts `program args` in `cwd` and doesn't wait. No console window; its output goes
@@ -194,6 +208,27 @@ pub fn config_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opener_log_rotates_past_its_limit() {
+        let dir = std::env::temp_dir().join(format!("sentier-rotate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok();
+        let (log, old) = (dir.join("openers.log"), dir.join("openers.old.log"));
+        std::fs::write(&log, "small").ok();
+        rotate(&log, &old, 10);
+        assert!(log.exists() && !old.exists(), "under the limit: left alone");
+        std::fs::write(&old, "older still").ok();
+        std::fs::write(&log, "more than ten bytes").ok();
+        rotate(&log, &old, 10);
+        assert!(!log.exists());
+        assert_eq!(
+            std::fs::read_to_string(&old).ok().as_deref(),
+            Some("more than ten bytes"),
+            "the previous old log is replaced"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn resolve_finds_system_programs() {
