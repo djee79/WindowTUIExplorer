@@ -2,6 +2,9 @@
 name = "sentier"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "A keyboard-driven terminal file explorer for Windows, built for network shares"
+repository = "https://github.com/djee79/WindowTUIExplorer"
 
 [dependencies]
 anyhow = "1.0.104"

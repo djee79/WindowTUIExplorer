@@ -1,5 +1,8 @@
 # sentier
 
+[![CI](https://github.com/djee79/WindowTUIExplorer/actions/workflows/ci.yml/badge.svg)](https://github.com/djee79/WindowTUIExplorer/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A keyboard-driven terminal file explorer for **Windows**, built for people who live on
 network shares. Vim keys, Miller columns, and a copy engine you can trust with
 many-gigabyte project folders.
@@ -176,3 +179,9 @@ cargo test
 - `examples/` holds probes for Windows behaviour, e.g.
   `cargo run --example capture_robocopy` recaptures the robocopy output fixtures the
   parser is tested against.
+
+CI runs the three checks above on Windows for every push and pull request.
+
+## License
+
+[MIT](LICENSE)
