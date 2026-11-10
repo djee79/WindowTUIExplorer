@@ -120,7 +120,7 @@ fn main() {
     if want("unreachable") {
         let (src, _) = fresh(&root, "unreachable");
         tree(&src);
-        let dst = PathBuf::from(r"\10.255.255.1\x\dest");
+        let dst = PathBuf::from(r"\\10.255.255.1\x\dest");
         run("unreachable", &root, &out_dir, &src, &dst, &["/E", MT]);
     }
 }

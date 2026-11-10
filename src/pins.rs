@@ -722,9 +722,25 @@ pub fn load(path: &Path) -> Result<(PinStore, Vec<String>), String> {
     }
 }
 
+/// Writes the store, after keeping a backup of the file as it was when one is due
+/// (`pin_backups`: one per editing session, the newest 5 kept). A failed backup doesn't
+/// stop the save; it's logged.
 pub fn save(path: &Path, store: &PinStore) -> Result<(), String> {
     let text = serialize(store)?;
+    let now = chrono::Local::now().naive_local();
+    if let Err(e) = crate::pin_backups::snapshot(path, now, false) {
+        tracing::warn!(error = %e, "backing up pins.toml");
+    }
     crate::fs::write_atomic(path, &text).map_err(|e| format!("pins.toml: {e}"))
+}
+
+/// `1 pin`, `3 pins`.
+pub fn pins_word(n: usize) -> String {
+    if n == 1 {
+        "1 pin".to_string()
+    } else {
+        format!("{n} pins")
+    }
 }
 
 #[cfg(test)]

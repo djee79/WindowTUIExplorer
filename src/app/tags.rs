@@ -57,6 +57,11 @@ pub enum Confirm {
         op: crate::fs::ops::FileOp,
         why: String,
     },
+    /// `:pins restore`: put backup `idx` (of `App::pin_backups`) in place of pins.toml.
+    RestorePins {
+        idx: usize,
+        why: String,
+    },
 }
 
 impl Confirm {
@@ -69,7 +74,8 @@ impl Confirm {
             | Confirm::FileOp { .. }
             | Confirm::Backup { .. }
             | Confirm::Archive { .. }
-            | Confirm::ImportWtm { .. } => None,
+            | Confirm::ImportWtm { .. }
+            | Confirm::RestorePins { .. } => None,
         }
     }
 }
@@ -96,13 +102,7 @@ impl ViewDraft {
     }
 }
 
-fn pins_word(n: usize) -> String {
-    if n == 1 {
-        "1 pin".to_string()
-    } else {
-        format!("{n} pins")
-    }
-}
+use crate::pins::pins_word;
 
 impl App {
     // ---------------------------------------------------------------- commands
@@ -257,7 +257,8 @@ impl App {
                 Confirm::Paste { why, .. }
                 | Confirm::Backup { why, .. }
                 | Confirm::Archive { why, .. }
-                | Confirm::ImportWtm { why, .. },
+                | Confirm::ImportWtm { why, .. }
+                | Confirm::RestorePins { why, .. },
             ) => format!("{why} Go ahead?"),
             None => String::new(),
         }
@@ -338,6 +339,14 @@ impl App {
                 Confirm::DeleteView { .. } => ("Delete view".to_string(), true),
                 Confirm::RenameTag { .. } => ("Rename tag".to_string(), false),
                 Confirm::DeleteTag { .. } => ("Remove tag".to_string(), true),
+                Confirm::RestorePins { idx, .. } => {
+                    if let Some(Ok(d)) = self.pin_backups.get(*idx).map(|l| &l.diff) {
+                        items.extend(d.back.iter().map(|n| format!("+ {n}")));
+                        items.extend(d.gone.iter().map(|n| format!("− {n}")));
+                        items.extend(d.changed.iter().map(|n| format!("~ {n}")));
+                    }
+                    ("Restore pins".to_string(), false)
+                }
             },
             _ => return None,
         };
@@ -452,6 +461,9 @@ impl App {
             self.rename_answered(true);
             return self.run_op(op);
         }
+        if let Confirm::RestorePins { idx, .. } = c {
+            return self.restore_pin_backup(idx);
+        }
         let msg = match &c {
             Confirm::DeleteView { idx, .. } if *idx < self.pins.views.len() => {
                 let v = self.pins.views.remove(*idx);
@@ -470,7 +482,8 @@ impl App {
             | Confirm::FileOp { .. }
             | Confirm::Backup { .. }
             | Confirm::Archive { .. }
-            | Confirm::ImportWtm { .. } => String::new(),
+            | Confirm::ImportWtm { .. }
+            | Confirm::RestorePins { .. } => String::new(),
         };
         self.save_pins();
         self.set_status(msg, false);

@@ -265,6 +265,15 @@ fn help_lines(p: &crate::picker::Picker, w: usize) -> Vec<Line<'static>> {
         )));
         return out;
     }
+    if p.source == Source::PinBackups {
+        for text in [
+            " one backup before each editing session, the newest 5 kept",
+            r" Enter restores (your pins now are backed up first) · %APPDATA%\sentier\backups",
+        ] {
+            out.push(Line::from(Span::styled(text, theme::dim())));
+        }
+        return out;
+    }
     if matches!(
         p.source,
         Source::Files | Source::Dirs | Source::Grep | Source::Commands | Source::Keymaps
@@ -316,6 +325,7 @@ fn kind_color(kind: ItemKind) -> ratatui::style::Color {
         ItemKind::File => FG,
         ItemKind::Dir => theme::DIR,
         ItemKind::Binding => OK,
+        ItemKind::Backup => ACCENT,
     }
 }
 
@@ -428,6 +438,7 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
     match item.kind {
         ItemKind::View => return draw_view_preview(f, inner, app, &item),
         ItemKind::Tag => return draw_tag_preview(f, inner, app, &item),
+        ItemKind::Backup => return draw_backup_preview(f, inner, app, &item),
         ItemKind::Machine => return draw_machine_preview(f, inner, app, &item),
         ItemKind::File | ItemKind::Dir => {
             let vw = (inner.width as usize).saturating_sub(12);
@@ -766,10 +777,63 @@ fn draw_tag_preview(f: &mut Frame, inner: Rect, app: &App, item: &PickItem) {
         inner.height as usize,
         &[
             ("Tab", "choose"),
-            ("Enter", "pins with all chosen"),
+            ("Enter", "pins with any chosen"),
             ("^e", "rename"),
             ("^x", "delete"),
         ],
+    );
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// A backup of pins.toml: what restoring it would bring back, remove and change.
+fn draw_backup_preview(f: &mut Frame, inner: Rect, app: &App, item: &PickItem) {
+    let mut lines = vec![
+        Line::default(),
+        Line::from(Span::styled(format!(" {}", item.name), theme::bold(ACCENT))),
+        Line::from(Span::styled(format!(" {}", item.detail), theme::dim())),
+        Line::default(),
+    ];
+    let w = (inner.width as usize).saturating_sub(6);
+    match app.pin_backup(item.id).map(|l| &l.diff) {
+        Some(Ok(d)) => {
+            let groups: [(&str, &[String], ratatui::style::Color); 3] = [
+                ("comes back", &d.back, OK),
+                ("goes away (added since)", &d.gone, ERR),
+                ("changes back", &d.changed, theme::WARN),
+            ];
+            if groups.iter().all(|(_, names, _)| names.is_empty()) {
+                lines.push(Line::from(Span::styled(
+                    " the same pins as now",
+                    theme::dim(),
+                )));
+            }
+            for (title, names, color) in groups {
+                if names.is_empty() {
+                    continue;
+                }
+                lines.push(Line::from(Span::styled(
+                    format!(" {} {title}", names.len()),
+                    theme::bold(color),
+                )));
+                for n in names {
+                    lines.push(Line::from(Span::styled(
+                        format!("   {}", truncate(n, w)),
+                        theme::fg(FG),
+                    )));
+                }
+                lines.push(Line::default());
+            }
+        }
+        Some(Err(e)) => lines.push(Line::from(Span::styled(
+            format!(" doesn't load: {}", truncate(e, w)),
+            theme::fg(ERR),
+        ))),
+        None => {}
+    }
+    let lines = with_hints(
+        lines,
+        inner.height as usize,
+        &[("Enter", "restore (asks first)"), ("Esc", "close")],
     );
     f.render_widget(Paragraph::new(lines), inner);
 }

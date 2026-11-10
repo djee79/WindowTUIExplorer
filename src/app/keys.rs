@@ -452,6 +452,7 @@ impl App {
             Action::Rename => self.start_rename(),
             Action::PinPicker => self.open_pin_picker(""),
             Action::TagPicker => self.open_tag_picker(),
+            Action::PinsRestore => self.open_pin_backups(),
             Action::MachinePicker => self.open_machine_picker(""),
             Action::ToggleMark => self.toggle_marks(n),
             Action::Visual => self.start_visual(),

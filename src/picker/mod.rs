@@ -43,6 +43,8 @@ pub enum ItemKind {
     Action,
     /// A Start Menu shortcut in the launcher (`^s`): the name, the `.lnk` path.
     StartMenu,
+    /// A backup of pins.toml (`:pins restore`); `id` indexes `App::pin_backups`.
+    Backup,
 }
 
 impl ItemKind {
@@ -58,6 +60,7 @@ impl ItemKind {
             ItemKind::Dir => "dir",
             ItemKind::Binding => "key",
             ItemKind::Command => ":",
+            ItemKind::Backup => "backup",
         }
     }
 
@@ -192,6 +195,8 @@ pub enum Source {
     /// `<leader>:` every action and `:` command; `<leader>sk` every binding.
     Commands,
     Keymaps,
+    /// `:pins restore`: the backups of pins.toml, newest first; Enter restores one.
+    PinBackups,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

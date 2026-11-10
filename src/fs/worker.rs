@@ -840,6 +840,42 @@ impl Worker {
         });
     }
 
+    /// `:pins restore`: the backups of pins.toml, each read and compared with the current
+    /// file. One `PinBackups` (network timeout: APPDATA may be on a share).
+    pub fn list_pin_backups(&self) {
+        let (tx, timeout) = (self.tx.clone(), self.timeouts.network);
+        self.rt.spawn(async move {
+            let call = tokio::task::spawn_blocking(|| {
+                pins::store_path()
+                    .map(|p| crate::pin_backups::listed(&p))
+                    .unwrap_or_default()
+            });
+            let found = match tokio::time::timeout(timeout, call).await {
+                Ok(Ok(found)) => found,
+                _ => Vec::new(),
+            };
+            let _ = tx.send(AppEvent::PinBackups(found));
+        });
+    }
+
+    /// Puts a backup in place of pins.toml (the current file is backed up first). One
+    /// `PinsRestored`; `when` is the backup's time, for the message.
+    pub fn restore_pins(&self, backup: std::path::PathBuf, when: String) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let call = tokio::task::spawn_blocking(move || {
+                let path = pins::store_path().ok_or("APPDATA is not set")?;
+                let now = chrono::Local::now().naive_local();
+                crate::pin_backups::restore(&path, &backup, now)
+            });
+            let result = call
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()))
+                .map(|store| (store, when));
+            let _ = tx.send(AppEvent::PinsRestored(result));
+        });
+    }
+
     /// Saves pins.toml. Reports only failures, as `PinsSaveFailed`. Saves go through one
     /// writer task, in order, so a later save always lands last.
     pub fn save_pins(&self, store: PinStore) {

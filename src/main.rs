@@ -15,6 +15,7 @@ mod locations;
 mod machines;
 mod open;
 mod picker;
+mod pin_backups;
 mod pins;
 mod platform;
 mod preview;

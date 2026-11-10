@@ -132,7 +132,7 @@ Everything works without configuration. Optional files:
 | File | What |
 |---|---|
 | `%APPDATA%\sentier\config.toml` | settings: hidden files, line numbers, timeouts, preview protocol, editor, `[jobs] robocopy_threads` / `keep_logs_days`, auth profiles, machine path templates |
-| `%APPDATA%\sentier\pins.toml` | pins, tags, saved views, sync and backup presets (managed from the app; hand edits load too) |
+| `%APPDATA%\sentier\pins.toml` | pins, tags, saved views, sync and backup presets (managed from the app; hand edits load too). Backed up automatically to `backups\` (one per editing session, the newest 5); `:pins restore` brings one back. |
 | `%APPDATA%\sentier\keymap.toml` | key remaps (vim notation, prepend / append per mode) |
 | `%APPDATA%\sentier\open.toml` | openers and the rules for `o` / `O` |
 

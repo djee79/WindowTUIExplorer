@@ -115,6 +115,7 @@ src/
     ops.rs           rename, mkdir, delete-to-recycle-bin
   locations.rs       Locations root: pinned folders, drives, saved shares
   pins.rs            the single store for pinned folders, files, apps, web apps; reachability probe
+  pin_backups.rs     pins.toml backups (one per editing session, newest 5) and `:pins restore`
   picker/
     mod.rs           generic Telescope-style picker: nucleo + preview pane + actions
     sources.rs       files (WalkParallel), dirs (frecency), pins, launcher, commands, grep
@@ -306,6 +307,15 @@ paths, tags are the main way to narrow things down.
   drivers (frecency) on top.
 - Editing happens **in the app**. The user should never have to edit TOML by hand
   (though hand edits must still load).
+- **Backups** (`pin_backups.rs`): before sentier writes `pins.toml` (the app or the CLI),
+  the file as it was goes to `%APPDATA%\sentier\backups\pins-YYYYMMDD-HHMMSS.toml`, at
+  most one per 10 minutes, so each backup is "before that editing session". The newest
+  5 are kept. `:pins restore` (also a launcher row) lists them; the preview says which
+  pins come back, go away or change. Enter asks, then backs up the current file
+  (always) and puts the chosen one in place. A backup that doesn't load can't be
+  restored.
+- Scale: 1000 pins are ~150 KB of TOML, written in ~1 ms and read and checked in ~4 ms
+  (measured 2026-11-09). One TOML file stays fine well past that.
 - Opening an unreachable `folder` pin shows a status message and stays put. It never hangs.
 
 ### 4. Copy / move jobs

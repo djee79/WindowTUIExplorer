@@ -254,7 +254,12 @@ impl App {
             Source::Launcher => Reopen::Launcher(p.editor.text()),
             Source::Tags => Reopen::Tags,
             Source::Machines => Reopen::Machines(p.editor.text()),
-            Source::Files | Source::Dirs | Source::Grep | Source::Commands | Source::Keymaps => {
+            Source::Files
+            | Source::Dirs
+            | Source::Grep
+            | Source::Commands
+            | Source::Keymaps
+            | Source::PinBackups => {
                 return None;
             }
         })
@@ -409,6 +414,12 @@ impl App {
         let Some(p) = self.picker.as_ref() else {
             return;
         };
+        if p.source == Source::PinBackups {
+            if let Some(idx) = p.selected().map(|i| i.id) {
+                self.ask_restore_pins(idx);
+            }
+            return;
+        }
         if p.source == Source::Tags {
             // The chosen tags (or the one under the cursor): pins with any of them.
             let mut tags: Vec<String> = p
@@ -556,6 +567,9 @@ impl App {
                 self.close_picker();
                 self.start_tag_rename(&name);
             }
+            ItemKind::Backup => {
+                self.set_status("a backup can't be edited: Enter restores it".into(), false);
+            }
             ItemKind::Machine
             | ItemKind::StartMenu
             | ItemKind::Action
@@ -572,6 +586,10 @@ impl App {
         let Some((kind, id, name)) = self.picker_selected() else {
             return;
         };
+        if kind == ItemKind::Backup {
+            // The newest five rotate out by themselves; none is deleted by hand here.
+            return self.set_status("backups rotate by themselves (newest 5 kept)".into(), false);
+        }
         if matches!(
             kind,
             ItemKind::Machine

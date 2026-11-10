@@ -232,7 +232,7 @@ Manual checklist:
 - [ ] `'` and wait: which-key lists the pins.
 - [ ] Quit and restart: pins are still there (`%APPDATA%\sentier\pins.toml`).
 - [ ] Hand-edit pins.toml with a typo'd pin: startup says so, the pin survives a save.
-- [ ] Pin `\10.255.255.1\x` (edit the file): × after ~2 s, `'key` stays put.
+- [ ] Pin `\\10.255.255.1\x` (edit the file): × after ~2 s, `'key` stays put.
 
 |delete`, saved views.
 
@@ -671,7 +671,7 @@ same folder by the nesting check.
 Manual checklist (office):
 - [ ] A real HIT → local preset in mirror: preview counts look right; Esc leaves D: untouched.
 - [ ] `u` then Enter: update run; local-only files survive. Mirror run: they're gone.
-- [ ] Preset on a dead share (`\10.255.255.1\x`): the dry run fails with ERROR 53 quickly
+- [ ] Preset on a dead share (`\\10.255.255.1\x`): the dry run fails with ERROR 53 quickly
       (no 30 s retries), UI responsive, Esc works while it runs.
 - [ ] `Shift-Enter` in WezTerm: does it arrive as Shift-Enter? (else `:sync!`).
 - [ ] `last:` line after a run, and again after restarting sentier.
@@ -1291,9 +1291,11 @@ unless `--threads` is given. The `/L` dry runs stay serial.
   the last `%` kept). The ACTIVITY line reads `big.bin (40 MB) and 12 files more`.
 - Fixtures recaptured with sentier's own arguments (`/MT:8 /NP /J`), plus `many` (300
   files across 8 threads; the counts match robocopy's summary) and `restartable`; `mt`
-  dropped (every copy fixture is `/MT` now). `unreachable` kept from before: in this
-  session `\10.255.255.1\x` resolved to a local `C:\10.255.255.1`, so it couldn't be
-  recaptured. Rerun `cargo run --example capture_robocopy -- unreachable` at work. The
+  dropped (every copy fixture is `/MT` now). `unreachable` too (exit 16 after ~20 s, one
+  `ERROR 53` creating the destination; the old capture had three). Its first recapture
+  went wrong: a shell heredoc turned the example's `\\10.255.255.1` into `\10.255.255.1`,
+  a path on the current drive, so robocopy copied into `C:\10.255.255.1`. Fixed in the
+  example. Write files with backslash paths with the editor tools, not heredocs. The
   `run.rs` tests that drive real robocopy now use `/MT:8` (locked-file retry, skip,
   pause).
 - **Measured on a NAS over 1 Gbit** (2026-11-09; folders of 0.4–10 MB files and a
@@ -1312,3 +1314,25 @@ unless `--threads` is given. The `/L` dry runs stay serial.
   other variant hits the link limit, so `/J` and the thread count make no measurable
   difference; they're kept for big files on faster links and for folders of many small
   files. Sub-second runs on small folders were noise and showed the NAS cache.
+
+## Pin backups and `:pins restore` (code complete 2026-11-09, manual check pending)
+
+The pins are hours of set-up, so `pins.toml` is now backed up (`src/pin_backups.rs`):
+
+- `pins::save` (the app's writer and the CLI) first copies the file as it was to
+  `%APPDATA%\sentier\backups\pins-YYYYMMDD-HHMMSS.toml`: at most one per 10 minutes
+  (so a burst of edits is one backup: "before that session"), never a copy of
+  unchanged text, the newest 5 kept. The time comes from the name; copying keeps the
+  source's modified time, so the file time can't be trusted.
+- `:pins restore`, or "+ Restore pins from a backup…" in the launcher: a "Pin backups"
+  picker, newest first (`2026-11-09 20:15 · 12 min ago`, `312 pins · 3 back · 1 gone`).
+  The preview lists the pins that come back, go away or change (by kind and name, any
+  case). Enter asks (the popup lists `+` / `−` / `~` names). Yes backs up the current
+  file (always, whatever its age), writes the backup in place, and the app takes the
+  restored pins at once. A backup that doesn't parse is shown but refused.
+- TOML at scale, measured (release, 1000 pins: a third each folders, apps, web apps, all
+  tagged, 200 with keys): 154 KB, written in ~1.1 ms, read and checked in ~3.5 ms. No
+  reason to move off one TOML file.
+
+Fixed along the way: the tag picker's preview still said "pins with all chosen" (it's
+any now).

@@ -314,6 +314,8 @@ pub enum Action {
     PinPicker,
     /// `<leader>t` / `:tags`: the tag picker.
     TagPicker,
+    /// `:pins restore`: bring pins.toml back from one of its backups.
+    PinsRestore,
     /// `<leader>m`: the machine picker (pinned, recent, inventory, `source_cmd`).
     MachinePicker,
     /// `Tab`: toggle the item under the cursor and move down.
@@ -479,6 +481,7 @@ const NAMED: &[(&str, Action)] = &[
     ("extract", Action::Extract),
     ("pin-picker", Action::PinPicker),
     ("tag-picker", Action::TagPicker),
+    ("pins-restore", Action::PinsRestore),
     ("machine-picker", Action::MachinePicker),
     ("toggle-select", Action::ToggleMark),
     ("visual", Action::Visual),
@@ -747,6 +750,13 @@ pub const COMMANDS: &[Command] = {
         ),
         cmd("tags", "", "the tag picker", PinsTags, Same),
         cmd(
+            "pins restore",
+            "",
+            "bring your pins back from a backup (the newest 5 are kept)",
+            PinsTags,
+            NoKey,
+        ),
+        cmd(
             "tag rename",
             "<old> <new>",
             "rename a tag on every pin",
@@ -985,9 +995,8 @@ impl Action {
             CopyPath | CopyUnc | CopyName | OpenWith | Reveal | ExplorerHere | Properties
             | TerminalHere | EditHere => Group::PathsWindows,
             JumpMark(_) | SetMark(_) | PinItem | EditPinTags | PinPicker | TagPicker
-            | PinUrl(_) | PinCwd | TagRename(..) | TagDelete(_) | ViewSave(_) | ViewDelete(_) => {
-                Group::PinsTags
-            }
+            | PinsRestore | PinUrl(_) | PinCwd | TagRename(..) | TagDelete(_) | ViewSave(_)
+            | ViewDelete(_) => Group::PinsTags,
             Locations | Machines | Downloads | Cd(_) | VolumeRoot | GotoPath | ToggleHidden
             | Help | Net(_) | Connect(_) => Group::GoTo,
             Launcher | FilesPicker | DirsPicker | GrepPicker | CommandsPicker | KeymapsPicker
@@ -1060,6 +1069,8 @@ impl Action {
                 Ok(Action::PinUrl(arg[3..].trim().to_string()))
             }
             "tags" if arg.is_empty() => Ok(Action::TagPicker),
+            "pins" if arg == "restore" => Ok(Action::PinsRestore),
+            "pins" => Err("pins restore: bring your pins back from a backup".to_string()),
             "tag" => {
                 let words: Vec<&str> = arg.split_whitespace().collect();
                 match words.as_slice() {
@@ -1740,6 +1751,7 @@ mod tests {
             ("set nonumber", Action::SetNumber(false)),
             ("pin", Action::PinCwd),
             ("tags", Action::TagPicker),
+            ("pins restore", Action::PinsRestore),
             (
                 "tag rename aveva e3d",
                 Action::TagRename("aveva".into(), "e3d".into()),
@@ -1782,8 +1794,16 @@ mod tests {
             h,
             ["pin url [URL] — pin a web app (opens as its own window)"]
         );
-        assert_eq!(command_hints("pin").len(), 2, "pin and pin url");
-        assert_eq!(command_hints("pi").len(), 7, "and the 5 pickers");
+        assert_eq!(
+            command_hints("pin").len(),
+            3,
+            "pin, pin url and pins restore"
+        );
+        assert_eq!(
+            command_hints("pi").len(),
+            8,
+            "and the 5 pickers, and pins restore"
+        );
         // A name typed after the command still shows its family.
         assert!(
             command_hints("sync HIT")

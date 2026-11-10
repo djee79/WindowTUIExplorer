@@ -107,6 +107,10 @@ pub enum AppEvent {
     StartMenu(crate::launcher::startmenu::Apps),
     /// pins.toml was changed by something else (`sentier pin`, an editor): read again.
     PinsChanged(crate::pins::PinStore),
+    /// `:pins restore`: the backups of pins.toml, newest first, each compared with now.
+    PinBackups(Vec<crate::pin_backups::Listed>),
+    /// A backup is now pins.toml: the store it holds and when it was taken; or why not.
+    PinsRestored(Result<(crate::pins::PinStore, String), String>),
     /// Month and weekday names in the Windows user's language (rename tokens).
     LocaleNames(Box<crate::rename::tokens::Names>),
     /// The bulk rename's saved presets (or why rename.toml won't load) and its memory.

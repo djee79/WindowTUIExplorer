@@ -1093,9 +1093,11 @@ mod tests {
 
         let (t, code) = track("unreachable", false);
         assert_eq!(code, 16);
-        // File system type, Accessing and Creating the destination: once each despite
-        // the retries.
-        assert_eq!(t.errors.len(), 3, "{:#?}", t.errors);
+        // With /R:0 robocopy gives up at once: one error, creating the destination
+        // (captured 2026-11-09 against a non-routable host; it took ~20 s).
+        assert_eq!(t.errors.len(), 1, "{:#?}", t.errors);
+        assert_eq!(t.errors[0].action, "Creating Destination Directory");
+        assert_eq!(t.files_done, 0);
         assert!(t.errors.iter().all(|e| e.code == 53
             && e.path.as_deref() == Some(r"\\10.255.255.1\x\dest\")
             && e.message == "The network path was not found."));

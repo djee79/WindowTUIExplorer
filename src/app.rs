@@ -21,6 +21,7 @@ pub use open::OpenMenu;
 mod pick;
 mod picker;
 mod pins;
+mod pins_restore;
 mod places;
 mod rename;
 pub use rename::{Field as RenameField, RenamePanel};
@@ -259,6 +260,8 @@ pub struct App {
     picker_pending: Option<picker::PickerPending>,
     /// The pin picker's query when it last closed, for `:view save`.
     last_picker_query: String,
+    /// `:pins restore`: the backups shown in its picker (row ids index this).
+    pin_backups: Vec<crate::pin_backups::Listed>,
     /// A y/n question pending (`:tag rename`, deleting a view…), and view / tag edits.
     confirm: Option<tags::Confirm>,
     view_draft: Option<tags::ViewDraft>,
@@ -447,6 +450,7 @@ impl App {
             picker_count: None,
             picker_pending: None,
             last_picker_query: String::new(),
+            pin_backups: Vec::new(),
             confirm: None,
             view_draft: None,
             tag_draft: None,
@@ -1196,6 +1200,8 @@ impl App {
                 self.pins_pending = Some(store);
                 self.apply_pending_pins();
             }
+            AppEvent::PinBackups(found) => self.on_pin_backups(found),
+            AppEvent::PinsRestored(result) => self.on_pins_restored(result),
             AppEvent::WtmFound { result, offer } => self.on_wtm_found(result, offer),
             AppEvent::StartMenu(apps) => self.on_start_menu(apps),
             AppEvent::Registered { ext, registered } => self.on_registered(ext, registered),
@@ -3029,6 +3035,66 @@ mod pin_tests {
         assert_eq!(app.pins.tag_count("servers"), 1, "n keeps it");
         press(&mut app, ":tag delete nope<CR>");
         assert!(status(&app).contains("no pin is tagged #nope"));
+    }
+
+    /// `:pins restore` with backups: a picker of them, the preview's difference, and a
+    /// question that says what changes before anything is touched. (The file swap
+    /// itself is tested in `pin_backups`, away from the store the app tests share.)
+    #[test]
+    fn pins_restore_lists_backups_and_asks_first() {
+        let (mut app, _rt) = two_pins();
+        let at = |s: &str| {
+            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").unwrap_or_default()
+        };
+        let diff = crate::pin_backups::Diff {
+            pins: 3,
+            now: 2,
+            back: vec!["Old share".into()],
+            gone: vec![],
+            changed: vec![],
+        };
+        let listed = |when: &str, diff| crate::pin_backups::Listed {
+            backup: crate::pin_backups::Backup {
+                path: std::path::PathBuf::from(r"C:\nowhere\pins-x.toml"),
+                taken: at(when),
+            },
+            diff,
+        };
+        app.handle(AppEvent::PinBackups(vec![
+            listed("2026-11-09 20:00", Ok(diff)),
+            listed("2026-11-08 09:00", Err("bad toml".into())),
+        ]));
+        settle(&mut app);
+        assert_eq!(app.mode, Mode::Picker);
+        let rows: Vec<String> = app
+            .picker
+            .as_ref()
+            .map(|p| p.view.iter().map(|i| i.detail.clone()).collect())
+            .unwrap_or_default();
+        assert_eq!(rows, ["3 pins · 1 back", "doesn't load: bad toml"]);
+        press(&mut app, "<CR>");
+        assert!(
+            prompt_note(&app).contains("Restore the pins from 2026-11-09 20:00")
+                && prompt_note(&app).contains("1 back")
+                && prompt_note(&app).contains("backed up first"),
+            "{}",
+            prompt_note(&app)
+        );
+        press(&mut app, "n");
+        assert_eq!(app.pins.pins.len(), 2, "no: nothing changed");
+
+        // A backup that doesn't load can't be chosen.
+        app.handle(AppEvent::PinBackups(vec![listed(
+            "2026-11-08 09:00",
+            Err("bad toml".into()),
+        )]));
+        settle(&mut app);
+        press(&mut app, "<CR>");
+        assert!(status(&app).contains("doesn't load"), "{}", status(&app));
+        // None yet: says where they'll be.
+        press(&mut app, "<Esc>q");
+        app.handle(AppEvent::PinBackups(Vec::new()));
+        assert!(status(&app).contains("no pin backups yet"));
     }
 
     #[test]

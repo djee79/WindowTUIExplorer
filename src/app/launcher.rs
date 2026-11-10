@@ -33,6 +33,7 @@ pub const ACTIONS: &[(&str, &str)] = &[
         "+ Add a machine (user PC)…",
         "a in gm · Space m, then a name",
     ),
+    ("+ Restore pins from a backup…", ":pins restore"),
 ];
 
 impl App {
@@ -75,6 +76,7 @@ impl App {
             3 => self.sync_command("new", false),
             4 => self.backup_command("new"),
             5 => self.ask_machine_name(""),
+            6 => self.open_pin_backups(),
             _ => {}
         }
     }
