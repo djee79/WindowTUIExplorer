@@ -5,8 +5,9 @@
 //!   with any motion; `y` yanks, `x` cuts, `d` / `D` delete it, `Esc` / `v` leave. Plain `Esc` clears the
 //!   selection.
 //! - `yy` / `x` put the selection (or the visual range, or `n` items from the cursor)
-//!   in the register as a copy / a move. `p` pastes into the current folder without
-//!   replacing anything; `P` replaces what's there (asks first). A cut is pasted once.
+//!   in the register as a copy / a move. `p` pastes into the current folder; when names
+//!   are already there it asks: keep both (`report_1.pdf`), overwrite, or skip them.
+//!   `P` replaces what's there (asks first). A cut is pasted once.
 //! - A paste is a job: robocopy for folders and big files, native copies for small files,
 //!   a rename for a move on one volume. Folders that look like an AVEVA project ask first.
 //! - `J` (or `<leader>j`) shows the jobs: `j`/`k` pick, `c` cancels, `r` retries the
@@ -17,7 +18,7 @@ use super::keys::PromptKind;
 use super::tags::Confirm;
 use super::{App, Mode};
 use crate::fs::EntryKind;
-use crate::fs::path::Loc;
+use crate::fs::path::{FsPath, Loc};
 use crate::jobs::robocopy::Overwrite;
 use crate::jobs::run::Spec;
 use crate::jobs::{self, Backend, Item, Job, JobEvent, Op, Phase, Plan, Report, Request};
@@ -44,6 +45,30 @@ pub struct PendingPaste {
     pub token: u64,
     pub req: Request,
     pub plan: Plan,
+    /// The clash popup was answered (an overwrite isn't asked about again).
+    pub asked: bool,
+}
+
+/// `p` found names already in the destination: the popup's answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClashAnswer {
+    /// The new ones get a number (`report_1.pdf`, `HIT_1`).
+    KeepBoth,
+    /// Files replaced, folders merged.
+    Overwrite,
+    /// Leave those out, paste the rest.
+    Skip,
+}
+
+/// A `p` waiting for the clash popup.
+#[derive(Debug, Clone)]
+pub struct PasteClash {
+    op: Op,
+    items: Vec<Item>,
+    dest: FsPath,
+    taken: Vec<String>,
+    /// Indices into `items` whose name is already there.
+    clashes: Vec<usize>,
 }
 
 fn items_word(n: usize) -> String {
@@ -241,41 +266,148 @@ impl App {
         if reg.op == Op::Copy {
             self.last_paste = Some((reg.clone(), overwrite));
         }
-        // A copy pasted beside its original gets a free name (`report_1.pdf`). Such files
-        // go natively and folders through robocopy, so a mix is two jobs.
-        let in_place = |i: &Item| !i.is_dir && jobs::in_folder(i, &dest);
-        let groups: Vec<Vec<Item>> = if reg.op == Op::Copy
-            && reg.items.iter().any(in_place)
-            && reg.items.iter().any(|i| i.is_dir)
-        {
-            let (files, dirs): (Vec<Item>, Vec<Item>) =
-                reg.items.into_iter().partition(|i| !i.is_dir);
-            vec![dirs, files]
-        } else {
-            vec![reg.items]
-        };
         let taken: Vec<String> = self
             .view_listing
             .as_ref()
             .map(|l| l.entries.iter().map(|e| e.name.clone()).collect())
             .unwrap_or_default();
-        for items in groups {
-            let req = Request {
-                op: reg.op,
-                items,
-                dest: dest.clone(),
-                overwrite: if overwrite {
-                    Overwrite::Always
-                } else {
-                    Overwrite::Never
-                },
-            };
-            self.paste_request(req, &taken);
+        if overwrite {
+            return self.paste_items(reg.op, reg.items, dest, Overwrite::Always, &taken, false);
+        }
+        // Names already here: ask (keep both, overwrite, skip) before anything runs.
+        let probe = Request {
+            op: reg.op,
+            items: reg.items.clone(),
+            dest: dest.clone(),
+            overwrite: Overwrite::Never,
+        };
+        let clashes = jobs::clashes(&probe, &taken);
+        if clashes.is_empty() {
+            return self.paste_items(reg.op, reg.items, dest, Overwrite::Never, &taken, false);
+        }
+        self.paste_clash = Some(PasteClash {
+            op: reg.op,
+            items: reg.items,
+            dest,
+            taken,
+            clashes,
+        });
+        self.open_prompt_with(PromptKind::PasteClash, "");
+        // Keep both is the default: Enter alone never replaces anything.
+        if let Some(p) = self.prompt.as_mut() {
+            p.yes = true;
+        }
+    }
+
+    /// The popup when names are already in the destination.
+    pub(super) fn paste_clash_dialog(&self, keep_both: bool) -> Option<super::DialogView> {
+        let c = self.paste_clash.as_ref()?;
+        let names: Vec<String> = c.clashes.iter().map(|&i| c.items[i].path.name()).collect();
+        let used: std::collections::HashSet<String> =
+            c.taken.iter().map(|t| t.to_lowercase()).collect();
+        let first = &c.items[c.clashes[0]];
+        let example = format!(
+            "{} → {}",
+            names[0],
+            jobs::free_name(&names[0], first.is_dir, &used)
+        );
+        let what = match (names.as_slice(), c.items.len()) {
+            ([one], _) => format!("{one} is already in {}.", c.dest.name()),
+            (many, total) => format!(
+                "{} of {total} names are already in {}.",
+                many.len(),
+                c.dest.name()
+            ),
+        };
+        Some(super::DialogView {
+            title: format!("{} here", if c.op == Op::Move { "Move" } else { "Paste" }),
+            message: format!(
+                "{what} Keep both (the new ones get a number: {example}), overwrite \
+                 (files replaced, folders merged), or skip them?"
+            ),
+            items: names,
+            danger: false,
+            yes: keep_both,
+            buttons: ["Keep both", "Overwrite"],
+            keys: "k keep both · o overwrite · s skip · Esc cancel · h/l Tab · Enter",
+        })
+    }
+
+    /// The answer to the clash popup; `None` cancels the paste.
+    pub(super) fn paste_clash_answer(&mut self, answer: Option<ClashAnswer>) {
+        let Some(c) = self.paste_clash.take() else {
+            return;
+        };
+        let PasteClash {
+            op,
+            mut items,
+            dest,
+            taken,
+            clashes,
+        } = c;
+        match answer {
+            None => self.set_status("nothing pasted".into(), false),
+            Some(ClashAnswer::KeepBoth) => {
+                self.paste_items(op, items, dest, Overwrite::Never, &taken, true);
+            }
+            Some(ClashAnswer::Overwrite) => {
+                self.paste_items(op, items, dest, Overwrite::Always, &taken, true);
+            }
+            Some(ClashAnswer::Skip) => {
+                let skipped = clashes.len();
+                let mut i = 0;
+                items.retain(|_| {
+                    i += 1;
+                    !clashes.contains(&(i - 1))
+                });
+                if items.is_empty() {
+                    let what = if skipped == 1 {
+                        "it's".to_string()
+                    } else {
+                        format!("all {skipped} are")
+                    };
+                    return self.set_status(
+                        format!("nothing pasted: {what} already in {}", dest.name()),
+                        false,
+                    );
+                }
+                self.paste_items(op, items, dest, Overwrite::Never, &taken, true);
+            }
+        }
+    }
+
+    /// Plans and starts the paste of `items` into `dest`. Files that get a new name go
+    /// natively and folders through robocopy, so a mix is two jobs. `asked`: the clash
+    /// popup already said what happens to names already there.
+    fn paste_items(
+        &mut self,
+        op: Op,
+        items: Vec<Item>,
+        dest: FsPath,
+        overwrite: Overwrite,
+        taken: &[String],
+        asked: bool,
+    ) {
+        let request = |items: Vec<Item>| Request {
+            op,
+            items,
+            dest: dest.clone(),
+            overwrite,
+        };
+        let all = request(items.clone());
+        let reqs = if jobs::needs_split(&all, taken) {
+            let (files, dirs): (Vec<Item>, Vec<Item>) = items.into_iter().partition(|i| !i.is_dir);
+            vec![request(dirs), request(files)]
+        } else {
+            vec![all]
+        };
+        for req in reqs {
+            self.paste_request(req, taken, asked);
         }
     }
 
     /// Plans one paste, checks its folders for AVEVA projects, then asks or starts.
-    fn paste_request(&mut self, req: Request, taken: &[String]) {
+    fn paste_request(&mut self, req: Request, taken: &[String], asked: bool) {
         let native_max = self
             .config
             .jobs
@@ -293,11 +425,16 @@ impl App {
             .map(|i| i.path.display())
             .collect();
         if dirs.is_empty() {
-            return self.confirm_paste(req, plan, Vec::new());
+            return self.confirm_paste(req, plan, Vec::new(), asked);
         }
         self.paste_token += 1;
         let token = self.paste_token;
-        self.pending_paste = Some(PendingPaste { token, req, plan });
+        self.pending_paste = Some(PendingPaste {
+            token,
+            req,
+            plan,
+            asked,
+        });
         self.set_status("checking the folders…".into(), false);
         self.worker
             .aveva_check(token, dirs, self.config.aveva_markers());
@@ -311,11 +448,12 @@ impl App {
             self.pending_paste = Some(p);
             return;
         }
-        self.confirm_paste(p.req, p.plan, hits);
+        self.confirm_paste(p.req, p.plan, hits, p.asked);
     }
 
-    /// Asks when it replaces files (`P`) or touches an AVEVA project; else starts.
-    fn confirm_paste(&mut self, req: Request, plan: Plan, aveva: Vec<String>) {
+    /// Asks when it replaces files (`P`; not again after the clash popup's Overwrite) or
+    /// touches an AVEVA project; else starts.
+    fn confirm_paste(&mut self, req: Request, plan: Plan, aveva: Vec<String>, asked: bool) {
         let mut why = Vec::new();
         if let Some(prefix) = self.admin_prefix() {
             why.push(format!("{prefix}{} {} here.", req.op.word(), plan.title));
@@ -330,7 +468,7 @@ impl App {
                 names.join(", ")
             ));
         }
-        if req.overwrite == Overwrite::Always {
+        if req.overwrite == Overwrite::Always && !asked {
             why.push(format!(
                 "{} {}: files already in {} are REPLACED.",
                 req.op.word(),

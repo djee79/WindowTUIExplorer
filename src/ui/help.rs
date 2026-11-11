@@ -2,9 +2,7 @@
 //! `crate::help` (built from the live keymap); this file only draws it: key chips,
 //! sections in balanced columns, the `:` commands beside them, the filter box, the legend.
 
-use super::theme::{
-    self, ACCENT, BAR_BG, BORDER, CMD, DIM, DIR, FG, NET, OK, PANEL_BG, SEL_BG, WARN,
-};
+use super::theme;
 use super::{truncate, width};
 use crate::app::App;
 use crate::help::{self, Chip, CmdRow, Column, HelpData, KeyRow, Rows};
@@ -36,14 +34,14 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
             .key
             .as_deref()
             .and_then(theme::parse_hex)
-            .unwrap_or(ACCENT),
+            .unwrap_or(theme::pal().accent),
         header: app
             .config
             .theme
             .header
             .as_deref()
             .and_then(theme::parse_hex)
-            .unwrap_or(DIR),
+            .unwrap_or(theme::pal().dir),
     };
     let query = h.filter.text();
     let data = h.shown();
@@ -60,17 +58,20 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     }
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(theme::fg(BORDER))
-        .style(Style::new().bg(PANEL_BG).fg(FG))
+        .border_style(theme::fg(theme::pal().border))
+        .style(Style::new().bg(theme::pal().panel_bg).fg(theme::pal().fg))
         .title(Line::from(vec![
-            Span::styled("─ ", theme::fg(BORDER)),
+            Span::styled("─ ", theme::fg(theme::pal().border)),
             Span::styled("help", theme::bold(colors.header)),
             Span::styled(
                 format!(" · {} keys, {} commands ", h.data.keys, h.data.commands),
                 theme::dim(),
             ),
         ]))
-        .title(Line::from(Span::styled(" sentier ─", theme::bold(ACCENT))).right_aligned())
+        .title(
+            Line::from(Span::styled(" sentier ─", theme::bold(theme::pal().accent)))
+                .right_aligned(),
+        )
         .title_bottom(Line::from(Span::styled(
             match (h.typing, outer.width >= 130) {
                 (true, true) => " Esc / ↵ leave the filter · C-n C-p scroll ",
@@ -83,7 +84,10 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         .title_bottom(
             Line::from(vec![
                 Span::styled(" remap in ", theme::dim()),
-                Span::styled("%APPDATA%\\sentier\\keymap.toml", theme::fg(OK)),
+                Span::styled(
+                    "%APPDATA%\\sentier\\keymap.toml",
+                    theme::fg(theme::pal().ok),
+                ),
                 Span::raw(" "),
             ])
             .right_aligned(),
@@ -108,8 +112,12 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     };
     let fblock = Block::bordered()
         .border_type(BorderType::Plain)
-        .border_style(theme::fg(if h.typing { ACCENT } else { BORDER }))
-        .style(Style::new().bg(BAR_BG));
+        .border_style(theme::fg(if h.typing {
+            theme::pal().accent
+        } else {
+            theme::pal().border
+        }))
+        .style(Style::new().bg(theme::pal().bar_bg));
     let typed = if query.is_empty() && !h.typing {
         Line::from(vec![
             Span::styled("/ ", theme::bold(colors.key)),
@@ -118,8 +126,11 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     } else {
         Line::from(vec![
             Span::styled("/ ", theme::bold(colors.key)),
-            Span::styled(query.clone(), theme::fg(FG)),
-            Span::styled(if h.typing { "▏" } else { "" }, theme::fg(ACCENT)),
+            Span::styled(query.clone(), theme::fg(theme::pal().fg)),
+            Span::styled(
+                if h.typing { "▏" } else { "" },
+                theme::fg(theme::pal().accent),
+            ),
         ])
     };
     f.render_widget(Paragraph::new(typed).block(fblock), filter_area);
@@ -171,7 +182,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         for (ci, c) in cols.iter().enumerate() {
             if ci > 0 {
                 if c.commands {
-                    spans.push(Span::styled("   │   ", theme::fg(BORDER)));
+                    spans.push(Span::styled("   │   ", theme::fg(theme::pal().border)));
                 } else {
                     spans.push(Span::raw(" ".repeat(help::GAP)));
                 }
@@ -208,7 +219,7 @@ fn legend_line(c: &Colors) -> Line<'static> {
     let k = |s: &'static str| Span::styled(s, theme::bold(c.key));
     let d = |s: &'static str| Span::styled(s, theme::dim());
     Line::from(vec![
-        Span::styled("␣", theme::bold(NET)),
+        Span::styled("␣", theme::bold(theme::pal().net)),
         d(" leader (Space)   "),
         k("C-"),
         d(" Ctrl   "),
@@ -229,14 +240,18 @@ fn column_lines(data: &HelpData, col: &Column, c: &Colors, q: &str) -> Vec<Line<
         if n > 0 {
             out.push(Line::default());
         }
-        let color = if s.is_commands() { CMD } else { c.header };
+        let color = if s.is_commands() {
+            theme::pal().cmd
+        } else {
+            c.header
+        };
         let tw = width(s.title);
         out.push(Line::from(vec![
             Span::styled(s.title.to_string(), theme::bold(color)),
             Span::raw(" "),
             Span::styled(
                 "─".repeat(col.width.saturating_sub(tw + 1)),
-                theme::fg(BORDER),
+                theme::fg(theme::pal().border),
             ),
         ]));
         match &s.rows {
@@ -256,10 +271,13 @@ fn column_lines(data: &HelpData, col: &Column, c: &Colors, q: &str) -> Vec<Line<
 }
 
 fn chip_spans(ch: &Chip, c: &Colors) -> Vec<Span<'static>> {
-    let bg = Style::new().bg(SEL_BG);
+    let bg = Style::new().bg(theme::pal().sel_bg);
     let mut v = vec![Span::styled(" ", bg)];
     if ch.leader {
-        v.push(Span::styled("␣", bg.fg(NET).add_modifier(Modifier::BOLD)));
+        v.push(Span::styled(
+            "␣",
+            bg.fg(theme::pal().net).add_modifier(Modifier::BOLD),
+        ));
     }
     v.push(Span::styled(
         ch.text.clone(),
@@ -280,7 +298,7 @@ fn marked(text: &str, style: Style, q: &str) -> Vec<Span<'static>> {
         return vec![Span::styled(text.to_string(), style)];
     }
     let hl = style
-        .fg(WARN)
+        .fg(theme::pal().warn)
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
     let mut out = Vec::new();
     let mut at = 0;
@@ -323,9 +341,9 @@ fn key_row(r: &KeyRow, w: usize, c: &Colors, q: &str) -> Vec<Line<'static>> {
                 spans.push(Span::raw(" "));
             }
             let style = if word >= desc_words {
-                theme::fg(DIM)
+                theme::fg(theme::pal().dim)
             } else {
-                theme::fg(FG)
+                theme::fg(theme::pal().fg)
             };
             spans.extend(marked(wd, style, q));
             word += 1;
@@ -346,19 +364,19 @@ fn cmd_row(r: &CmdRow, w: usize, q: &str) -> Vec<Line<'static>> {
         let mut spans: Vec<Span> = Vec::new();
         let mut used = 0;
         if i == 0 {
-            spans.extend(marked(&r.name, theme::bold(CMD), q));
+            spans.extend(marked(&r.name, theme::bold(theme::pal().cmd), q));
             used += width(&r.name);
             if !r.args.is_empty() {
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled(
                     r.args.clone(),
-                    theme::fg(NET).add_modifier(Modifier::ITALIC),
+                    theme::fg(theme::pal().net).add_modifier(Modifier::ITALIC),
                 ));
                 used += 1 + width(&r.args);
             }
         }
         spans.push(Span::raw(" ".repeat(start.saturating_sub(used))));
-        spans.extend(marked(text, theme::fg(FG), q));
+        spans.extend(marked(text, theme::fg(theme::pal().fg), q));
         if i == 0 && !hint.is_empty() {
             let pad = w.saturating_sub(start + width(text) + width(&hint));
             spans.push(Span::raw(" ".repeat(pad)));

@@ -1,7 +1,7 @@
 //! Top bar (badge + path) and the two-line footer (status, key hints),
 //! per docs/screens/01-main.txt. The jobs line joins the footer in M4.
 
-use super::theme::{self, ACCENT, BAR_BG, ERR, FG, NET, OK, ON_ACCENT, WARN};
+use super::theme;
 use super::{human_size, spinner, thousands, truncate_left, width};
 use crate::app::{App, Mode, Prompt, PromptKind, SearchState};
 use std::time::Duration;
@@ -166,7 +166,8 @@ fn bar(f: &mut Frame, area: Rect, left: Vec<Span<'static>>, right: Vec<Span<'sta
     ));
     spans.extend(right);
     f.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::new().bg(BAR_BG).fg(FG)),
+        Paragraph::new(Line::from(spans))
+            .style(Style::new().bg(theme::pal().bar_bg).fg(theme::pal().fg)),
         area,
     );
 }
@@ -178,7 +179,7 @@ fn draw_search_header(f: &mut Frame, area: Rect, app: &App, s: &SearchState) {
     if s.running() {
         right.push(Span::styled(
             format!("{}  ", spinner(app)),
-            theme::fg(ACCENT),
+            theme::fg(theme::pal().accent),
         ));
     }
     if stalled {
@@ -187,7 +188,7 @@ fn draw_search_header(f: &mut Frame, area: Rect, app: &App, s: &SearchState) {
                 "⚠ no answer for {:.0} s   ",
                 s.last_progress.elapsed().as_secs_f32()
             ),
-            theme::fg(theme::WARN),
+            theme::fg(theme::pal().warn),
         ));
     }
     right.push(Span::styled(
@@ -206,12 +207,16 @@ fn draw_search_header(f: &mut Frame, area: Rect, app: &App, s: &SearchState) {
         &s.origin.display(),
         (area.width as usize).saturating_sub(rw + tw + 24 + width(&s.query)),
     );
-    let color = if s.origin.is_network() { NET } else { FG };
-    let mut left = vec![badge(" sentier ", ACCENT), Span::raw("  ")];
+    let color = if s.origin.is_network() {
+        theme::pal().net
+    } else {
+        theme::pal().fg
+    };
+    let mut left = vec![badge(" sentier ", theme::pal().accent), Span::raw("  ")];
     left.extend(tabs);
     left.extend([
         Span::styled(if s.content { "grep " } else { "search " }, theme::dim()),
-        Span::styled(format!("\"{}\"", s.query), theme::bold(ACCENT)),
+        Span::styled(format!("\"{}\"", s.query), theme::bold(theme::pal().accent)),
         Span::styled("  in  ", theme::dim()),
         Span::styled(origin, theme::bold(color)),
     ]);
@@ -226,7 +231,7 @@ pub fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     if app.is_busy() {
         right.push(Span::styled(
             format!("{}  ", spinner(app)),
-            theme::fg(ACCENT),
+            theme::fg(theme::pal().accent),
         ));
     }
     if app.at_root()
@@ -237,18 +242,21 @@ pub fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     if let Some(server) = server_of(&app.cwd) {
         // Reachability of the cwd, as far as its last listing tells.
         let (dot, color) = match app.dir(&app.cwd) {
-            Some(s) if s.error.is_some() => ("×", ERR),
-            Some(s) if s.listing.is_some() => ("●", OK),
-            _ => ("○", theme::DIM),
+            Some(s) if s.error.is_some() => ("×", theme::pal().err),
+            Some(s) if s.listing.is_some() => ("●", theme::pal().ok),
+            _ => ("○", theme::pal().dim),
         };
         right.push(Span::styled(dot, theme::fg(color)));
-        right.push(Span::styled(format!("  {server}  "), theme::fg(NET)));
+        right.push(Span::styled(
+            format!("  {server}  "),
+            theme::fg(theme::pal().net),
+        ));
     }
     let badge = Span::styled(
         " sentier ",
         Style::new()
-            .bg(ACCENT)
-            .fg(ON_ACCENT)
+            .bg(theme::pal().accent)
+            .fg(theme::pal().on_accent)
             .add_modifier(Modifier::BOLD),
     );
     let rw: usize = right.iter().map(|s| s.width()).sum();
@@ -269,8 +277,8 @@ pub fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         left.push(Span::styled(
             banner,
             Style::new()
-                .bg(ERR)
-                .fg(ON_ACCENT)
+                .bg(theme::pal().err)
+                .fg(theme::pal().on_accent)
                 .add_modifier(Modifier::BOLD),
         ));
         left.push(Span::raw("  "));
@@ -283,17 +291,24 @@ pub fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         left.push(Span::styled(
             head,
             Style::new()
-                .bg(WARN)
-                .fg(ON_ACCENT)
+                .bg(theme::pal().warn)
+                .fg(theme::pal().on_accent)
                 .add_modifier(Modifier::BOLD),
         ));
-        left.push(Span::styled(format!("  {ask}"), theme::bold(WARN)));
+        left.push(Span::styled(
+            format!("  {ask}"),
+            theme::bold(theme::pal().warn),
+        ));
     }
     let path = truncate_left(
         &app.cwd.display(),
         (area.width as usize).saturating_sub(rw + used),
     );
-    let path_color = if app.cwd.is_network() { NET } else { FG };
+    let path_color = if app.cwd.is_network() {
+        theme::pal().net
+    } else {
+        theme::pal().fg
+    };
     left.push(Span::styled(path, theme::bold(path_color)));
     bar(f, area, left, right);
 }
@@ -315,7 +330,7 @@ fn badge(text: &'static str, bg: ratatui::style::Color) -> Span<'static> {
         text,
         Style::new()
             .bg(bg)
-            .fg(ON_ACCENT)
+            .fg(theme::pal().on_accent)
             .add_modifier(Modifier::BOLD),
     )
 }
@@ -330,10 +345,13 @@ fn prompt_spans(p: &Prompt) -> Vec<Span<'static>> {
         None => (" ".to_string(), String::new()),
     };
     let mut spans = vec![
-        Span::styled(p.prefix(), theme::bold(ACCENT)),
-        Span::styled(before, theme::fg(FG)),
-        Span::styled(under, Style::new().fg(BAR_BG).bg(FG)),
-        Span::styled(after, theme::fg(FG)),
+        Span::styled(p.prefix(), theme::bold(theme::pal().accent)),
+        Span::styled(before, theme::fg(theme::pal().fg)),
+        Span::styled(
+            under,
+            Style::new().fg(theme::pal().bar_bg).bg(theme::pal().fg),
+        ),
+        Span::styled(after, theme::fg(theme::pal().fg)),
     ];
     if !p.note.is_empty() {
         spans.push(Span::styled(format!("   {}", p.note), theme::dim()));
@@ -351,12 +369,12 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     if let (Mode::Rename, Some(p)) = (app.mode, app.rename_panel.as_ref()) {
         let (b, text) = if p.normal {
             (
-                badge(" OPTIONS ", ACCENT),
+                badge(" OPTIONS ", theme::pal().accent),
                 "  letters toggle options  ·  jk move  ·  Space include/exclude  ·  i/Tab type  ·  ^s save preset  ·  ^o presets  ·  Enter apply  ·  q close",
             )
         } else {
             (
-                badge(" INSERT ", OK),
+                badge(" INSERT ", theme::pal().ok),
                 "  preview updates as you type  ·  Tab next field  ·  ^p/^n history  ·  ^s/^o presets  ·  Esc options  ·  Enter apply",
             )
         };
@@ -367,7 +385,14 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     }
     // A yes/no popup is up: the status line just says how to answer it.
     if let (Mode::Prompt, Some(d)) = (app.mode, app.dialog_view()) {
-        left.push(badge(" CONFIRM ", if d.danger { ERR } else { ACCENT }));
+        left.push(badge(
+            " CONFIRM ",
+            if d.danger {
+                theme::pal().err
+            } else {
+                theme::pal().accent
+            },
+        ));
         left.push(Span::styled(
             format!(
                 "  {}  ·  Enter presses the highlighted one",
@@ -380,8 +405,8 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     }
     if let (Mode::Prompt, Some(p)) = (app.mode, &app.prompt) {
         left.push(match p.editor.mode {
-            EditMode::Insert => badge(" INSERT ", OK),
-            EditMode::Normal => badge(" NORMAL ", ACCENT),
+            EditMode::Insert => badge(" INSERT ", theme::pal().ok),
+            EditMode::Normal => badge(" NORMAL ", theme::pal().accent),
         });
         left.push(Span::raw("  "));
         left.extend(prompt_spans(p));
@@ -389,7 +414,7 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
     if app.mode == Mode::Credentials {
-        left.push(badge(" INSERT ", OK));
+        left.push(badge(" INSERT ", theme::pal().ok));
         left.push(Span::raw("  "));
         left.push(Span::styled(
             "credential prompt  ·  masked  ·  paste allowed",
@@ -399,10 +424,17 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
     if app.mode == Mode::Preview {
-        left.push(badge(" PREVIEW ", ACCENT));
+        left.push(badge(" PREVIEW ", theme::pal().accent));
         left.push(Span::raw("  "));
         let msg = match &app.status {
-            Some(s) => Span::styled(s.text.clone(), theme::fg(if s.is_error { ERR } else { FG })),
+            Some(s) => Span::styled(
+                s.text.clone(),
+                theme::fg(if s.is_error {
+                    theme::pal().err
+                } else {
+                    theme::pal().fg
+                }),
+            ),
             None => Span::styled(
                 format!("full screen  ·  zoom {} %", app.zoom()),
                 theme::dim(),
@@ -414,12 +446,19 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     }
     if let (Mode::Picker, Some(p)) = (app.mode, &app.picker) {
         left.push(match p.mode {
-            crate::picker::PickerMode::Insert => badge(" INSERT ", OK),
-            crate::picker::PickerMode::Normal => badge(" NORMAL ", ACCENT),
+            crate::picker::PickerMode::Insert => badge(" INSERT ", theme::pal().ok),
+            crate::picker::PickerMode::Normal => badge(" NORMAL ", theme::pal().accent),
         });
         left.push(Span::raw("  "));
         let msg = match &app.status {
-            Some(s) => Span::styled(s.text.clone(), theme::fg(if s.is_error { ERR } else { FG })),
+            Some(s) => Span::styled(
+                s.text.clone(),
+                theme::fg(if s.is_error {
+                    theme::pal().err
+                } else {
+                    theme::pal().fg
+                }),
+            ),
             None => Span::styled(
                 format!("pins  ·  one store: pins.toml  ·  {} pins", p.total()),
                 theme::dim(),
@@ -430,12 +469,16 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
     if app.mode == Mode::Jobs {
-        left.push(badge(" JOBS ", ACCENT));
+        left.push(badge(" JOBS ", theme::pal().accent));
         left.push(Span::raw("  "));
         match &app.status {
             Some(s) => left.push(Span::styled(
                 s.text.clone(),
-                theme::fg(if s.is_error { ERR } else { FG }),
+                theme::fg(if s.is_error {
+                    theme::pal().err
+                } else {
+                    theme::pal().fg
+                }),
             )),
             None => {
                 left.extend(super::jobs::summary_spans(app));
@@ -454,21 +497,25 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
     if app.visual.is_some() {
-        left.push(badge(" VISUAL ", theme::WARN));
+        left.push(badge(" VISUAL ", theme::pal().warn));
     } else {
-        left.push(badge(" NORMAL ", ACCENT));
+        left.push(badge(" NORMAL ", theme::pal().accent));
     }
     left.push(Span::raw("  "));
     if let Some(status) = &app.status {
-        let color = if status.is_error { ERR } else { FG };
+        let color = if status.is_error {
+            theme::pal().err
+        } else {
+            theme::pal().fg
+        };
         left.push(Span::styled(status.text.clone(), theme::fg(color)));
     } else if let Loc::Machine(host) = &app.cwd {
         // `● online · 4 ms · logged on jdoe · u other user`
         let (online, status) = app.machine_status(host);
         let (dot, color) = match online {
-            Some(true) => ("● ", OK),
-            Some(false) => ("× ", ERR),
-            None => ("○ ", theme::DIM),
+            Some(true) => ("● ", theme::pal().ok),
+            Some(false) => ("× ", theme::pal().err),
+            None => ("○ ", theme::pal().dim),
         };
         left.push(Span::styled(dot, theme::fg(color)));
         left.push(Span::raw(status));
@@ -509,7 +556,7 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
             left.push(sep());
             left.push(Span::styled(
                 "capped: refine the query",
-                theme::fg(theme::WARN),
+                theme::fg(theme::pal().warn),
             ));
         }
         let hint = if s.running() {
@@ -533,12 +580,12 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
             left.push(sep());
             left.push(Span::styled(
                 format!("filter: {}", app.filter),
-                theme::fg(ACCENT),
+                theme::fg(theme::pal().accent),
             ));
         }
         if let Some(sel) = selection_summary(app) {
             left.push(sep());
-            left.push(Span::styled(sel, theme::bold(ACCENT)));
+            left.push(Span::styled(sel, theme::bold(theme::pal().accent)));
         }
         left.push(sep());
         // The default order is plain; any other stands out (it changes what you see).
@@ -546,7 +593,7 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         if app.sort == crate::fs::sort::DirSort::default() {
             left.push(Span::raw(sort));
         } else {
-            left.push(Span::styled(sort, theme::bold(ACCENT)));
+            left.push(Span::styled(sort, theme::bold(theme::pal().accent)));
         }
         left.push(sep());
         let hidden = if app.show_hidden { "on" } else { "off" };
@@ -564,7 +611,10 @@ pub fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         ),
     };
     if !pending.is_empty() {
-        right.push(Span::styled(format!("{pending}   "), theme::bold(ACCENT)));
+        right.push(Span::styled(
+            format!("{pending}   "),
+            theme::bold(theme::pal().accent),
+        ));
     }
     right.extend(super::jobs::indicator(app));
     if let Some((_, space)) = &app.space {
@@ -622,7 +672,7 @@ pub fn draw_hints(f: &mut Frame, area: Rect, app: &App) {
             break;
         }
         used += w;
-        left.push(Span::styled(key.to_string(), theme::bold(FG)));
+        left.push(Span::styled(key.to_string(), theme::bold(theme::pal().fg)));
         left.push(Span::styled(format!(" {what}   "), theme::dim()));
     }
     bar(f, area, left, Vec::new());
@@ -662,8 +712,8 @@ fn tab_spans(app: &App) -> Vec<Span<'static>> {
             Span::styled(
                 text,
                 Style::new()
-                    .bg(theme::SEL_BG)
-                    .fg(ACCENT)
+                    .bg(theme::pal().sel_bg)
+                    .fg(theme::pal().accent)
                     .add_modifier(Modifier::BOLD),
             )
         } else {

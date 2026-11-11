@@ -121,11 +121,67 @@ pub fn free_name(name: &str, is_dir: bool, taken: &std::collections::HashSet<Str
         .unwrap_or_else(|| format!("{stem}_copy{ext}"))
 }
 
-/// Works out how to paste: refuses a folder into itself. A copy pasted where its original
-/// is gets a free name (`report_1.pdf`, see [`free_name`]); `taken` is what the
-/// destination already holds. Such files go through the native backend whatever their
-/// size (robocopy can't rename a file), so the caller pastes copied-in-place files and
-/// folders as separate jobs.
+/// The items whose name `dest` already holds (`taken`), other than a copy beside its
+/// original (that one always gets a free name): what `p` asks about (keep both,
+/// overwrite, skip).
+pub fn clashes(req: &Request, taken: &[String]) -> Vec<usize> {
+    let existing: std::collections::HashSet<String> =
+        taken.iter().map(|t| t.to_lowercase()).collect();
+    (0..req.items.len())
+        .filter(|&i| {
+            let it = &req.items[i];
+            !in_folder(it, &req.dest) && existing.contains(&it.path.name().to_lowercase())
+        })
+        .collect()
+}
+
+/// The name each item gets in `dest`. A free one (`report_1.pdf`, `HIT_1`, see
+/// [`free_name`]) for a copy pasted where its original is, and for any item whose name
+/// `dest` already holds (`taken`) when the paste doesn't overwrite ("keep both"). With
+/// [`Overwrite::Always`] such a file is replaced and a folder merged. Two items of one
+/// name in one paste never land on one name.
+fn dest_names(req: &Request, taken: &[String]) -> Vec<String> {
+    let existing: std::collections::HashSet<String> =
+        taken.iter().map(|t| t.to_lowercase()).collect();
+    let mut used = existing.clone();
+    let mut pasted = std::collections::HashSet::new();
+    req.items
+        .iter()
+        .map(|it| {
+            let name = it.path.name();
+            let low = name.to_lowercase();
+            let rename = in_folder(it, &req.dest)
+                || pasted.contains(&low)
+                || (req.overwrite == Overwrite::Never && existing.contains(&low));
+            let name = if rename {
+                free_name(&name, it.is_dir, &used)
+            } else {
+                name
+            };
+            used.insert(name.to_lowercase());
+            pasted.insert(low);
+            name
+        })
+        .collect()
+}
+
+/// True when the paste has folders and files that get a new name: robocopy can't
+/// rename a file, so those go natively, and the caller makes it two jobs.
+pub fn needs_split(req: &Request, taken: &[String]) -> bool {
+    req.items.iter().any(|i| i.is_dir) && renames_files(req, &dest_names(req, taken))
+}
+
+fn renames_files(req: &Request, names: &[String]) -> bool {
+    req.items
+        .iter()
+        .zip(names)
+        .any(|(it, n)| !it.is_dir && *n != it.path.name())
+}
+
+/// Works out how to paste: refuses a folder into itself. Names come from [`dest_names`]
+/// (`taken` is what the destination already holds). Files that get a new name go
+/// through the native backend whatever their size (robocopy can't rename a file), so
+/// the caller pastes them and folders as separate jobs ([`needs_split`]).
 pub fn plan(req: &Request, native_max: u64, taken: &[String]) -> Result<Plan, String> {
     if req.items.is_empty() {
         return Err("nothing to paste".into());
@@ -142,31 +198,19 @@ pub fn plan(req: &Request, native_max: u64, taken: &[String]) -> Result<Plan, St
             return Err(format!("{} is already in this folder", it.path.name()));
         }
     }
-    let dup_files = req
-        .items
-        .iter()
-        .any(|i| !i.is_dir && in_folder(i, &req.dest));
+    let names = dest_names(req, taken);
+    let dup_files = renames_files(req, &names);
     if dup_files && req.items.iter().any(|i| i.is_dir) {
-        return Err("copy the folders and the files here separately".into());
+        return Err(format!(
+            "{} the folders and the files here separately",
+            req.op.word()
+        ));
     }
-    // The names things get in `dest`: their own, or a free one beside the original.
-    let mut used: std::collections::HashSet<String> =
-        taken.iter().map(|t| t.to_lowercase()).collect();
-    let names: Vec<String> = req
-        .items
-        .iter()
-        .map(|it| {
-            let name = it.path.name();
-            if !in_folder(it, &req.dest) {
-                return name;
-            }
-            let free = free_name(&name, it.is_dir, &used);
-            used.insert(free.to_lowercase());
-            free
-        })
-        .collect();
     let title = match (&req.items[..], &names[..]) {
         ([one], [new]) if in_folder(one, &req.dest) => format!("{} → {new}", one.path.name()),
+        ([one], [new]) if *new != one.path.name() => {
+            format!("{} → {}\\{new}", one.path.name(), req.dest.name())
+        }
         _ => title(&req.items, &req.dest),
     };
     let pair = |i: usize| -> Result<Pair, String> {
@@ -1627,6 +1671,105 @@ mod tests {
         let pl = plan(&r, NATIVE_MAX_BYTES, &["x.txt".to_string()]).expect("plan");
         let dsts: Vec<&str> = pl.pairs.iter().map(|p| p.dst.as_str()).collect();
         assert_eq!(dsts, [r"C:\w\x_1.txt", r"C:\w\x_2.txt"]);
+    }
+
+    /// What `p` asks about: names already in the destination, but not a copy beside
+    /// its original (that one just gets a free name).
+    #[test]
+    fn clashes_are_names_already_there() {
+        let taken = ["Report.pdf".to_string(), "HIT".into(), "same.txt".into()];
+        let r = req(
+            Op::Copy,
+            vec![
+                item(r"C:\a\report.pdf", false, 1),
+                item(r"C:\a\new.txt", false, 1),
+                item(r"C:\a\hit", true, 0),
+                item(r"D:\b\same.txt", false, 1),
+            ],
+            r"D:\b",
+        );
+        assert_eq!(clashes(&r, &taken), [0, 2]);
+        assert!(clashes(&r, &[]).is_empty());
+    }
+
+    /// A file pasted into a folder that already has its name: a free name, not a skip.
+    /// `P` (overwrite) keeps the name; a folder of the same name merges.
+    #[test]
+    fn name_taken_elsewhere_gets_a_free_name() {
+        let taken = ["Report.pdf".to_string(), "HIT".into()];
+        let r = req(
+            Op::Copy,
+            vec![
+                item(r"C:\a\report.pdf", false, 1),
+                item(r"C:\a\new.txt", false, 1),
+            ],
+            r"D:\b",
+        );
+        let pl = plan(&r, NATIVE_MAX_BYTES, &taken).expect("plan");
+        let dsts: Vec<&str> = pl.pairs.iter().map(|p| p.dst.as_str()).collect();
+        assert_eq!(dsts, [r"D:\b\report_1.pdf", r"D:\b\new.txt"]);
+
+        // One file: the title says the new name.
+        let r = req(Op::Copy, vec![item(r"C:\a\report.pdf", false, 1)], r"D:\b");
+        let pl = plan(&r, NATIVE_MAX_BYTES, &taken).expect("plan");
+        assert_eq!(pl.title, r"report.pdf → b\report_1.pdf");
+
+        // A big one goes natively (robocopy can't rename); a cut too.
+        let r = req(
+            Op::Move,
+            vec![item(r"C:\a\report.pdf", false, NATIVE_MAX_BYTES * 2)],
+            r"D:\b",
+        );
+        let pl = plan(&r, NATIVE_MAX_BYTES, &taken).expect("plan");
+        assert_eq!(pl.backend, Backend::Native);
+        assert_eq!(pl.pairs[0].dst, r"D:\b\report_1.pdf");
+
+        // Overwrite keeps the name.
+        let mut r = req(Op::Copy, vec![item(r"C:\a\report.pdf", false, 1)], r"D:\b");
+        r.overwrite = Overwrite::Always;
+        let pl = plan(&r, NATIVE_MAX_BYTES, &taken).expect("plan");
+        assert_eq!(pl.pairs[0].dst, r"D:\b\report.pdf");
+
+        // Two files of one name from different folders don't collide.
+        let r = req(
+            Op::Copy,
+            vec![item(r"C:\a\x.txt", false, 1), item(r"C:\c\x.txt", false, 1)],
+            r"D:\b",
+        );
+        let pl = plan(&r, NATIVE_MAX_BYTES, &[]).expect("plan");
+        let dsts: Vec<&str> = pl.pairs.iter().map(|p| p.dst.as_str()).collect();
+        assert_eq!(dsts, [r"D:\b\x.txt", r"D:\b\x_1.txt"]);
+
+        // A folder: keep both renames it (robocopy copies into the new name), overwrite
+        // merges. With a renamed file beside it, the paste is split.
+        let mut r = req(Op::Copy, vec![item(r"C:\a\HIT", true, 0)], r"D:\b");
+        assert!(!needs_split(&r, &taken));
+        let pl = plan(&r, NATIVE_MAX_BYTES, &taken).expect("plan");
+        assert_eq!(pl.steps[0].dst, r"D:\b\HIT_1");
+        r.overwrite = Overwrite::Always;
+        let pl = plan(&r, NATIVE_MAX_BYTES, &taken).expect("plan");
+        assert_eq!(pl.steps[0].dst, r"D:\b\HIT");
+
+        // Overwriting, two of one name in one paste still don't land on one name.
+        let mut r = req(
+            Op::Copy,
+            vec![item(r"C:\a\x.txt", false, 1), item(r"C:\c\x.txt", false, 1)],
+            r"D:\b",
+        );
+        r.overwrite = Overwrite::Always;
+        let pl = plan(&r, NATIVE_MAX_BYTES, &["x.txt".to_string()]).expect("plan");
+        let dsts: Vec<&str> = pl.pairs.iter().map(|p| p.dst.as_str()).collect();
+        assert_eq!(dsts, [r"D:\b\x.txt", r"D:\b\x_1.txt"]);
+        let r = req(
+            Op::Copy,
+            vec![
+                item(r"C:\a\HIT", true, 0),
+                item(r"C:\a\report.pdf", false, 1),
+            ],
+            r"D:\b",
+        );
+        assert!(needs_split(&r, &taken));
+        assert!(plan(&r, NATIVE_MAX_BYTES, &taken).is_err_and(|e| e.contains("separately")));
     }
 
     #[test]

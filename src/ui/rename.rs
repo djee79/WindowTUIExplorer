@@ -2,7 +2,7 @@
 //! toggles, the live Original │ Renamed │ Status table, the counts, and the token help.
 
 use super::columns::{gutter_cell, gutter_width};
-use super::theme::{self, ACCENT, BORDER, DIM, ERR, FG, NET, OK, PANEL_BG, SEL_BG, WARN};
+use super::theme;
 use super::{truncate, width};
 use crate::app::{App, RenameField};
 use crate::rename::plan::Status;
@@ -27,11 +27,11 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(theme::fg(BORDER))
-        .style(Style::new().bg(PANEL_BG).fg(FG))
+        .border_style(theme::fg(theme::pal().border))
+        .style(Style::new().bg(theme::pal().panel_bg).fg(theme::pal().fg))
         .title(Line::from(vec![
-            Span::styled("─ ", theme::fg(BORDER)),
-            Span::styled("Bulk rename", theme::bold(ACCENT)),
+            Span::styled("─ ", theme::fg(theme::pal().border)),
+            Span::styled("Bulk rename", theme::bold(theme::pal().accent)),
             Span::styled(
                 format!("  {} items in {} ", p.sources.len(), p.dir),
                 theme::dim(),
@@ -47,18 +47,18 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
         let mut spans = vec![Span::styled(
             format!("  {label:<14}"),
             if active {
-                theme::bold(ACCENT)
+                theme::bold(theme::pal().accent)
             } else {
                 theme::dim()
             },
         )];
         if active {
             let (before, after) = split_at_cursor(ed);
-            spans.push(Span::styled(before, theme::fg(FG)));
-            spans.push(Span::styled("▏", theme::fg(ACCENT)));
-            spans.push(Span::styled(after, theme::fg(FG)));
+            spans.push(Span::styled(before, theme::fg(theme::pal().fg)));
+            spans.push(Span::styled("▏", theme::fg(theme::pal().accent)));
+            spans.push(Span::styled(after, theme::fg(theme::pal().fg)));
         } else {
-            spans.push(Span::styled(text.clone(), theme::fg(FG)));
+            spans.push(Span::styled(text.clone(), theme::fg(theme::pal().fg)));
         }
         let pad = w.saturating_sub(16 + width(&text) + 1 + width(hint) + 2);
         spans.push(Span::raw(" ".repeat(pad)));
@@ -106,7 +106,7 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
         flag(o.only_changed)
     );
     let opt_style = if p.normal {
-        theme::fg(FG)
+        theme::fg(theme::pal().fg)
     } else {
         theme::dim()
     };
@@ -114,17 +114,17 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
     lines.push(Line::from(Span::styled(truncate(&opts2, w), opt_style)));
     match &p.naming {
         Some(ed) => lines.push(Line::from(vec![
-            Span::styled("  Save preset as  ", theme::bold(ACCENT)),
-            Span::styled(split_at_cursor(ed).0, theme::fg(FG)),
-            Span::styled("▏", theme::fg(ACCENT)),
-            Span::styled(split_at_cursor(ed).1, theme::fg(FG)),
+            Span::styled("  Save preset as  ", theme::bold(theme::pal().accent)),
+            Span::styled(split_at_cursor(ed).0, theme::fg(theme::pal().fg)),
+            Span::styled("▏", theme::fg(theme::pal().accent)),
+            Span::styled(split_at_cursor(ed).1, theme::fg(theme::pal().fg)),
             Span::styled("   Enter saves (same name replaces) · Esc", theme::dim()),
         ])),
         None => lines.push(Line::default()),
     }
     lines.push(Line::from(Span::styled(
         format!("  {}", "─".repeat(w.saturating_sub(4))),
-        theme::fg(BORDER),
+        theme::fg(theme::pal().border),
     )));
 
     // The table.
@@ -147,7 +147,10 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
         p.offset = p.cursor + 1 - rows_h;
     }
     match &p.plan {
-        Err(e) => lines.push(Line::from(Span::styled(format!("  {e}"), theme::fg(ERR)))),
+        Err(e) => lines.push(Line::from(Span::styled(
+            format!("  {e}"),
+            theme::fg(theme::pal().err),
+        ))),
         Ok(plan) => {
             for (n, &ri) in shown.iter().enumerate().skip(p.offset).take(rows_h) {
                 let Some(row) = plan.rows.get(ri) else {
@@ -157,16 +160,16 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
                     continue;
                 };
                 let (status, style) = match &row.status {
-                    Status::Rename => ("ok".to_string(), theme::fg(OK)),
-                    Status::Warn(w) => (format!("⚠ {w}"), theme::fg(WARN)),
-                    Status::Unchanged => ("·  unchanged".to_string(), theme::fg(DIM)),
-                    Status::Excluded => ("–  excluded".to_string(), theme::fg(DIM)),
-                    Status::Blocked(w) => (format!("✕ {w}"), theme::fg(ERR)),
+                    Status::Rename => ("ok".to_string(), theme::fg(theme::pal().ok)),
+                    Status::Warn(w) => (format!("⚠ {w}"), theme::fg(theme::pal().warn)),
+                    Status::Unchanged => ("·  unchanged".to_string(), theme::fg(theme::pal().dim)),
+                    Status::Excluded => ("–  excluded".to_string(), theme::fg(theme::pal().dim)),
+                    Status::Blocked(w) => (format!("✕ {w}"), theme::fg(theme::pal().err)),
                 };
                 let renamed_style = match row.status {
-                    Status::Rename | Status::Warn(_) => theme::fg(NET),
-                    Status::Blocked(_) => theme::fg(ERR),
-                    _ => theme::fg(DIM),
+                    Status::Rename | Status::Warn(_) => theme::fg(theme::pal().net),
+                    Status::Blocked(_) => theme::fg(theme::pal().err),
+                    _ => theme::fg(theme::pal().dim),
                 };
                 let sel = p.normal && n == p.cursor;
                 let mut spans = vec![Span::raw("  ")];
@@ -177,9 +180,9 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
                 spans.push(Span::styled(
                     format!("{:<col$}  ", truncate(&src.name, col)),
                     if src.excluded {
-                        theme::fg(DIM)
+                        theme::fg(theme::pal().dim)
                     } else {
-                        theme::fg(FG)
+                        theme::fg(theme::pal().fg)
                     },
                 ));
                 spans.push(Span::styled(
@@ -189,7 +192,7 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
                 spans.push(Span::styled(truncate(&status, col), style));
                 let mut line = Line::from(spans);
                 if sel {
-                    line = line.style(Style::new().bg(SEL_BG));
+                    line = line.style(Style::new().bg(theme::pal().sel_bg));
                 }
                 lines.push(line);
             }
@@ -202,7 +205,7 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
     lines.truncate(footer_at);
     lines.push(Line::from(Span::styled(
         format!("  {}", "─".repeat(w.saturating_sub(4))),
-        theme::fg(BORDER),
+        theme::fg(theme::pal().border),
     )));
     let counts = match &p.plan {
         Ok(plan) => {
@@ -234,9 +237,9 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
     lines.push(Line::from(Span::styled(
         counts,
         if blocked {
-            theme::fg(ERR)
+            theme::fg(theme::pal().err)
         } else {
-            theme::fg(FG)
+            theme::fg(theme::pal().fg)
         },
     )));
     lines.push(Line::default());
@@ -269,9 +272,12 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
         };
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
-            .border_style(theme::fg(ACCENT))
-            .style(Style::new().bg(PANEL_BG).fg(FG))
-            .title(Span::styled(" Rename presets ", theme::bold(ACCENT)))
+            .border_style(theme::fg(theme::pal().accent))
+            .style(Style::new().bg(theme::pal().panel_bg).fg(theme::pal().fg))
+            .title(Span::styled(
+                " Rename presets ",
+                theme::bold(theme::pal().accent),
+            ))
             .title_bottom(Span::styled(
                 if l.delete_armed {
                     " x again deletes it · any other key keeps it "
@@ -279,7 +285,7 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
                     " j/k · Enter load · x delete · Esc "
                 },
                 if l.delete_armed {
-                    theme::fg(ERR)
+                    theme::fg(theme::pal().err)
                 } else {
                     theme::dim()
                 },
@@ -300,14 +306,17 @@ pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
             .take(rows)
             .map(|(i, (name, what))| {
                 let line = Line::from(vec![
-                    Span::styled(format!(" {:<nw$}  ", truncate(name, nw)), theme::fg(FG)),
+                    Span::styled(
+                        format!(" {:<nw$}  ", truncate(name, nw)),
+                        theme::fg(theme::pal().fg),
+                    ),
                     Span::styled(
                         truncate(what, (pin.width as usize).saturating_sub(nw + 4)),
                         theme::dim(),
                     ),
                 ]);
                 if i == l.cursor {
-                    line.style(Style::new().bg(SEL_BG))
+                    line.style(Style::new().bg(theme::pal().sel_bg))
                 } else {
                     line
                 }

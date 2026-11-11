@@ -921,7 +921,7 @@ impl App {
         match pin.kind {
             PinKind::Sync => vec![Source, Dest, Mode],
             PinKind::Backup => {
-                let mut v = vec![Source, DestDir, Keep];
+                let mut v = vec![Source, DestDir, FileName, Keep];
                 if self.seven_zip.is_some() || pin.extra.contains_key("engine") {
                     v.push(Engine);
                 }
@@ -1147,6 +1147,14 @@ impl App {
                 };
                 ("mode", toml::Value::String(m.into()))
             }
+            PresetField::FileName => {
+                let t = match text.trim() {
+                    "" => crate::jobs::zip::DEFAULT_FILE_NAME,
+                    t => t,
+                };
+                self.zip_name_preview(pin, t)?;
+                ("file_name", toml::Value::String(t.to_string()))
+            }
             PresetField::Keep => match text.trim().parse::<i64>() {
                 Ok(n) if (0..=10_000).contains(&n) => ("keep", toml::Value::Integer(n)),
                 _ => return Err("a number: how many zips to keep (0 keeps all)".into()),
@@ -1166,6 +1174,21 @@ impl App {
         Ok(())
     }
 
+    /// The zip a backup preset would write now with name template `t`
+    /// (`HIT_2026-11-10_1430.zip`), or what's wrong with `t`.
+    fn zip_name_preview(&self, pin: &Pin, t: &str) -> Result<String, String> {
+        let source = pin
+            .extra
+            .get("source")
+            .and_then(|v| v.as_str())
+            .and_then(|s| self.preset_path(s).ok())
+            .map(|p| p.name())
+            .unwrap_or_default();
+        let vars = crate::jobs::zip::NameVars::here(&source);
+        crate::jobs::zip::expand_name(t, &vars, chrono::Local::now())
+            .map_err(|e| e.replace("file_name: ", "").replace("file_name ", ""))
+    }
+
     /// The line under a preset field: what it's for.
     pub(super) fn preset_note(&self, f: PresetField, text: &str) -> String {
         match f {
@@ -1176,6 +1199,20 @@ impl App {
             }
             PresetField::Mode => "update: copies new and changed files, never deletes · mirror: exact copy".into(),
             PresetField::DestDir => "folder for the zips, local or \\\\server\\share · Tab completes".into(),
+            PresetField::FileName => {
+                let pin = self.pin_draft.as_ref().map(|d| &d.pin);
+                let t = match text.trim() {
+                    "" => crate::jobs::zip::DEFAULT_FILE_NAME,
+                    t => t,
+                };
+                match pin.map(|p| self.zip_name_preview(p, t)) {
+                    Some(Ok(name)) => {
+                        format!("→ {name} · tokens: {}", crate::jobs::zip::NAME_TOKENS)
+                    }
+                    Some(Err(e)) => e,
+                    None => String::new(),
+                }
+            }
             PresetField::Keep => "older zips of this preset beyond that are deleted after a good backup".into(),
             PresetField::Engine => match &self.seven_zip {
                 Some(p) => format!("7zip: faster, multi-threaded ({p}) · builtin: always works"),
@@ -1205,6 +1242,10 @@ fn preset_value(pin: &Pin, f: PresetField) -> String {
         PresetField::Source => s("source"),
         PresetField::Dest => s("dest"),
         PresetField::DestDir => s("dest_dir"),
+        PresetField::FileName => get("file_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(crate::jobs::zip::DEFAULT_FILE_NAME)
+            .into(),
         PresetField::Mode => get("mode")
             .and_then(|v| v.as_str())
             .unwrap_or("update")

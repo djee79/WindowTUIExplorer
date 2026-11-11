@@ -2,7 +2,7 @@
 //! (the first few, "… and N more"), and [ Yes ] [ No ]. Destructive ones are red and
 //! start on No.
 
-use super::theme::{self, ACCENT, BORDER, ERR, FG, ON_ACCENT, PANEL_BG};
+use super::theme;
 use super::{truncate, width};
 use crate::app::DialogView;
 use ratatui::Frame;
@@ -36,18 +36,28 @@ fn wrap(s: &str, w: usize) -> Vec<String> {
 pub fn draw(f: &mut Frame, body: Rect, d: &DialogView) {
     let w = 64.min(body.width.saturating_sub(4)).max(30);
     let iw = (w as usize).saturating_sub(4);
-    let color = if d.danger { ERR } else { ACCENT };
+    let color = if d.danger {
+        theme::pal().err
+    } else {
+        theme::pal().accent
+    };
 
     let mut lines: Vec<Line> = vec![Line::default()];
     for l in wrap(&d.message, iw) {
-        lines.push(Line::from(Span::styled(format!(" {l}"), theme::fg(FG))));
+        lines.push(Line::from(Span::styled(
+            format!(" {l}"),
+            theme::fg(theme::pal().fg),
+        )));
     }
     if !d.items.is_empty() {
         lines.push(Line::default());
         for it in d.items.iter().take(MAX_ITEMS) {
             lines.push(Line::from(vec![
                 Span::styled("  • ", theme::fg(color)),
-                Span::styled(truncate(it, iw.saturating_sub(3)), theme::fg(FG)),
+                Span::styled(
+                    truncate(it, iw.saturating_sub(3)),
+                    theme::fg(theme::pal().fg),
+                ),
             ]));
         }
         if d.items.len() > MAX_ITEMS {
@@ -62,11 +72,15 @@ pub fn draw(f: &mut Frame, body: Rect, d: &DialogView) {
     let button = |label: &str, on: bool, danger: bool| {
         let style = if on {
             Style::new()
-                .bg(if danger { ERR } else { ACCENT })
-                .fg(ON_ACCENT)
+                .bg(if danger {
+                    theme::pal().err
+                } else {
+                    theme::pal().accent
+                })
+                .fg(theme::pal().on_accent)
                 .add_modifier(ratatui::style::Modifier::BOLD)
         } else {
-            theme::fg(FG)
+            theme::fg(theme::pal().fg)
         };
         Span::styled(format!("  {label}  "), style)
     };
@@ -90,10 +104,14 @@ pub fn draw(f: &mut Frame, body: Rect, d: &DialogView) {
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(theme::fg(if d.danger { ERR } else { BORDER }))
-        .style(Style::new().bg(PANEL_BG).fg(FG))
+        .border_style(theme::fg(if d.danger {
+            theme::pal().err
+        } else {
+            theme::pal().border
+        }))
+        .style(Style::new().bg(theme::pal().panel_bg).fg(theme::pal().fg))
         .title(Line::from(vec![
-            Span::styled("─ ", theme::fg(BORDER)),
+            Span::styled("─ ", theme::fg(theme::pal().border)),
             Span::styled(d.title.clone(), theme::bold(color)),
             Span::raw(" "),
         ]))

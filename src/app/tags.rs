@@ -271,6 +271,9 @@ impl App {
         if p.kind == PromptKind::ExtractExists {
             return self.extract_dialog(p.yes);
         }
+        if p.kind == PromptKind::PasteClash {
+            return self.paste_clash_dialog(p.yes);
+        }
         let mut items: Vec<String> = Vec::new();
         let name = |s: &str| {
             s.trim_end_matches('\\')

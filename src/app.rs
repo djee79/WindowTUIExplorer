@@ -330,6 +330,8 @@ pub struct App {
     jobs_pending_d: bool,
     paste_token: u64,
     pending_paste: Option<jobs::PendingPaste>,
+    /// `p` with names already in the destination, while the popup asks.
+    paste_clash: Option<jobs::PasteClash>,
     last_paste: Option<(jobs::Register, bool)>,
     /// Sync presets (M4b): the open dry-run preview and the last runs from presets.json.
     pub sync_preview: Option<SyncPreviewState>,
@@ -494,6 +496,7 @@ impl App {
             jobs_pending_d: false,
             paste_token: 0,
             pending_paste: None,
+            paste_clash: None,
             last_paste: None,
             sync_preview: None,
             preset_runs: Default::default(),
@@ -1323,8 +1326,10 @@ impl App {
             .is_some_and(|t| now.duration_since(t) >= Duration::from_millis(500))
         {
             self.sort_dirty = None;
-            self.worker
-                .save_ui_state(crate::state::UiState::from_sort(self.sort));
+            self.worker.save_ui_state(crate::state::UiState::new(
+                self.sort,
+                crate::ui::theme::scheme(),
+            ));
         }
         // Folder visits: written at most every 5 s, not on every move.
         if self.usage_dirty && now.duration_since(self.usage_saved) >= Duration::from_secs(5) {
@@ -4945,10 +4950,49 @@ mod job_tests {
         // The destination listing refreshes by itself.
         l.until(|a| a.view.len() == 2);
 
-        // Again: both are there now, so p skips them and says so.
+        // Again: both names are there now, so p asks. Esc pastes nothing; s skips them
+        // (nothing left); Enter keeps both, under free names.
         press(&mut l.app, "p");
+        assert_eq!(l.app.mode, Mode::Prompt);
+        let screen = render(&mut l.app, 140, 40);
+        assert!(
+            screen.contains("2 of 2 names are already in dst")
+                && screen.contains("a.txt → a_1.txt")
+                && screen.contains("Keep both"),
+            "{screen}"
+        );
+        press(&mut l.app, "<Esc>");
+        assert_eq!(l.app.mode, Mode::Normal);
+        assert_eq!(status(&l.app), "nothing pasted");
+        press(&mut l.app, "ps");
+        assert!(
+            status(&l.app).contains("all 2 are already in dst"),
+            "{}",
+            status(&l.app)
+        );
+        assert_eq!(l.app.jobs.len(), 1);
+        press(&mut l.app, "p<CR>");
         l.until(|a| a.jobs.len() == 2 && a.jobs[1].phase.is_over());
-        assert!(status(&l.app).contains("2 skipped"), "{}", status(&l.app));
+        assert!(status(&l.app).contains("2 copied"), "{}", status(&l.app));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("dst").join("b_1.txt"))
+                .ok()
+                .as_deref(),
+            Some("bb")
+        );
+        l.until(|a| a.view.len() == 4);
+        // o overwrites, without asking a second time.
+        std::fs::write(dir.join("dst").join("b.txt"), "old").expect("write");
+        press(&mut l.app, "po");
+        l.until(|a| a.jobs.len() == 3 && a.jobs[2].phase.is_over());
+        assert_eq!(l.app.mode, Mode::Normal);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("dst").join("b.txt"))
+                .ok()
+                .as_deref(),
+            Some("bb")
+        );
+        l.app.jobs.pop();
 
         // `.` pastes the same files again elsewhere.
         l.cd(&dir.join("src").join("proj"));
@@ -6126,6 +6170,28 @@ mod job_tests {
         );
         l.cd(&dir.join("zips"));
         press(&mut l.app, "p");
+        // The zip name: the default, with what it makes now; a bad token is refused.
+        assert_eq!(line_now(&l.app), crate::jobs::zip::DEFAULT_FILE_NAME);
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        assert!(
+            prompt_note(&l.app).starts_with(&format!("→ src_{today}_")),
+            "{}",
+            prompt_note(&l.app)
+        );
+        press(&mut l.app, "<C-u>");
+        type_text(&mut l.app, "{name}_{who}");
+        assert!(prompt_note(&l.app).contains("unknown {who}"));
+        press(&mut l.app, "<CR>");
+        assert_eq!(line_now(&l.app), "{name}_{who}", "stays open");
+        press(&mut l.app, "<C-u>");
+        type_text(&mut l.app, "{name}_{host}_{date:%Y%m%d}");
+        let host = std::env::var("COMPUTERNAME").unwrap_or_default();
+        assert!(
+            prompt_note(&l.app).starts_with(&format!("→ src_{host}_")),
+            "{}",
+            prompt_note(&l.app)
+        );
+        press(&mut l.app, "<CR>");
         assert_eq!(line_now(&l.app), "10");
         press(&mut l.app, "<C-u>");
         type_text(&mut l.app, "x");
@@ -6146,6 +6212,7 @@ mod job_tests {
             panic!("{:?}", l.app.pins.pins[1])
         };
         assert_eq!((b.keep, b.engine), (3, Engine::SevenZip));
+        assert_eq!(b.file_name, "{name}_{host}_{date:%Y%m%d}");
 
         // A selection: only those are synced (a folder is its own step, files one more).
         l.cd(&dir.join("src"));
@@ -6697,6 +6764,30 @@ mod job_tests {
         // Saved for next time.
         let saved = crate::state::path().unwrap_or_default();
         l.until(|_| crate::state::load(&saved).sort == "ext");
+
+        // :colorscheme: Tab completes and cycles, Enter switches, and it's saved beside
+        // the order (here, not in a test of its own: they'd share ui.toml).
+        use crate::ui::theme;
+        press(&mut l.app, ":colo tok<Tab>");
+        assert_eq!(line_now(&l.app), "colo tokyonight-night");
+        press(&mut l.app, "<Tab>");
+        assert_eq!(line_now(&l.app), "colo tokyonight-storm");
+        press(&mut l.app, "<CR>");
+        assert_eq!(theme::scheme(), "tokyonight-storm");
+        assert_eq!(status(&l.app), "colorscheme tokyonight-storm");
+        l.until(|_| {
+            let st = crate::state::load(&saved);
+            st.colorscheme == "tokyonight-storm" && st.sort == "ext"
+        });
+        press(&mut l.app, ":colorscheme gruvbox<CR>");
+        assert!(status(&l.app).contains("unknown colorscheme"));
+        assert_eq!(theme::scheme(), "tokyonight-storm", "unchanged");
+        press(&mut l.app, ":colorscheme<CR>");
+        assert!(status(&l.app).starts_with("colorscheme tokyonight-storm (also: default"));
+        press(&mut l.app, ":colorscheme tokyonight<CR>");
+        assert_eq!(theme::scheme(), "tokyonight-night", "tokyonight is night");
+        press(&mut l.app, ":colorscheme default<CR>");
+        assert_eq!(theme::scheme(), "default");
         // :sort, and back to name.
         press(&mut l.app, ":sort size<CR>");
         assert_eq!(l.app.sort.key, crate::fs::sort::SortKey::Size);

@@ -4,9 +4,7 @@
 //! report the same way. The keys live on the status bar's hint row.
 
 use super::columns::panel;
-use super::theme::{
-    self, ACCENT, BORDER, DIM, DIR, ERR, FG, INACTIVE_SEL_BG, NET, OK, SEL_BG, WARN,
-};
+use super::theme;
 use super::{truncate, truncate_left, width};
 use crate::app::{App, JobRow};
 use crate::jobs::zip::{BackupStep, StepSet};
@@ -24,13 +22,17 @@ const STACK_BELOW: u16 = 110;
 /// Below this detail width THROUGHPUT and STATUS stack instead of sitting side by side.
 const SIDE_BY_SIDE: usize = 84;
 /// The progress bar's track and a running card's background.
-const TRACK: Color = SEL_BG;
-const CARD: Color = INACTIVE_SEL_BG;
+fn track() -> Color {
+    theme::pal().sel_bg
+}
+fn card() -> Color {
+    theme::pal().inactive_sel_bg
+}
 
 pub fn draw(f: &mut Frame, body: Rect, app: &App) {
     f.render_widget(Clear, body);
     f.render_widget(
-        ratatui::widgets::Block::new().style(Style::new().bg(theme::BG).fg(FG)),
+        ratatui::widgets::Block::new().style(Style::new().bg(theme::pal().bg).fg(theme::pal().fg)),
         body,
     );
     let (list, detail, compact) = if body.width >= STACK_BELOW {
@@ -100,21 +102,21 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
 
 fn phase_color(p: Phase) -> Color {
     match p {
-        Phase::Scanning | Phase::Copying | Phase::Finishing => ACCENT,
-        Phase::Retrying => WARN,
-        Phase::Paused => DIR,
-        Phase::Done => OK,
-        Phase::Failed => ERR,
-        Phase::Cancelled => DIM,
+        Phase::Scanning | Phase::Copying | Phase::Finishing => theme::pal().accent,
+        Phase::Retrying => theme::pal().warn,
+        Phase::Paused => theme::pal().dir,
+        Phase::Done => theme::pal().ok,
+        Phase::Failed => theme::pal().err,
+        Phase::Cancelled => theme::pal().dim,
     }
 }
 
 /// A running job's colour: paused blue, stalled yellow, else its phase's.
 fn live_color(j: &Job, now: Instant) -> Color {
     if j.paused {
-        DIR
+        theme::pal().dir
     } else if j.stalled(now) {
-        WARN
+        theme::pal().warn
     } else {
         phase_color(j.phase)
     }
@@ -222,12 +224,15 @@ fn bar(frac: f64, w: usize, color: Color) -> Vec<Span<'static>> {
     let mut v = vec![Span::styled("█".repeat(full), theme::fg(color))];
     let mut used = full;
     if part > 0 && used < w {
-        v.push(Span::styled(PARTS[part], Style::new().fg(color).bg(TRACK)));
+        v.push(Span::styled(
+            PARTS[part],
+            Style::new().fg(color).bg(track()),
+        ));
         used += 1;
     }
     v.push(Span::styled(
         "█".repeat(w.saturating_sub(used)),
-        theme::fg(TRACK),
+        theme::fg(track()),
     ));
     v
 }
@@ -244,7 +249,7 @@ fn rule(title: &str, right: &str, w: usize, color: Color) -> Line<'static> {
         Span::raw(" "),
         Span::styled(
             "─".repeat(w.saturating_sub(width(title) + 1 + rw)),
-            theme::fg(BORDER),
+            theme::fg(theme::pal().border),
         ),
         Span::styled(
             if right.is_empty() {
@@ -284,11 +289,11 @@ fn banner(
         theme::bold(color),
     )]));
     for l in crate::help::wrap(&what, inner) {
-        out.push(edge(vec![Span::styled(l, theme::fg(FG))]));
+        out.push(edge(vec![Span::styled(l, theme::fg(theme::pal().fg))]));
     }
     let mut k: Vec<Span<'static>> = Vec::new();
     for (key, desc) in keys {
-        k.push(Span::styled(key.to_string(), theme::bold(FG)));
+        k.push(Span::styled(key.to_string(), theme::bold(theme::pal().fg)));
         k.push(Span::styled(format!(" {desc}   "), theme::dim()));
     }
     out.push(edge(k));
@@ -319,11 +324,11 @@ struct Finished {
 fn finished(r: &Report) -> Finished {
     // robocopy's "skipped" means already there and unchanged: not a warning.
     let icon = match r.phase {
-        Phase::Failed => ("✗", ERR),
-        Phase::Cancelled => ("–", DIM),
+        Phase::Failed => ("✗", theme::pal().err),
+        Phase::Cancelled => ("–", theme::pal().dim),
         // Done, but with files left out on purpose (`s`).
-        _ if !r.skipped_files.is_empty() => ("!", WARN),
-        _ => ("✓", OK),
+        _ if !r.skipped_files.is_empty() => ("!", theme::pal().warn),
+        _ => ("✓", theme::pal().ok),
     };
     let ended = r.started + Duration::from_secs(r.seconds);
     let mut what = match &r.backup {
@@ -392,23 +397,28 @@ fn draw_list(f: &mut Frame, area: Rect, app: &App, compact: bool) {
     if !running.is_empty() {
         lines.push((
             None,
-            rule(&format!("RUNNING {}", running.len()), "", w, DIR),
+            rule(
+                &format!("RUNNING {}", running.len()),
+                "",
+                w,
+                theme::pal().dir,
+            ),
         ));
         for (n, j) in &running {
             let sel = *n == cursor;
             let color = live_color(j, now);
             let mark = if sel {
-                Span::styled("▌", Style::new().fg(color).bg(CARD))
+                Span::styled("▌", Style::new().fg(color).bg(card()))
             } else {
-                Span::styled(" ", Style::new().bg(CARD))
+                Span::styled(" ", Style::new().bg(card()))
             };
             let word = status_word(j, now);
             let title = middle(&j.title, w.saturating_sub(4 + width(&word)));
             let l1 = vec![
                 mark.clone(),
-                Span::styled(title.clone(), theme::bold(FG).bg(CARD)),
+                Span::styled(title.clone(), theme::bold(theme::pal().fg).bg(card())),
                 pad(w.saturating_sub(2 + width(&title) + width(&word))),
-                Span::styled(word, theme::bold(color).bg(CARD)),
+                Span::styled(word, theme::bold(color).bg(card())),
             ];
             let pct = format!("{:.0}%", j.fraction() * 100.0);
             let right = match (&j.waiting, j.phase) {
@@ -433,10 +443,13 @@ fn draw_list(f: &mut Frame, area: Rect, app: &App, compact: bool) {
             let bw = w
                 .saturating_sub(2 + 1 + width(&pct) + 2 + width(&right) + 1)
                 .min(40);
-            let mut l2 = vec![mark.clone(), Span::styled(" ", Style::new().bg(CARD))];
+            let mut l2 = vec![mark.clone(), Span::styled(" ", Style::new().bg(card()))];
             l2.extend(bar(j.fraction(), bw, color));
-            l2.push(Span::styled(format!(" {pct}"), theme::bold(FG).bg(CARD)));
-            l2.push(Span::styled(format!("  {right}"), theme::dim().bg(CARD)));
+            l2.push(Span::styled(
+                format!(" {pct}"),
+                theme::bold(theme::pal().fg).bg(card()),
+            ));
+            l2.push(Span::styled(format!("  {right}"), theme::dim().bg(card())));
             let mut facts = vec![kind_word(
                 j.preset.as_ref(),
                 archive_word(j.backup.as_ref().map(|b| b.kind)),
@@ -460,13 +473,13 @@ fn draw_list(f: &mut Frame, area: Rect, app: &App, compact: bool) {
                 mark,
                 Span::styled(
                     format!(" {}", truncate(&facts.join(" · "), w.saturating_sub(2))),
-                    theme::dim().bg(CARD),
+                    theme::dim().bg(card()),
                 ),
             ];
             for l in [l1, l2, l3] {
                 lines.push((
                     Some(*n),
-                    Line::from(filled(l, w)).style(Style::new().bg(CARD)),
+                    Line::from(filled(l, w)).style(Style::new().bg(card())),
                 ));
             }
             lines.push((None, Line::default()));
@@ -480,12 +493,21 @@ fn draw_list(f: &mut Frame, area: Rect, app: &App, compact: bool) {
     if !done.is_empty() {
         lines.push((
             None,
-            rule(&format!("FINISHED {}", done.len()), "↵ dismiss", w, DIR),
+            rule(
+                &format!("FINISHED {}", done.len()),
+                "↵ dismiss",
+                w,
+                theme::pal().dir,
+            ),
         ));
         for (n, r) in shown_done {
             let sel = *n == cursor;
             let e = finished(r);
-            let bg = if sel { SEL_BG } else { theme::BG };
+            let bg = if sel {
+                theme::pal().sel_bg
+            } else {
+                theme::pal().bg
+            };
             let mark = if sel {
                 Span::styled("▌", Style::new().fg(e.icon.1).bg(bg))
             } else {
@@ -495,7 +517,7 @@ fn draw_list(f: &mut Frame, area: Rect, app: &App, compact: bool) {
             let l1 = vec![
                 mark.clone(),
                 Span::styled(e.icon.0, theme::bold(e.icon.1).bg(bg)),
-                Span::styled(format!(" {title}"), theme::fg(FG).bg(bg)),
+                Span::styled(format!(" {title}"), theme::fg(theme::pal().fg).bg(bg)),
                 pad(w.saturating_sub(3 + width(&title) + width(&e.when) + 1)),
                 Span::styled(e.when, theme::dim().bg(bg)),
             ];
@@ -560,7 +582,7 @@ fn stepper(
     for (i, name) in names.iter().enumerate() {
         let t = times.get(i).copied().flatten().map(clock);
         let (mark, style) = if i < at {
-            ("✓", theme::fg(OK))
+            ("✓", theme::fg(theme::pal().ok))
         } else if i == at {
             match end {
                 Some((m, c)) => (m, theme::bold(c)),
@@ -583,7 +605,7 @@ fn stepper(
         if i > 0 {
             spans.push(Span::styled(
                 format!(" {} ", "─".repeat(link - 2)),
-                theme::fg(BORDER),
+                theme::fg(theme::pal().border),
             ));
         }
         spans.push(Span::styled(t, s));
@@ -691,13 +713,16 @@ fn chart(samples: &[f64], w: usize, color: Color) -> Vec<Line<'static>> {
         }
         out.push(Line::from(vec![
             Span::styled(label, theme::dim()),
-            Span::styled("│", theme::fg(BORDER)),
+            Span::styled("│", theme::fg(theme::pal().border)),
             Span::styled(cells, theme::fg(color)),
         ]));
     }
     out.push(Line::from(vec![
         pad(lw),
-        Span::styled(format!("└{}", "─".repeat(cols)), theme::fg(BORDER)),
+        Span::styled(
+            format!("└{}", "─".repeat(cols)),
+            theme::fg(theme::pal().border),
+        ),
     ]));
     let left = format!("−{} s", cols);
     let right = format!("{unit} · now");
@@ -741,7 +766,7 @@ fn beside(
             let mut spans: Vec<Span> = a.get(i).map(|l| l.spans.clone()).unwrap_or_default();
             let used: usize = spans.iter().map(|s| s.width()).sum();
             spans.push(pad(aw.saturating_sub(used)));
-            spans.push(Span::styled(" │ ", theme::fg(BORDER)));
+            spans.push(Span::styled(" │ ", theme::fg(theme::pal().border)));
             if let Some(l) = b.get(i) {
                 spans.extend(l.spans.clone());
             }
@@ -783,10 +808,10 @@ fn path_lines(label: &str, path: &str, color: Color, note: &str, w: usize) -> Ve
 
 fn act_color(k: ActKind) -> Color {
     match k {
-        ActKind::Scan | ActKind::Done => OK,
-        ActKind::Start | ActKind::Copy => DIR,
-        ActKind::Retry(_) | ActKind::Skip => WARN,
-        ActKind::Error => ERR,
+        ActKind::Scan | ActKind::Done => theme::pal().ok,
+        ActKind::Start | ActKind::Copy => theme::pal().dir,
+        ActKind::Retry(_) | ActKind::Skip => theme::pal().warn,
+        ActKind::Error => theme::pal().err,
     }
 }
 
@@ -800,7 +825,10 @@ fn activity_lines(a: &[Activity], n: usize, w: usize) -> Vec<Line<'static>> {
             Line::from(vec![
                 Span::styled(format!("{:<10}", hms(e.at)), theme::dim()),
                 Span::styled(format!("{k:<9}"), theme::fg(act_color(e.kind))),
-                Span::styled(truncate(&e.text, w.saturating_sub(19)), theme::fg(FG)),
+                Span::styled(
+                    truncate(&e.text, w.saturating_sub(19)),
+                    theme::fg(theme::pal().fg),
+                ),
             ])
         })
         .collect()
@@ -831,7 +859,7 @@ fn render_sections(
     let room = h.saturating_sub(lines.len() + 2);
     if room >= 1 && !activity.is_empty() {
         lines.push(Line::default());
-        lines.push(rule("ACTIVITY", "tail of the log", w, DIR));
+        lines.push(rule("ACTIVITY", "tail of the log", w, theme::pal().dir));
         lines.extend(activity_lines(activity, room.min(8), w));
     }
     lines.truncate(h);
@@ -857,9 +885,9 @@ fn draw_live(f: &mut Frame, area: Rect, j: &Job, now: Instant) {
 
     // 1. The stepper: the current stage is `‖` paused, `◐` stalled, else `●`.
     let mark = if j.paused {
-        Some(("‖", DIR))
+        Some(("‖", theme::pal().dir))
     } else if stalled {
-        Some(("◐", WARN))
+        Some(("◐", theme::pal().warn))
     } else {
         None
     };
@@ -894,7 +922,7 @@ fn draw_live(f: &mut Frame, area: Rect, j: &Job, now: Instant) {
     if j.paused {
         lines.push(Line::default());
         lines.extend(banner(
-            DIR,
+            theme::pal().dir,
             "‖ Paused · p resumes".to_string(),
             "robocopy is stopped and holds no files; resuming carries on where it left off \
              (a half-copied file restarts from where it stopped)."
@@ -949,7 +977,7 @@ fn draw_live(f: &mut Frame, area: Rect, j: &Job, now: Instant) {
             ),
         };
         lines.extend(banner(
-            WARN,
+            theme::pal().warn,
             format!("⚠ No progress for {quiet} · {cause}"),
             what,
             keys,
@@ -968,11 +996,11 @@ fn draw_live(f: &mut Frame, area: Rect, j: &Job, now: Instant) {
         {
             lines.push(Line::from(vec![
                 if i == 0 {
-                    Span::styled("Finishing: ", theme::bold(ACCENT))
+                    Span::styled("Finishing: ", theme::bold(theme::pal().accent))
                 } else {
                     pad(11)
                 },
-                Span::styled(l, theme::fg(FG)),
+                Span::styled(l, theme::fg(theme::pal().fg)),
             ]));
         }
     }
@@ -982,7 +1010,10 @@ fn draw_live(f: &mut Frame, area: Rect, j: &Job, now: Instant) {
     let frac = j.fraction();
     let pct = format!("{:>4.0}%", frac * 100.0);
     let mut b = bar(frac, w.saturating_sub(6), color);
-    b.push(Span::styled(format!(" {pct}"), theme::bold(FG)));
+    b.push(Span::styled(
+        format!(" {pct}"),
+        theme::bold(theme::pal().fg),
+    ));
     lines.push(Line::from(b));
     let later = j
         .backup
@@ -998,8 +1029,11 @@ fn draw_live(f: &mut Frame, area: Rect, j: &Job, now: Instant) {
         (None, None) => "counting…".to_string(),
     };
     let (eta, eta_style) = match j.phase {
-        _ if j.paused => ("ETA — paused".to_string(), theme::fg(DIR)),
-        _ if j.waiting.is_some() => ("ETA waiting on a locked file".to_string(), theme::fg(WARN)),
+        _ if j.paused => ("ETA — paused".to_string(), theme::fg(theme::pal().dir)),
+        _ if j.waiting.is_some() => (
+            "ETA waiting on a locked file".to_string(),
+            theme::fg(theme::pal().warn),
+        ),
         Phase::Scanning => ("ETA after the scan".to_string(), theme::dim()),
         Phase::Finishing => ("ETA — finishing".to_string(), theme::dim()),
         _ => (
@@ -1009,7 +1043,7 @@ fn draw_live(f: &mut Frame, area: Rect, j: &Job, now: Instant) {
         ),
     };
     lines.push(Line::from(vec![
-        Span::styled(size.clone(), theme::fg(FG)),
+        Span::styled(size.clone(), theme::fg(theme::pal().fg)),
         pad(w.saturating_sub(width(&size) + width(&eta))),
         Span::styled(eta, eta_style),
     ]));
@@ -1018,7 +1052,10 @@ fn draw_live(f: &mut Frame, area: Rect, j: &Job, now: Instant) {
     {
         lines.push(Line::from(vec![
             Span::styled("now  ", theme::dim()),
-            Span::styled(truncate_left(&c.path, w.saturating_sub(16)), theme::fg(FG)),
+            Span::styled(
+                truncate_left(&c.path, w.saturating_sub(16)),
+                theme::fg(theme::pal().fg),
+            ),
             Span::styled(format!("  {:.0}%", c.pct), theme::dim()),
         ]));
     } else if let Some(p) = j.tracker.last_path().filter(|_| later.is_none())
@@ -1027,7 +1064,10 @@ fn draw_live(f: &mut Frame, area: Rect, j: &Job, now: Instant) {
         // `/MT` names a file only once it's done: show the latest one.
         lines.push(Line::from(vec![
             Span::styled("last ", theme::dim()),
-            Span::styled(truncate_left(p, w.saturating_sub(16)), theme::fg(FG)),
+            Span::styled(
+                truncate_left(p, w.saturating_sub(16)),
+                theme::fg(theme::pal().fg),
+            ),
         ]));
     }
 
@@ -1041,7 +1081,7 @@ fn draw_live(f: &mut Frame, area: Rect, j: &Job, now: Instant) {
         "THROUGHPUT",
         &format!("{} now · {} avg", rate(now_s), rate(avg)),
         cw,
-        DIR,
+        theme::pal().dir,
     )];
     let samples: Vec<f64> = j.history.iter().copied().collect();
     tp.extend(chart(&samples, cw, color));
@@ -1063,13 +1103,23 @@ fn draw_live(f: &mut Frame, area: Rect, j: &Job, now: Instant) {
         .last()
         .map(|r| format!("last: {} ({})", short_name(&r.path), short_reason(r.code)))
         .unwrap_or_default();
-    let mut st = vec![rule("STATUS", "", if side { w - cw - 3 } else { w }, DIR)];
-    st.push(stat("Speed", rate(now_s), FG, format!("avg {}", rate(avg))));
-    st.push(stat("Files", files, FG, String::new()));
+    let mut st = vec![rule(
+        "STATUS",
+        "",
+        if side { w - cw - 3 } else { w },
+        theme::pal().dir,
+    )];
+    st.push(stat(
+        "Speed",
+        rate(now_s),
+        theme::pal().fg,
+        format!("avg {}", rate(avg)),
+    ));
+    st.push(stat("Files", files, theme::pal().fg, String::new()));
     st.push(stat(
         "Elapsed",
         clock(j.elapsed(now)),
-        FG,
+        theme::pal().fg,
         format!("started {}", hms(j.started_at)),
     ));
     // sentier's own tries on locked files: the next one, and how often.
@@ -1084,30 +1134,39 @@ fn draw_live(f: &mut Frame, area: Rect, j: &Job, now: Instant) {
     st.push(stat(
         "Retries",
         j.retry_attempts.to_string(),
-        if j.retry_attempts == 0 { FG } else { WARN },
+        if j.retry_attempts == 0 {
+            theme::pal().fg
+        } else {
+            theme::pal().warn
+        },
         retry_note,
     ));
     if !j.skipped_files.is_empty() {
         st.push(stat(
             "Skipped",
             j.skipped_files.len().to_string(),
-            WARN,
+            theme::pal().warn,
             "left out with s".to_string(),
         ));
     }
     st.push(if errors == 0 {
-        stat("Errors", "none".into(), OK, String::new())
+        stat("Errors", "none".into(), theme::pal().ok, String::new())
     } else {
-        stat("Errors", errors.to_string(), ERR, last_err.to_string())
+        stat(
+            "Errors",
+            errors.to_string(),
+            theme::pal().err,
+            last_err.to_string(),
+        )
     });
     lines.extend(beside(tp, cw, st, side));
 
     // 4. PATHS.
     lines.push(Line::default());
-    lines.push(rule("PATHS", "", w, DIR));
-    lines.extend(path_lines("From", &j.source(), FG, "", w));
-    lines.extend(path_lines("To", &j.dest, FG, "", w));
-    lines.extend(path_lines("Log", &j.log, NET, "o open", w));
+    lines.push(rule("PATHS", "", w, theme::pal().dir));
+    lines.extend(path_lines("From", &j.source(), theme::pal().fg, "", w));
+    lines.extend(path_lines("To", &j.dest, theme::pal().fg, "", w));
+    lines.extend(path_lines("Log", &j.log, theme::pal().net, "o open", w));
 
     let act: Vec<Activity> = j.activity.iter().cloned().collect();
     render_sections(f, inner, lines, &act);
@@ -1124,9 +1183,9 @@ fn draw_report(f: &mut Frame, area: Rect, r: &Report) {
     let color = phase_color(r.phase);
     let mut lines = vec![Line::default()];
     let end = match r.phase {
-        Phase::Failed => Some(("✗", ERR)),
-        Phase::Cancelled => Some(("–", DIM)),
-        _ => Some(("✓", OK)),
+        Phase::Failed => Some(("✗", theme::pal().err)),
+        Phase::Cancelled => Some(("–", theme::pal().dim)),
+        _ => Some(("✓", theme::pal().ok)),
     };
     if r.backup.is_none() {
         let times: Vec<(Phase, Duration)> = r
@@ -1159,7 +1218,7 @@ fn draw_report(f: &mut Frame, area: Rect, r: &Report) {
                 human_bytes(r.bytes),
                 clock(Duration::from_secs(r.seconds))
             ),
-            theme::fg(FG),
+            theme::fg(theme::pal().fg),
         )));
     }
     if let Some(b) = &r.backup {
@@ -1169,12 +1228,12 @@ fn draw_report(f: &mut Frame, area: Rect, r: &Report) {
         } else {
             ("Zip", "entries read back, every CRC checked")
         };
-        lines.extend(path_lines(label, &b.zip, NET, "", w));
+        lines.extend(path_lines(label, &b.zip, theme::pal().net, "", w));
         lines.push(Line::from(vec![
             Span::styled(format!("{:<8}", "Verified"), theme::dim()),
             Span::styled(
                 format!("{} {checked} · {}", b.entries, human_bytes(b.bytes)),
-                theme::fg(OK),
+                theme::fg(theme::pal().ok),
             ),
         ]));
         let pruned = if b.pruned.is_empty() {
@@ -1184,7 +1243,10 @@ fn draw_report(f: &mut Frame, area: Rect, r: &Report) {
         };
         lines.push(Line::from(vec![
             Span::styled(format!("{:<8}", "Removed"), theme::dim()),
-            Span::styled(truncate(&pruned, w.saturating_sub(8)), theme::fg(FG)),
+            Span::styled(
+                truncate(&pruned, w.saturating_sub(8)),
+                theme::fg(theme::pal().fg),
+            ),
         ]));
     }
     if !r.history.is_empty() {
@@ -1196,7 +1258,12 @@ fn draw_report(f: &mut Frame, area: Rect, r: &Report) {
             0.0
         };
         let cw = w.min(72);
-        lines.push(rule("THROUGHPUT", &format!("{} avg", rate(avg)), cw, DIR));
+        lines.push(rule(
+            "THROUGHPUT",
+            &format!("{} avg", rate(avg)),
+            cw,
+            theme::pal().dir,
+        ));
         lines.extend(chart(&samples, cw, color));
     }
     if !r.failed.is_empty() {
@@ -1205,17 +1272,23 @@ fn draw_report(f: &mut Frame, area: Rect, r: &Report) {
             &format!("FAILED {}", r.failed.len()),
             "r retries them",
             w,
-            ERR,
+            theme::pal().err,
         ));
         // The path, then why under it (wrapped: Windows' messages are long).
         for x in &r.failed {
             lines.push(Line::from(vec![
-                Span::styled("✗ ", theme::fg(ERR)),
-                Span::styled(truncate_left(&x.path, w.saturating_sub(2)), theme::fg(FG)),
+                Span::styled("✗ ", theme::fg(theme::pal().err)),
+                Span::styled(
+                    truncate_left(&x.path, w.saturating_sub(2)),
+                    theme::fg(theme::pal().fg),
+                ),
             ]));
             let reason = format!("error {} · {}", x.code, x.message.trim());
             for l in crate::help::wrap(&reason, w.saturating_sub(2)) {
-                lines.push(Line::from(vec![pad(2), Span::styled(l, theme::fg(ERR))]));
+                lines.push(Line::from(vec![
+                    pad(2),
+                    Span::styled(l, theme::fg(theme::pal().err)),
+                ]));
             }
         }
     }
@@ -1225,29 +1298,35 @@ fn draw_report(f: &mut Frame, area: Rect, r: &Report) {
             &format!("SKIPPED {}", r.skipped_files.len()),
             "left out with s (still locked)",
             w,
-            WARN,
+            theme::pal().warn,
         ));
         for p in &r.skipped_files {
             lines.push(Line::from(vec![
-                Span::styled("! ", theme::fg(WARN)),
-                Span::styled(truncate_left(p, w.saturating_sub(2)), theme::fg(FG)),
+                Span::styled("! ", theme::fg(theme::pal().warn)),
+                Span::styled(
+                    truncate_left(p, w.saturating_sub(2)),
+                    theme::fg(theme::pal().fg),
+                ),
             ]));
         }
     }
     if !r.errors.is_empty() {
         lines.push(Line::default());
-        lines.push(rule("ERRORS", "", w, ERR));
+        lines.push(rule("ERRORS", "", w, theme::pal().err));
         for e in &r.errors {
-            lines.push(Line::from(Span::styled(truncate(e, w), theme::fg(ERR))));
+            lines.push(Line::from(Span::styled(
+                truncate(e, w),
+                theme::fg(theme::pal().err),
+            )));
         }
     }
     lines.push(Line::default());
-    lines.push(rule("PATHS", "", w, DIR));
+    lines.push(rule("PATHS", "", w, theme::pal().dir));
     if !r.source.is_empty() {
-        lines.extend(path_lines("From", &r.source, FG, "", w));
+        lines.extend(path_lines("From", &r.source, theme::pal().fg, "", w));
     }
-    lines.extend(path_lines("To", &r.dest, FG, "", w));
-    lines.extend(path_lines("Log", &r.log, NET, "o open", w));
+    lines.extend(path_lines("To", &r.dest, theme::pal().fg, "", w));
+    lines.extend(path_lines("Log", &r.log, theme::pal().net, "o open", w));
     render_sections(f, inner, lines, &r.activity);
 }
 
@@ -1284,12 +1363,12 @@ pub fn summary_spans(app: &App) -> Vec<Span<'static>> {
     let count = |p: Phase| all.iter().filter(|q| **q == p).count();
     let mut parts: Vec<(String, Color)> = Vec::new();
     if running > 0 {
-        parts.push((format!("{running} running"), ACCENT));
+        parts.push((format!("{running} running"), theme::pal().accent));
     }
     for (p, word, c) in [
-        (Phase::Done, "done", OK),
-        (Phase::Failed, "failed", ERR),
-        (Phase::Cancelled, "cancelled", DIM),
+        (Phase::Done, "done", theme::pal().ok),
+        (Phase::Failed, "failed", theme::pal().err),
+        (Phase::Cancelled, "cancelled", theme::pal().dim),
     ] {
         let n = count(p);
         if n > 0 {
@@ -1324,9 +1403,15 @@ pub fn indicator(app: &App) -> Option<Span<'static>> {
     let stalled = running.iter().filter(|j| j.stalled(now)).count();
     let paused = running.iter().filter(|j| j.paused).count();
     let (text, color) = if stalled > 0 {
-        (format!("⚠ {stalled} {jobs} stalled · {pct:.0}%   "), WARN)
+        (
+            format!("⚠ {stalled} {jobs} stalled · {pct:.0}%   "),
+            theme::pal().warn,
+        )
     } else if paused == n {
-        (format!("‖ {n} {jobs} paused · {pct:.0}%   "), DIR)
+        (
+            format!("‖ {n} {jobs} paused · {pct:.0}%   "),
+            theme::pal().dir,
+        )
     } else {
         let finishing = running.iter().any(|j| j.phase == Phase::Finishing);
         (
@@ -1334,7 +1419,7 @@ pub fn indicator(app: &App) -> Option<Span<'static>> {
                 "⇅ {n} {jobs} · {pct:.0}%{}   ",
                 if finishing { " finishing" } else { "" }
             ),
-            ACCENT,
+            theme::pal().accent,
         )
     };
     Some(Span::styled(
@@ -1342,7 +1427,7 @@ pub fn indicator(app: &App) -> Option<Span<'static>> {
         Style::new()
             .fg(color)
             .add_modifier(Modifier::BOLD)
-            .bg(SEL_BG),
+            .bg(theme::pal().sel_bg),
     ))
 }
 

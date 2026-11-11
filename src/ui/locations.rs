@@ -4,7 +4,7 @@
 use super::columns::{
     draw_state, fmt_second, gutter_cell, gutter_width, info_line, panel, scrolled_offset,
 };
-use super::theme::{self, DIM, ERR, FG, NET, OK, SEL_BG};
+use super::theme;
 use super::{human_size, spinner, truncate, truncate_left, width};
 use crate::app::{App, REPROBE_EVERY, Reach};
 use crate::fs::worker::{ListError, PROBE_TIMEOUT};
@@ -154,7 +154,10 @@ fn draw_list(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn header(s: Section) -> Line<'static> {
-    Line::from(Span::styled(format!("  {}", s.title()), theme::bold(DIM)))
+    Line::from(Span::styled(
+        format!("  {}", s.title()),
+        theme::bold(theme::pal().dim),
+    ))
 }
 
 fn legend_line(w: usize) -> Line<'static> {
@@ -163,11 +166,11 @@ fn legend_line(w: usize) -> Line<'static> {
     let pad = w.saturating_sub(width(left) + width(&right));
     Line::from(vec![
         Span::styled("  ", theme::dim()),
-        Span::styled("●", theme::fg(OK)),
+        Span::styled("●", theme::fg(theme::pal().ok)),
         Span::styled(" reachable   ", theme::dim()),
         Span::styled("○", theme::dim()),
         Span::styled(" not checked yet   ", theme::dim()),
-        Span::styled("×", theme::fg(ERR)),
+        Span::styled("×", theme::fg(theme::pal().err)),
         Span::styled(" unreachable", theme::dim()),
         Span::raw(" ".repeat(pad)),
         Span::styled(right, theme::dim()),
@@ -178,8 +181,8 @@ fn legend_line(w: usize) -> Line<'static> {
 /// runs. A re-probe keeps showing the last answer.
 fn dot(app: &App, reach: Option<&Reach>) -> Span<'static> {
     match reach {
-        Some(r) if r.is_reachable() => Span::styled("●", theme::fg(OK)),
-        Some(r) if r.is_unreachable() => Span::styled("×", theme::fg(ERR)),
+        Some(r) if r.is_reachable() => Span::styled("●", theme::fg(theme::pal().ok)),
+        Some(r) if r.is_unreachable() => Span::styled("×", theme::fg(theme::pal().err)),
         Some(r) if r.probing => Span::styled(spinner(app), theme::dim()),
         _ => Span::styled("○", theme::dim()),
     }
@@ -200,14 +203,16 @@ fn short_error(e: &Entry, err: &ListError) -> &'static str {
 /// `  ● JDOE-LT042              online · 4 ms` (the dot from the port-445 probe).
 fn machine_line(e: &Entry, w: usize, is_cursor: bool, online: Option<bool>) -> Line<'static> {
     let base = if is_cursor {
-        Style::new().bg(SEL_BG).add_modifier(Modifier::BOLD)
+        Style::new()
+            .bg(theme::pal().sel_bg)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::new()
     };
     let (dot, color) = match online {
-        Some(true) => ("●", OK),
-        Some(false) => ("×", ERR),
-        None => ("○", DIM),
+        Some(true) => ("●", theme::pal().ok),
+        Some(false) => ("×", theme::pal().err),
+        None => ("○", theme::pal().dim),
     };
     let name_w = KEY_W + NAME_W;
     let right = truncate(&e.detail, w.saturating_sub(name_w + 6));
@@ -218,10 +223,10 @@ fn machine_line(e: &Entry, w: usize, is_cursor: bool, online: Option<bool>) -> L
         Span::styled(" ", base),
         Span::styled(
             format!("{:<name_w$}", truncate(&e.name, name_w - 1)),
-            base.fg(FG),
+            base.fg(theme::pal().fg),
         ),
         Span::styled(" ".repeat(pad), base),
-        Span::styled(right, base.fg(DIM)),
+        Span::styled(right, base.fg(theme::pal().dim)),
         Span::styled(" ", base),
     ])
 }
@@ -232,19 +237,32 @@ fn row_line(app: &App, e: &Entry, w: usize, is_cursor: bool) -> Line<'static> {
     }
     let reach = App::root_target(e).and_then(|t| app.reach_of(&t).cloned());
     let (key, name, path, name_color) = match e.kind {
-        EntryKind::Drive(DriveKind::Network) => {
-            (e.name.clone(), "→".to_string(), e.detail.clone(), NET)
-        }
-        EntryKind::Drive(_) => (e.name.clone(), e.detail.clone(), String::new(), FG),
+        EntryKind::Drive(DriveKind::Network) => (
+            e.name.clone(),
+            "→".to_string(),
+            e.detail.clone(),
+            theme::pal().net,
+        ),
+        EntryKind::Drive(_) => (
+            e.name.clone(),
+            e.detail.clone(),
+            String::new(),
+            theme::pal().fg,
+        ),
         EntryKind::Pin => {
             let key = app
                 .pin_of(e)
                 .and_then(|p| p.key_str())
                 .map(|c| format!("'{c}"))
                 .unwrap_or_default();
-            (key, e.detail.clone(), e.name.clone(), FG)
+            (key, e.detail.clone(), e.name.clone(), theme::pal().fg)
         }
-        _ => (String::new(), String::new(), e.name.clone(), NET),
+        _ => (
+            String::new(),
+            String::new(),
+            e.name.clone(),
+            theme::pal().net,
+        ),
     };
     let right = match (&reach.as_ref().and_then(|r| r.last.clone()), e.kind) {
         (Some(Err(err)), _) => short_error(e, err).to_string(),
@@ -256,8 +274,8 @@ fn row_line(app: &App, e: &Entry, w: usize, is_cursor: bool) -> Line<'static> {
         _ => String::new(),
     };
     let right_color = match reach.as_ref() {
-        Some(r) if r.is_unreachable() => ERR,
-        _ => DIM,
+        Some(r) if r.is_unreachable() => theme::pal().err,
+        _ => theme::pal().dim,
     };
 
     // "  ● C:  Windows            \\srv\share           412.0 GB free "
@@ -268,7 +286,9 @@ fn row_line(app: &App, e: &Entry, w: usize, is_cursor: bool) -> Line<'static> {
     let pad = w.saturating_sub(fixed + width(&path) + right_w);
 
     let base = if is_cursor {
-        Style::new().bg(SEL_BG).add_modifier(Modifier::BOLD)
+        Style::new()
+            .bg(theme::pal().sel_bg)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::new()
     };
@@ -277,12 +297,12 @@ fn row_line(app: &App, e: &Entry, w: usize, is_cursor: bool) -> Line<'static> {
         Span::styled("  ", base),
         dot(app, reach.as_ref()).patch_style(base),
         Span::styled(" ", base),
-        Span::styled(format!("{:<KEY_W$}", key), st(theme::ACCENT)),
+        Span::styled(format!("{:<KEY_W$}", key), st(theme::pal().accent)),
         Span::styled(
             format!("{:<NAME_W$}", truncate(&name, NAME_W - 1)),
             st(name_color),
         ),
-        Span::styled(path, st(NET)),
+        Span::styled(path, st(theme::pal().net)),
         Span::styled(" ".repeat(pad), base),
         Span::styled(right, st(right_color)),
         Span::styled(" ", base),
@@ -369,23 +389,23 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
 
     lines.push(Line::default());
     let mut hints = vec![
-        Span::styled(" l", theme::bold(FG)),
+        Span::styled(" l", theme::bold(theme::pal().fg)),
         Span::styled(" open      ", theme::dim()),
-        Span::styled("R", theme::bold(FG)),
+        Span::styled("R", theme::bold(theme::pal().fg)),
         Span::styled(" retry now      ", theme::dim()),
     ];
     if e.kind == EntryKind::Share {
-        hints.push(Span::styled("dd", theme::bold(FG)));
+        hints.push(Span::styled("dd", theme::bold(theme::pal().fg)));
         hints.push(Span::styled(" remove from list", theme::dim()));
     }
     lines.push(Line::from(hints));
     if e.kind == EntryKind::Pin {
         lines.push(Line::from(vec![
-            Span::styled(" r", theme::bold(FG)),
+            Span::styled(" r", theme::bold(theme::pal().fg)),
             Span::styled(" rename    ", theme::dim()),
-            Span::styled("T", theme::bold(FG)),
+            Span::styled("T", theme::bold(theme::pal().fg)),
             Span::styled(" tags           ", theme::dim()),
-            Span::styled("dd", theme::bold(FG)),
+            Span::styled("dd", theme::bold(theme::pal().fg)),
             Span::styled(" unpin", theme::dim()),
         ]));
     }
@@ -408,13 +428,13 @@ fn status_lines(app: &App, reach: Option<&Reach>) -> Vec<Line<'static>> {
         ])),
         Some(Ok(p)) => lines.push(Line::from(vec![
             Span::styled(format!(" {:<10}", "Status"), theme::dim()),
-            Span::styled("● reachable", theme::fg(OK)),
+            Span::styled("● reachable", theme::fg(theme::pal().ok)),
             Span::styled(format!("  ·  {} ms{at}", p.rtt.as_millis()), theme::dim()),
         ])),
         Some(Err(err)) => {
             lines.push(Line::from(vec![
                 Span::styled(format!(" {:<10}", "Status"), theme::dim()),
-                Span::styled("× unreachable", theme::fg(ERR)),
+                Span::styled("× unreachable", theme::fg(theme::pal().err)),
             ]));
             let why = match err {
                 ListError::TimedOut => {

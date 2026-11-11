@@ -1,7 +1,7 @@
 //! The credential prompt (docs/screens/11-credentials.txt): a box over the body with the
 //! target, Windows' reason, User, a masked Password and the Remember checkbox.
 
-use super::theme::{self, ACCENT, BORDER, ERR, FG, PANEL_BG, WARN};
+use super::theme;
 use super::{spinner, truncate, width};
 use crate::app::App;
 use crate::app::auth::Field;
@@ -31,11 +31,11 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
         .unwrap_or_default();
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(theme::fg(BORDER))
-        .style(Style::new().bg(PANEL_BG).fg(FG))
+        .border_style(theme::fg(theme::pal().border))
+        .style(Style::new().bg(theme::pal().panel_bg).fg(theme::pal().fg))
         .title(Line::from(vec![
-            Span::styled("─ ", theme::fg(BORDER)),
-            Span::styled("Credentials needed", theme::bold(ACCENT)),
+            Span::styled("─ ", theme::fg(theme::pal().border)),
+            Span::styled("Credentials needed", theme::bold(theme::pal().accent)),
             Span::raw(" "),
         ]))
         .title(Line::from(Span::styled(title_right, theme::dim())).right_aligned());
@@ -46,23 +46,27 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
 
     let label = |text: &str, focused: bool| {
         let style = if focused {
-            theme::bold(ACCENT)
+            theme::bold(theme::pal().accent)
         } else {
             theme::dim()
         };
         Span::styled(format!("  {text:<11}"), style)
     };
-    let caret = Span::styled("▏", theme::fg(ACCENT));
+    let caret = Span::styled("▏", theme::fg(theme::pal().accent));
 
     let mut lines = vec![
         Line::default(),
         Line::from(Span::styled(
             format!("  {}", truncate(&p.target, iw.saturating_sub(4))),
-            theme::bold(FG),
+            theme::bold(theme::pal().fg),
         )),
         Line::from(Span::styled(
             format!("  {}", truncate(&p.reason, iw.saturating_sub(4))),
-            theme::fg(if p.tries > 0 { ERR } else { WARN }),
+            theme::fg(if p.tries > 0 {
+                theme::pal().err
+            } else {
+                theme::pal().warn
+            }),
         )),
         Line::default(),
     ];
@@ -88,9 +92,9 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
     // Remember
     let check = if p.remember { "[x]" } else { "[ ]" };
     let style = if p.focus == Field::Remember {
-        theme::bold(ACCENT)
+        theme::bold(theme::pal().accent)
     } else {
-        theme::fg(FG)
+        theme::fg(theme::pal().fg)
     };
     lines.push(Line::from(vec![
         Span::raw("  "),
@@ -107,7 +111,7 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
     if p.busy {
         lines.push(Line::from(Span::styled(
             format!("  {} connecting…   Esc abandon", spinner(app)),
-            theme::fg(ACCENT),
+            theme::fg(theme::pal().accent),
         )));
     } else if p.conflict {
         // Error 1219: Windows allows one account per server. The two real fixes.
@@ -123,8 +127,11 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
             ),
         ] {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {key} "), theme::bold(ACCENT)),
-                Span::styled(truncate(&text, iw.saturating_sub(6)), theme::fg(FG)),
+                Span::styled(format!("  {key} "), theme::bold(theme::pal().accent)),
+                Span::styled(
+                    truncate(&text, iw.saturating_sub(6)),
+                    theme::fg(theme::pal().fg),
+                ),
             ]));
         }
     } else {
@@ -132,7 +139,10 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
         let buttons = "  [ Enter Connect ]   [ Esc Cancel ]";
         let pad = iw.saturating_sub(width(buttons) + width(keys) + 2);
         lines.push(Line::from(vec![
-            Span::styled(buttons, theme::fg(FG).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                buttons,
+                theme::fg(theme::pal().fg).add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" ".repeat(pad)),
             Span::styled(keys, theme::dim()),
         ]));

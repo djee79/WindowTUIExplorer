@@ -428,6 +428,8 @@ pub enum Action {
     SetNumber(bool),
     /// `:set rnu` / `:set nornu`.
     SetRelativeNumber(bool),
+    /// `:colorscheme [name]`: switch colors (remembered); no name says which is in use.
+    Colorscheme(String),
 }
 
 /// (name, action) for every argument-less action, for keymap.toml and `:`.
@@ -887,6 +889,13 @@ pub const COMMANDS: &[Command] = {
             NoKey,
         ),
         cmd(
+            "colorscheme",
+            "[default|tokyonight|tokyonight-storm|tokyonight-moon]",
+            "colors (Tab cycles; remembered)",
+            RenameOptions,
+            NoKey,
+        ),
+        cmd(
             "q",
             "",
             "quit (wq: and cd the shell here)",
@@ -1003,7 +1012,7 @@ impl Action {
             | MachinePicker => Group::Pickers,
             Jobs | Sync(..) | Backup(_) | SyncPicker | ImportWtm => Group::SyncBackup,
             Refresh | CommandLine | Quit | QuitWriteCwd | QuitNoWrite | Redraw | SetNumber(_)
-            | SetRelativeNumber(_) => Group::Session,
+            | SetRelativeNumber(_) | Colorscheme(_) => Group::Session,
         }
     }
 }
@@ -1088,6 +1097,7 @@ impl Action {
                 }
                 _ => Err("view save <name> | view delete <name>".to_string()),
             },
+            "colorscheme" | "colo" => Ok(Action::Colorscheme(arg.to_string())),
             "set" | "se" => match arg {
                 "nu" | "number" => Ok(Action::SetNumber(true)),
                 "nonu" | "nonumber" => Ok(Action::SetNumber(false)),
@@ -1336,7 +1346,7 @@ fn defaults() -> Vec<(&'static str, Action, &'static str)> {
         ("V", Visual, ""),
         ("yy", Yank, "yank (copy)"),
         ("x", Cut, "cut"),
-        ("p", Paste, "paste here"),
+        ("p", Paste, "paste here (names already there: asks)"),
         ("P", PasteOverwrite, "paste, replacing (asks)"),
         (".", RepeatPaste, "repeat the last paste here"),
         ("R", Refresh, "retry / refresh / re-probe"),

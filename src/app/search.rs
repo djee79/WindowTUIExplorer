@@ -490,6 +490,6 @@ impl App {
     pub fn take_unsaved_sort(&mut self) -> Option<crate::state::UiState> {
         self.sort_dirty
             .take()
-            .map(|_| crate::state::UiState::from_sort(self.sort))
+            .map(|_| crate::state::UiState::new(self.sort, crate::ui::theme::scheme()))
     }
 }

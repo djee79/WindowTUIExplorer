@@ -3,7 +3,7 @@
 //! Only the visible window of each column is turned into lines, so a 50k-entry
 //! directory costs no more to draw than a 50-entry one.
 
-use super::theme::{self, BORDER, DIMMED, DIR, ERR, FG, INACTIVE_SEL_BG, NET, SEL_BG};
+use super::theme;
 use super::{human_size, spinner, thousands, truncate, width};
 use crate::app::{App, DirState, Mode, visible_indices};
 use crate::fs::worker::ListError;
@@ -60,19 +60,19 @@ fn draw_preview_panel(f: &mut Frame, area: Rect, app: &mut App) {
 
 pub(super) fn panel<'a>(title: String, focused: bool) -> Block<'a> {
     let title_style = if focused {
-        theme::bold(theme::ACCENT)
+        theme::bold(theme::pal().accent)
     } else {
-        theme::fg(FG)
+        theme::fg(theme::pal().fg)
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(theme::fg(BORDER));
+        .border_style(theme::fg(theme::pal().border));
     if title.is_empty() {
         return block;
     }
     // `╭─ title ───`, like the mockups (ratatui would put it right on the corner).
     block.title(Line::from(vec![
-        Span::styled("─ ", theme::fg(BORDER)),
+        Span::styled("─ ", theme::fg(theme::pal().border)),
         Span::styled(title, title_style),
         Span::raw(" "),
     ]))
@@ -124,13 +124,13 @@ fn draw_current(f: &mut Frame, area: Rect, app: &mut App) {
         if let Some(s) = search {
             // ● while the walk runs, ✓ when it finished, × when cancelled.
             let (mark, color) = match (s.running(), s.cancelled) {
-                (true, _) => ("● ", theme::ACCENT),
-                (false, true) => ("× ", theme::WARN),
-                (false, false) => ("✓ ", theme::OK),
+                (true, _) => ("● ", theme::pal().accent),
+                (false, true) => ("× ", theme::pal().warn),
+                (false, false) => ("✓ ", theme::pal().ok),
             };
             spans.push(Span::styled(mark, theme::fg(color)));
         }
-        spans.push(Span::styled("─", theme::fg(BORDER)));
+        spans.push(Span::styled("─", theme::fg(theme::pal().border)));
         block = block.title(Line::from(spans).right_aligned());
     }
     let in_results = search.is_some();
@@ -305,8 +305,10 @@ pub(super) fn draw_state(f: &mut Frame, area: Rect, app: &App, state: &DirState,
     let mut lines = Vec::new();
     if let Some(err) = &state.error {
         let color = match err {
-            ListError::AccessDenied | ListError::NotFound | ListError::NotADirectory => ERR,
-            _ => theme::WARN,
+            ListError::AccessDenied | ListError::NotFound | ListError::NotADirectory => {
+                theme::pal().err
+            }
+            _ => theme::pal().warn,
         };
         lines.push(Line::from(Span::styled(
             format!(" ⚠ {err}"),
@@ -357,7 +359,7 @@ fn draw_simple_rows(
             let pad = w.saturating_sub(1 + width(&name));
             let mut style = entry_style(e);
             if selected == Some(row) {
-                style = style.bg(INACTIVE_SEL_BG);
+                style = style.bg(theme::pal().inactive_sel_bg);
             }
             Line::from(format!(" {name}{}", " ".repeat(pad))).style(style)
         })
@@ -383,18 +385,18 @@ fn display_name(e: &Entry, max: usize) -> String {
 
 fn entry_style(e: &Entry) -> Style {
     let color: Color = match e.kind {
-        _ if e.is_hidden() => DIMMED,
-        EntryKind::Drive(_) => theme::ACCENT,
-        EntryKind::Share | EntryKind::Pin => NET,
-        EntryKind::Dir if e.is_link => NET,
-        EntryKind::Dir => DIR,
-        EntryKind::File if e.is_link => NET,
-        EntryKind::File => FG,
-        EntryKind::Machine(Some(true)) => NET,
-        EntryKind::Machine(Some(false)) => DIMMED,
-        EntryKind::Machine(None) => FG,
-        EntryKind::Template(Template::Missing | Template::NeedsUser) => DIMMED,
-        EntryKind::Template(_) => DIR,
+        _ if e.is_hidden() => theme::pal().dimmed,
+        EntryKind::Drive(_) => theme::pal().accent,
+        EntryKind::Share | EntryKind::Pin => theme::pal().net,
+        EntryKind::Dir if e.is_link => theme::pal().net,
+        EntryKind::Dir => theme::pal().dir,
+        EntryKind::File if e.is_link => theme::pal().net,
+        EntryKind::File => theme::pal().fg,
+        EntryKind::Machine(Some(true)) => theme::pal().net,
+        EntryKind::Machine(Some(false)) => theme::pal().dimmed,
+        EntryKind::Machine(None) => theme::pal().fg,
+        EntryKind::Template(Template::Missing | Template::NeedsUser) => theme::pal().dimmed,
+        EntryKind::Template(_) => theme::pal().dir,
     };
     theme::fg(color)
 }
@@ -435,9 +437,9 @@ pub(super) fn gutter_cell(
         _ => format!("{:>w$}", row + 1),
     };
     let style = if row == cursor {
-        theme::bold(theme::ACCENT)
+        theme::bold(theme::pal().accent)
     } else {
-        theme::fg(DIMMED)
+        theme::fg(theme::pal().dimmed)
     };
     Span::styled(text, style)
 }
@@ -516,27 +518,27 @@ impl Cols {
         let mut name_style = entry_style(e);
         if search_hit {
             name_style = name_style
-                .fg(theme::ACCENT)
+                .fg(theme::pal().accent)
                 .add_modifier(Modifier::UNDERLINED);
         }
         let mut meta_style = if e.is_hidden() {
-            theme::fg(DIMMED)
+            theme::fg(theme::pal().dimmed)
         } else {
-            theme::fg(FG)
+            theme::fg(theme::pal().fg)
         };
         let mut date_style = theme::dim();
         let mut fill = Style::new();
         if is_cursor {
-            let sel = |s: Style| s.bg(SEL_BG).add_modifier(Modifier::BOLD);
+            let sel = |s: Style| s.bg(theme::pal().sel_bg).add_modifier(Modifier::BOLD);
             name_style = sel(name_style);
-            meta_style = sel(meta_style.fg(theme::SEL_FG));
+            meta_style = sel(meta_style.fg(theme::pal().sel_fg));
             date_style = sel(date_style);
-            fill = fill.bg(SEL_BG);
+            fill = fill.bg(theme::pal().sel_bg);
         }
         // Marker column (selection) and line number stay off the cursor highlight, like
         // neovim's sign column and CursorLineNr.
         let mut spans = vec![if marked {
-            Span::styled("▌", theme::bold(theme::ACCENT))
+            Span::styled("▌", theme::bold(theme::pal().accent))
         } else {
             Span::raw(" ")
         }];
@@ -594,7 +596,7 @@ pub(super) fn fmt_second(t: SystemTime) -> String {
 pub(super) fn info_line(label: &str, value: String) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!(" {label:<10}"), theme::dim()),
-        Span::styled(value, theme::fg(FG)),
+        Span::styled(value, theme::fg(theme::pal().fg)),
     ])
 }
 
@@ -680,7 +682,7 @@ fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Drawn>
                         " ⚠ {}",
                         truncate(err, inner.width.saturating_sub(4) as usize)
                     ),
-                    theme::fg(theme::WARN),
+                    theme::fg(theme::pal().warn),
                 )),
             ];
             f.render_widget(Paragraph::new(lines), inner);
@@ -753,9 +755,12 @@ fn draw_text(f: &mut Frame, area: Rect, tp: &crate::preview::text::TextPreview, 
             Line::from(vec![
                 Span::styled(
                     format!(" {:>nw$} ", start + i + 1),
-                    theme::fg(theme::DIMMED),
+                    theme::fg(theme::pal().dimmed),
                 ),
-                Span::styled(truncate(l, w.saturating_sub(nw + 2)), theme::fg(FG)),
+                Span::styled(
+                    truncate(l, w.saturating_sub(nw + 2)),
+                    theme::fg(theme::pal().fg),
+                ),
             ])
         })
         .collect();
@@ -830,7 +835,7 @@ fn draw_file_info(f: &mut Frame, area: Rect, app: &App, e: &Entry) {
     if in_results {
         lines.push(Line::default());
         lines.push(Line::from(vec![
-            Span::styled(" gr", theme::bold(FG)),
+            Span::styled(" gr", theme::bold(theme::pal().fg)),
             Span::styled(" go to this folder", theme::dim()),
         ]));
     }

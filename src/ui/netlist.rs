@@ -1,7 +1,7 @@
 //! `:net list`: the live SMB connections of this logon session, the account each uses,
 //! and which ones sentier made.
 
-use super::theme::{self, ACCENT, BORDER, FG, PANEL_BG};
+use super::theme;
 use super::truncate_left;
 use crate::app::App;
 use ratatui::Frame;
@@ -24,11 +24,11 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(theme::fg(BORDER))
-        .style(Style::new().bg(PANEL_BG).fg(FG))
+        .border_style(theme::fg(theme::pal().border))
+        .style(Style::new().bg(theme::pal().panel_bg).fg(theme::pal().fg))
         .title(Line::from(vec![
-            Span::styled("─ ", theme::fg(BORDER)),
-            Span::styled("Network connections", theme::bold(ACCENT)),
+            Span::styled("─ ", theme::fg(theme::pal().border)),
+            Span::styled("Network connections", theme::bold(theme::pal().accent)),
             Span::raw(" "),
         ]))
         .title(Line::from(Span::styled(" Esc close ", theme::dim())).right_aligned());
@@ -55,12 +55,12 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
             .clone()
             .unwrap_or_else(|| "(current login)".to_string());
         lines.push(Line::from(vec![
-            Span::styled(format!("  {local:<4}"), theme::fg(ACCENT)),
+            Span::styled(format!("  {local:<4}"), theme::fg(theme::pal().accent)),
             Span::styled(
                 format!("{:<remote_w$}", truncate_left(&c.remote, remote_w)),
-                theme::fg(theme::NET),
+                theme::fg(theme::pal().net),
             ),
-            Span::styled(format!("  {user:<30}"), theme::fg(FG)),
+            Span::styled(format!("  {user:<30}"), theme::fg(theme::pal().fg)),
             Span::styled(if *made { "  sentier" } else { "" }, theme::dim()),
         ]));
     }

@@ -13,7 +13,7 @@ mod picker;
 mod rename;
 mod statusbar;
 mod sync;
-mod theme;
+pub mod theme;
 mod whichkey;
 
 use crate::app::{App, Mode};
@@ -36,7 +36,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     .areas(f.area());
 
     f.render_widget(
-        Block::new().style(Style::new().bg(theme::BG).fg(theme::FG)),
+        Block::new().style(Style::new().bg(theme::pal().bg).fg(theme::pal().fg)),
         f.area(),
     );
     statusbar::draw_header(f, header, app);

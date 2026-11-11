@@ -60,6 +60,8 @@ pub enum PromptKind {
     ZipName,
     /// `<leader>zx` when the archive's folder exists: m merge, n new folder, Esc cancel.
     ExtractExists,
+    /// `p` when names are already there: k keep both, o overwrite, s skip, Esc cancel.
+    PasteClash,
     /// One field of a sync / backup preset (`:sync new`, `:backup new`, `^e`).
     Preset(PresetField),
 }
@@ -73,6 +75,8 @@ pub enum PresetField {
     Mode,
     /// Where a backup's zips go.
     DestDir,
+    /// A backup's zip name template: `{name}_{date:%Y-%m-%d_%H%M}`.
+    FileName,
     Keep,
     Engine,
     /// A web pin's address and browser.
@@ -91,6 +95,7 @@ impl PresetField {
             PresetField::Dest => "local copy (dest): ",
             PresetField::Mode => "mode (update | mirror): ",
             PresetField::DestDir => "zips go to: ",
+            PresetField::FileName => "zip name: ",
             PresetField::Keep => "keep newest (0 = all): ",
             PresetField::Engine => "zip engine (builtin | 7zip): ",
             PresetField::Url => "url: ",
@@ -138,7 +143,10 @@ impl Prompt {
             PromptKind::PinTags => "tags: ",
             PromptKind::PinKey => "key, 1-2 letters (empty = none): ",
             PromptKind::KeyMove => "move it to: ",
-            PromptKind::ConfirmUnpin | PromptKind::Confirm | PromptKind::ExtractExists => "",
+            PromptKind::ConfirmUnpin
+            | PromptKind::Confirm
+            | PromptKind::ExtractExists
+            | PromptKind::PasteClash => "",
             PromptKind::ViewName => "view name: ",
             PromptKind::ViewKey => "view key (empty = none): ",
             PromptKind::TagRename => "rename tag to: ",
@@ -532,6 +540,37 @@ impl App {
             Action::GotoLine(line) => self.set_cursor(line.saturating_sub(1)),
             Action::SetNumber(on) => self.number = on,
             Action::SetRelativeNumber(on) => self.relative_number = on,
+            Action::Colorscheme(name) => self.colorscheme(&name),
+        }
+    }
+
+    /// `:colorscheme [name]`: switch and remember it (ui.toml); no name says which.
+    fn colorscheme(&mut self, name: &str) {
+        use crate::ui::theme;
+        let all = || {
+            theme::SCHEMES
+                .iter()
+                .map(|(s, _)| *s)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        if name.trim().is_empty() {
+            return self.set_status(
+                format!("colorscheme {} (also: {})", theme::scheme(), all()),
+                false,
+            );
+        }
+        match theme::set_scheme(name) {
+            Some(full) => {
+                self.worker
+                    .save_ui_state(crate::state::UiState::new(self.sort, full));
+                self.dirty = true;
+                self.set_status(format!("colorscheme {full}"), false);
+            }
+            None => self.set_status(
+                format!("unknown colorscheme {:?}: {}", name.trim(), all()),
+                true,
+            ),
         }
     }
 
@@ -700,6 +739,40 @@ impl App {
                 Some(merge) => {
                     self.mode = Mode::Normal;
                     self.extract_answer(merge);
+                }
+                None => self.prompt = Some(p),
+            }
+            return;
+        }
+        // Names already in the destination: `k` keep both, `o` overwrite, `s` skip,
+        // Esc / `q` cancel; `h` `l` Tab ← → pick a button and Enter presses it.
+        if p.kind == PromptKind::PasteClash {
+            use super::jobs::ClashAnswer;
+            let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
+            let answer = match ev.code {
+                KeyCode::Char('k' | 'K') if !ctrl => Some(Some(ClashAnswer::KeepBoth)),
+                KeyCode::Char('o' | 'O') if !ctrl => Some(Some(ClashAnswer::Overwrite)),
+                KeyCode::Char('s' | 'S') if !ctrl => Some(Some(ClashAnswer::Skip)),
+                KeyCode::Char('q') | KeyCode::Esc => Some(None),
+                KeyCode::Enter => Some(Some(if p.yes {
+                    ClashAnswer::KeepBoth
+                } else {
+                    ClashAnswer::Overwrite
+                })),
+                KeyCode::Char('h' | 'l')
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Tab
+                | KeyCode::BackTab => {
+                    p.yes = !p.yes;
+                    None
+                }
+                _ => None,
+            };
+            match answer {
+                Some(a) => {
+                    self.mode = Mode::Normal;
+                    self.paste_clash_answer(a);
                 }
                 None => self.prompt = Some(p),
             }
@@ -878,6 +951,7 @@ impl App {
             | PromptKind::PinKey
             | PromptKind::ConfirmUnpin
             | PromptKind::ExtractExists
+            | PromptKind::PasteClash
             | PromptKind::Confirm
             | PromptKind::ViewName
             | PromptKind::ViewKey
@@ -965,6 +1039,11 @@ impl App {
                 }
             }
             PromptKind::ExtractExists => self.extract_answer(Some(p.yes)),
+            PromptKind::PasteClash => self.paste_clash_answer(Some(if p.yes {
+                super::jobs::ClashAnswer::KeepBoth
+            } else {
+                super::jobs::ClashAnswer::Overwrite
+            })),
             PromptKind::ZipName => {
                 if let Err(note) = self.zip_named(&text) {
                     let mut p = p;
@@ -1016,6 +1095,7 @@ impl App {
             PromptKind::Rename | PromptKind::NewFile | PromptKind::NewDir => self.fileop_cancel(),
             PromptKind::ZipName => self.zip_cancel(),
             PromptKind::ExtractExists => self.extract_answer(None),
+            PromptKind::PasteClash => self.paste_clash_answer(None),
         }
     }
 
@@ -1044,6 +1124,9 @@ impl App {
                 p.note = "Tab completes the path after :cd and :e".to_string();
                 return;
             };
+            if matches!(cmd, "colorscheme" | "colo") {
+                return complete_scheme(p, cmd, arg.trim(), forward);
+            }
             if !matches!(cmd, "cd" | "e" | "edit") {
                 p.note = "Tab completes the path after :cd and :e".to_string();
                 return;
@@ -1173,6 +1256,26 @@ impl App {
 }
 
 const MAX_HISTORY_STEPS: usize = super::MAX_HISTORY;
+
+/// `:colo tok` + Tab: the first scheme starting with it; on a full name, Tab / S-Tab
+/// cycle through them all (vim's wildmenu, without the menu).
+fn complete_scheme(p: &mut Prompt, cmd: &str, arg: &str, forward: bool) {
+    let names: Vec<&str> = crate::ui::theme::SCHEMES.iter().map(|(s, _)| *s).collect();
+    let arg = arg.to_ascii_lowercase();
+    let pick = match names.iter().position(|n| *n == arg) {
+        Some(i) if forward => names[(i + 1) % names.len()],
+        Some(i) => names[(i + names.len() - 1) % names.len()],
+        None => match names.iter().find(|n| n.starts_with(&arg)) {
+            Some(n) => n,
+            None => {
+                p.note = format!("no colorscheme starts with {arg:?}: {}", names.join(", "));
+                return;
+            }
+        },
+    };
+    p.editor.set_text(&format!("{cmd} {pick}"));
+    p.note = names.join("  ");
+}
 
 fn apply_completion(p: &mut Prompt) {
     let Some(c) = p.completion.as_mut() else {

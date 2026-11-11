@@ -1,7 +1,7 @@
 //! What sentier remembers between starts that isn't configuration: the folder order
-//! (`,m`, `,s`…). `%LOCALAPPDATA%\sentier\ui.toml`, written by the app, never needs
-//! editing (config.toml stays the user's own file). Pure but for `load` / `save`, which
-//! only the worker calls.
+//! (`,m`, `,s`…) and the colorscheme (`:colorscheme`). `%LOCALAPPDATA%\sentier\ui.toml`,
+//! written by the app, never needs editing (config.toml stays the user's own file). Pure
+//! but for `load` / `save` (called by the worker) and `load_early` (main, before the TUI).
 
 use crate::fs::sort::{DirSort, SortKey};
 use serde::{Deserialize, Serialize};
@@ -13,13 +13,16 @@ pub struct UiState {
     /// `name`, `modified`, `created`, `size`, `ext`.
     pub sort: String,
     pub sort_reverse: bool,
+    /// `default`, `tokyonight-night`… (empty: the default).
+    pub colorscheme: String,
 }
 
 impl UiState {
-    pub fn from_sort(s: DirSort) -> UiState {
+    pub fn new(s: DirSort, colorscheme: &str) -> UiState {
         UiState {
             sort: s.key.word().to_string(),
             sort_reverse: s.reverse,
+            colorscheme: colorscheme.to_string(),
         }
     }
 
@@ -57,6 +60,20 @@ pub fn load(path: &Path) -> UiState {
         .unwrap_or_default()
 }
 
+/// ui.toml read before the TUI starts (the colors are needed for the first frame), on a
+/// helper thread with a 300 ms cap, so startup never waits on a slow disk.
+pub fn load_early() -> UiState {
+    let Some(p) = path() else {
+        return UiState::default();
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(load(&p));
+    });
+    rx.recv_timeout(std::time::Duration::from_millis(300))
+        .unwrap_or_default()
+}
+
 pub fn save(path: &Path, state: &UiState) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -75,7 +92,7 @@ mod tests {
             key: SortKey::Modified,
             reverse: true,
         };
-        let st = UiState::from_sort(s);
+        let st = UiState::new(s, "tokyonight-storm");
         assert_eq!(st.sort(), s);
         // Its own file: the app tests use path(), and they run in parallel.
         let p = std::env::temp_dir()
@@ -87,7 +104,16 @@ mod tests {
         let odd = UiState {
             sort: "relevance".into(),
             sort_reverse: false,
+            colorscheme: String::new(),
         };
+        // An older ui.toml, without the colorscheme, still loads.
+        assert_eq!(
+            toml::from_str::<UiState>("sort = \"size\"\nsort_reverse = true\n").map(|s| s.sort()),
+            Ok(DirSort {
+                key: SortKey::Size,
+                reverse: true
+            })
+        );
         assert_eq!(odd.sort(), DirSort::default());
         assert_eq!(UiState::default().sort(), DirSort::default());
         if let Some(dir) = p.parent() {

@@ -294,6 +294,11 @@ fn real_main() -> Result<()> {
     // Timeouts and the picture protocol are needed before anything is listed.
     let (early, problem) = config::load_early();
     let worker = Worker::new(rt.handle().clone(), tx.clone(), early.timeouts());
+    // The colors, so the first frame is already in the saved scheme.
+    let scheme = state::load_early().colorscheme;
+    if !scheme.is_empty() && ui::theme::set_scheme(&scheme).is_none() {
+        tracing::warn!(scheme, "ui.toml: unknown colorscheme; using the default");
+    }
 
     install_panic_hook();
     let mut terminal = setup_terminal()?;

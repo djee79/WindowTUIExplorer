@@ -326,7 +326,11 @@ paths, tags are the main way to narrow things down.
   selection, or on the cursor item when nothing is selected. `.` repeats the last paste in
   another directory.
 - **A copy pasted where its original is** gets a free name, like Yazi: `report.pdf` →
-  `report_1.pdf`, then `_2`; folders too (`HIT_1`). Such files copy natively at any size
+  `report_1.pdf`, then `_2`; folders too (`HIT_1`). When `p` finds names the destination
+  already holds (copied or cut), a popup asks once for all of them: `k` / Enter keep
+  both (the new ones get a number), `o` overwrite (files replaced, folders merged, not
+  asked again), `s` skip them, `Esc` paste nothing. `P` skips the popup and replaces,
+  after its own confirmation. Files that get a new name copy natively at any size
   (robocopy can't rename a file); with folders in the same paste, that's two jobs. A cut
   pasted where it is does nothing.
 - Every paste creates a **Job**, shown in the job panel (`J` toggles it; it opens
@@ -570,13 +574,18 @@ name      = "HIT backup"
 tags      = ["aveva", "acme", "backup"]
 source    = '\\srv01\project\HIT'
 dest_dir  = 'E:\backups\aveva'                  # chosen folder; may be a UNC path
-file_name = "{name}_{date:%Y-%m-%d_%H%M}.zip"   # {name} = last path component of source
+file_name = "{name}_{date:%Y-%m-%d_%H%M}.zip"   # {name} = last path component of source,
+                                                # {date:…} strftime, {host} this PC, {user} Windows user
 keep      = 10                                  # retention: keep the newest N; 0 = keep all
 compression = "default"                         # store | fast | default | best
 check_in_use = true
 restartable = false                             # true: staging uses robocopy /Z (slow)
 ```
 
+- **Zip name:** asked in the app after the zips folder is picked (and on `Ctrl-e`),
+  pre-filled with the default; the line under it shows the name a run would write now
+  (`→ HIT_2026-11-10_1430.zip`) or what's wrong. Retention matches `{date}` as `*` but
+  `{host}` / `{user}` literally, so a backup never deletes zips another PC or user made.
 - **Pipeline:**
   1. In-use check (optional).
   2. Robocopy the source into a local **staging** dir
@@ -1241,6 +1250,12 @@ reported in the status bar at startup, never a crash.
 `jobs.native_max_bytes`, `aveva.project_markers`, `preview.protocol` (auto | kitty | sixel |
 iterm2 | halfblocks), `preview.cell_px`, `preview.max_network_mb`, `preview.cache_mb`,
 `theme.key` / `theme.header` (`"#rrggbb"`: key chips and section headers in `g?`).
+
+**Colorschemes:** `:colorscheme <name>` (`:colo`, Tab completes and cycles) switches live
+and is remembered in `ui.toml`, read before the first frame: `default`, `tokyonight-night`
+(`tokyonight`), `tokyonight-storm`, `tokyonight-moon` (folke/tokyonight.nvim colors, blue
+accent, cyan folders). `:colorscheme` alone says which is in use. Every UI color comes from
+`ui::theme::pal()`; a new scheme is one more `Palette` in `SCHEMES`.
 
 ## Milestones
 

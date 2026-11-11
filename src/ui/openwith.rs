@@ -2,7 +2,7 @@
 //! with… and Properties. Missing programs are greyed with "not found"; the opener used
 //! last for this extension says `★ last`.
 
-use super::theme::{self, ACCENT, BORDER, DIMMED, FG, PANEL_BG, SEL_BG, WARN};
+use super::theme;
 use super::{truncate, width};
 use crate::app::App;
 use crate::open::Section;
@@ -29,12 +29,12 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(theme::fg(BORDER))
-        .style(Style::new().bg(PANEL_BG).fg(FG))
+        .border_style(theme::fg(theme::pal().border))
+        .style(Style::new().bg(theme::pal().panel_bg).fg(theme::pal().fg))
         .title(Line::from(vec![
-            Span::styled("─ ", theme::fg(BORDER)),
+            Span::styled("─ ", theme::fg(theme::pal().border)),
             Span::styled("Open ", theme::dim()),
-            Span::styled(m.title.clone(), theme::bold(ACCENT)),
+            Span::styled(m.title.clone(), theme::bold(theme::pal().accent)),
             Span::styled(
                 if m.places.is_some() { " " } else { " with " },
                 theme::dim(),
@@ -53,7 +53,7 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
     if !m.filter.is_empty() {
         lines.push(Line::from(vec![
             Span::styled("  filter: ", theme::dim()),
-            Span::styled(m.filter.clone(), theme::bold(FG)),
+            Span::styled(m.filter.clone(), theme::bold(theme::pal().fg)),
         ]));
     }
     let mut section = None;
@@ -63,7 +63,7 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
             if section.is_some() {
                 lines.push(Line::from(Span::styled(
                     format!("  {}", "─".repeat(iw.saturating_sub(4))),
-                    theme::fg(BORDER),
+                    theme::fg(theme::pal().border),
                 )));
             }
             if let Some(head) = m.places.as_ref().map(|_| match item.section {
@@ -103,27 +103,33 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
         let detail = truncate(&item.detail, dw);
         let pad = iw.saturating_sub(5 + 24 + width(&detail) + width(&right) + 2);
         let (main, dim) = if item.missing {
-            (theme::fg(DIMMED), theme::fg(DIMMED))
+            (
+                theme::fg(theme::pal().dimmed),
+                theme::fg(theme::pal().dimmed),
+            )
         } else {
-            (theme::fg(FG), theme::dim())
+            (theme::fg(theme::pal().fg), theme::dim())
         };
         let mut row = Line::from(vec![
-            Span::styled(if sel { " ▌" } else { "  " }, theme::bold(ACCENT)),
-            Span::styled(format!("{num:>1}  "), theme::fg(ACCENT)),
+            Span::styled(
+                if sel { " ▌" } else { "  " },
+                theme::bold(theme::pal().accent),
+            ),
+            Span::styled(format!("{num:>1}  "), theme::fg(theme::pal().accent)),
             Span::styled(format!("{label:<24}"), main),
             Span::styled(detail, dim),
             Span::raw(" ".repeat(pad)),
             Span::styled(
                 right,
                 if item.last {
-                    theme::fg(WARN)
+                    theme::fg(theme::pal().warn)
                 } else {
                     theme::dim()
                 },
             ),
         ]);
         if sel {
-            row = row.style(Style::new().bg(SEL_BG));
+            row = row.style(Style::new().bg(theme::pal().sel_bg));
         }
         lines.push(row);
     }

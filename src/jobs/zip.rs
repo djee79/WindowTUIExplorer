@@ -215,18 +215,44 @@ impl BackupPreset {
 
     /// The zip's name for a run at `now`.
     pub fn zip_name(&self, now: chrono::DateTime<chrono::Local>) -> Result<String, String> {
-        expand_name(&self.file_name, &self.source.name(), now)
+        expand_name(&self.file_name, &NameVars::here(&self.source.name()), now)
     }
 
     /// The glob every zip of this preset matches (for retention).
     pub fn pattern(&self) -> Result<String, String> {
-        name_glob(&self.file_name, &self.source.name())
+        name_glob(&self.file_name, &NameVars::here(&self.source.name()))
     }
 }
+
+/// What a zip name's tokens stand for: `{name}` the source folder's name, `{host}` this
+/// PC's name, `{user}` the Windows user name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameVars {
+    pub name: String,
+    pub host: String,
+    pub user: String,
+}
+
+impl NameVars {
+    /// For a source named `name`, on this PC, as this user (`COMPUTERNAME`, `USERNAME`).
+    pub fn here(name: &str) -> NameVars {
+        let env = |k: &str| std::env::var(k).unwrap_or_default();
+        NameVars {
+            name: name.to_string(),
+            host: env("COMPUTERNAME"),
+            user: env("USERNAME"),
+        }
+    }
+}
+
+/// The tokens a zip name takes, for messages and the prompt's note.
+pub const NAME_TOKENS: &str = "{name} {date} {date:%Y%m%d} {host} {user}";
 
 enum Piece<'a> {
     Text(&'a str),
     Name,
+    Host,
+    User,
     Date(&'a str),
 }
 
@@ -244,6 +270,8 @@ fn pieces(template: &str) -> Result<Vec<Piece<'_>>, String> {
         let inner = &rest[open + 1..close];
         out.push(match inner.split_once(':') {
             None if inner == "name" => Piece::Name,
+            None if inner == "host" => Piece::Host,
+            None if inner == "user" => Piece::User,
             None if inner == "date" => Piece::Date(DEFAULT_DATE),
             Some(("date", fmt)) => {
                 let bad = chrono::format::StrftimeItems::new(fmt)
@@ -255,7 +283,7 @@ fn pieces(template: &str) -> Result<Vec<Piece<'_>>, String> {
             }
             _ => {
                 return Err(format!(
-                    "file_name: unknown {{{inner}}} ({{name}}, {{date:…}})"
+                    "file_name: unknown {{{inner}}} (tokens: {NAME_TOKENS})"
                 ));
             }
         });
@@ -278,14 +306,16 @@ fn with_zip(mut s: String) -> String {
 /// missing; the result must be a valid file name.
 pub fn expand_name(
     template: &str,
-    name: &str,
+    vars: &NameVars,
     now: chrono::DateTime<chrono::Local>,
 ) -> Result<String, String> {
     let mut s = String::new();
     for p in pieces(template)? {
         match p {
             Piece::Text(t) => s.push_str(t),
-            Piece::Name => s.push_str(name),
+            Piece::Name => s.push_str(&vars.name),
+            Piece::Host => s.push_str(&vars.host),
+            Piece::User => s.push_str(&vars.user),
             Piece::Date(fmt) => {
                 use std::fmt::Write as _;
                 write!(s, "{}", now.format(fmt))
@@ -298,13 +328,16 @@ pub fn expand_name(
     Ok(s)
 }
 
-/// `{name}_{date:…}.zip` → `HIT_*.zip`: what retention may delete.
-pub fn name_glob(template: &str, name: &str) -> Result<String, String> {
+/// `{name}_{date:…}.zip` → `HIT_*.zip`: what retention may delete. `{host}` and `{user}`
+/// stay this PC's and this user's, so a backup never prunes zips another PC made.
+pub fn name_glob(template: &str, vars: &NameVars) -> Result<String, String> {
     let mut s = String::new();
     for p in pieces(template)? {
         match p {
             Piece::Text(t) => s.push_str(&globset::escape(t)),
-            Piece::Name => s.push_str(&globset::escape(name)),
+            Piece::Name => s.push_str(&globset::escape(&vars.name)),
+            Piece::Host => s.push_str(&globset::escape(&vars.host)),
+            Piece::User => s.push_str(&globset::escape(&vars.user)),
             Piece::Date(_) => s.push('*'),
         }
     }
@@ -1147,13 +1180,26 @@ mod tests {
         assert_eq!(pr.pattern(), Ok("HIT_*.zip".into()));
         assert_eq!(pr.key(), r"backup|\\srv01\project\hit|e:\backups\aveva");
 
+        let vars = |name: &str| NameVars {
+            name: name.into(),
+            host: "PC-042".into(),
+            user: "jdoe".into(),
+        };
         let table = [
             ("{name}-{date}", "HIT-2026-11-05_1945.zip"),
             ("{name}_{date:%Y%m%d}.ZIP", "HIT_20261105.ZIP"),
             ("nightly", "nightly.zip"),
+            (
+                "{name}_{host}_{user}_{date:%Y%m%d}",
+                "HIT_PC-042_jdoe_20261105.zip",
+            ),
         ];
         for (t, want) in table {
-            assert_eq!(expand_name(t, "HIT", at(5, 19, 45)), Ok(want.into()), "{t}");
+            assert_eq!(
+                expand_name(t, &vars("HIT"), at(5, 19, 45)),
+                Ok(want.into()),
+                "{t}"
+            );
         }
         for (t, why) in [
             ("{name", "unclosed"),
@@ -1161,12 +1207,17 @@ mod tests {
             ("{date:%Q}", "bad date format"),
             ("{date:%Y/%m}", "file_name"),
         ] {
-            let r = expand_name(t, "HIT", at(5, 19, 45));
+            let r = expand_name(t, &vars("HIT"), at(5, 19, 45));
             assert!(r.as_ref().is_err_and(|e| e.contains(why)), "{t}: {r:?}");
         }
         assert_eq!(
-            name_glob("[x] {name}_{date}", "a*b"),
+            name_glob("[x] {name}_{date}", &vars("a*b")),
             Ok(r"[[]x[]] a[*]b_*.zip".into())
+        );
+        // Retention keeps to this PC's and this user's zips.
+        assert_eq!(
+            name_glob("{name}_{host}_{user}_{date}", &vars("HIT")),
+            Ok("HIT_PC-042_jdoe_*.zip".into())
         );
 
         for (text, why) in [

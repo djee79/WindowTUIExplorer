@@ -1,7 +1,7 @@
 //! The which-key popup (docs/screens/06-which-key.txt): after a prefix key waits past
 //! the keymap timeout, list every continuation at the bottom of the body.
 
-use super::theme::{self, ACCENT, BORDER, PANEL_BG};
+use super::theme;
 use super::{truncate, width};
 use crate::app::App;
 use crate::fs::EntryKind;
@@ -146,7 +146,7 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
                 let key = row.key.notation();
                 spans.push(Span::styled(
                     format!("{}{key}", " ".repeat(KEY_W.saturating_sub(width(&key)))),
-                    theme::bold(ACCENT),
+                    theme::bold(theme::pal().accent),
                 ));
                 spans.push(Span::styled(" → ", theme::dim()));
                 let desc = if row.group {
@@ -156,9 +156,9 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
                 };
                 let desc = truncate(&desc, COL_W - KEY_W - 4);
                 let style = if row.group {
-                    theme::fg(ACCENT)
+                    theme::fg(theme::pal().accent)
                 } else {
-                    theme::fg(theme::FG)
+                    theme::fg(theme::pal().fg)
                 };
                 let pad = (COL_W - KEY_W - 3).saturating_sub(width(&desc));
                 spans.push(Span::styled(desc, style));
@@ -178,11 +178,11 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(theme::fg(BORDER))
-        .style(Style::new().bg(PANEL_BG).fg(theme::FG))
+        .border_style(theme::fg(theme::pal().border))
+        .style(Style::new().bg(theme::pal().panel_bg).fg(theme::pal().fg))
         .title(Line::from(vec![
-            Span::styled("─ ", theme::fg(BORDER)),
-            Span::styled(title, theme::bold(ACCENT)),
+            Span::styled("─ ", theme::fg(theme::pal().border)),
+            Span::styled(title, theme::bold(theme::pal().accent)),
             Span::raw(" "),
         ]))
         .title(

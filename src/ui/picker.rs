@@ -2,7 +2,7 @@
 //! a preview panel. Only the visible rows are built.
 
 use super::columns::{gutter_cell, gutter_width, info_line, panel, scrolled_offset};
-use super::theme::{self, ACCENT, BORDER, DIM, ERR, FG, NET, OK, SEL_BG};
+use super::theme;
 use super::{spinner, truncate, truncate_left, width};
 use crate::app::App;
 use crate::fs::EntryKind;
@@ -21,7 +21,7 @@ const KIND_W: usize = 9;
 pub fn draw(f: &mut Frame, body: Rect, app: &mut App) {
     f.render_widget(Clear, body);
     f.render_widget(
-        ratatui::widgets::Block::new().style(Style::new().bg(theme::BG).fg(FG)),
+        ratatui::widgets::Block::new().style(Style::new().bg(theme::pal().bg).fg(theme::pal().fg)),
         body,
     );
     let [left, right] =
@@ -60,13 +60,13 @@ fn draw_prompt(f: &mut Frame, area: Rect, app: &App) {
         p.matched,
     );
     let mut spans = vec![
-        Span::styled(" > ", theme::bold(ACCENT)),
-        Span::styled(before.clone(), theme::fg(FG)),
+        Span::styled(" > ", theme::bold(theme::pal().accent)),
+        Span::styled(before.clone(), theme::fg(theme::pal().fg)),
     ];
     if p.mode == PickerMode::Insert {
-        spans.push(Span::styled("▏", theme::fg(ACCENT)));
+        spans.push(Span::styled("▏", theme::fg(theme::pal().accent)));
     }
-    spans.push(Span::styled(after.clone(), theme::fg(FG)));
+    spans.push(Span::styled(after.clone(), theme::fg(theme::pal().fg)));
     let used = 3 + width(&before) + width(&after) + 1;
     let pad = (inner.width as usize).saturating_sub(used + width(&count));
     spans.push(Span::raw(" ".repeat(pad)));
@@ -137,10 +137,10 @@ fn draw_results(f: &mut Frame, area: Rect, app: &mut App) {
     for (row, item) in visible {
         if let Some(title) = header_at(row) {
             lines.push(Line::from(vec![
-                Span::styled(format!(" {title} "), theme::bold(ACCENT)),
+                Span::styled(format!(" {title} "), theme::bold(theme::pal().accent)),
                 Span::styled(
                     "─".repeat(w.saturating_sub(width(&title) + 3)),
-                    theme::fg(theme::BORDER),
+                    theme::fg(theme::pal().border),
                 ),
             ]));
         }
@@ -205,17 +205,17 @@ fn top_bar(p: &crate::picker::Picker, w: usize) -> Line<'static> {
             n => format!("{n} chosen"),
         };
         return Line::from(vec![
-            Span::styled(" Tab", theme::bold(FG)),
+            Span::styled(" Tab", theme::bold(theme::pal().fg)),
             Span::styled(" choose   ", theme::dim()),
-            Span::styled("Enter", theme::bold(FG)),
+            Span::styled("Enter", theme::bold(theme::pal().fg)),
             Span::styled(" pins with any of them   ", theme::dim()),
-            Span::styled(chosen, theme::fg(ACCENT)),
+            Span::styled(chosen, theme::fg(theme::pal().accent)),
         ]);
     }
     if let Some(c) = &p.completion {
-        let mut spans = vec![Span::styled(" Tab ", theme::bold(ACCENT))];
+        let mut spans = vec![Span::styled(" Tab ", theme::bold(theme::pal().accent))];
         for (name, n) in c.candidates.iter().take(8) {
-            spans.push(Span::styled(name.clone(), theme::fg(FG)));
+            spans.push(Span::styled(name.clone(), theme::fg(theme::pal().fg)));
             spans.push(Span::styled(format!(" {n}   "), theme::dim()));
         }
         return Line::from(spans);
@@ -233,9 +233,9 @@ fn top_bar(p: &crate::picker::Picker, w: usize) -> Line<'static> {
         used += width(&text);
         let on = active.iter().any(|a| tag.starts_with(a.as_str()));
         let style = if on {
-            theme::bold(ACCENT).add_modifier(Modifier::UNDERLINED)
+            theme::bold(theme::pal().accent).add_modifier(Modifier::UNDERLINED)
         } else {
-            theme::fg(NET)
+            theme::fg(theme::pal().net)
         };
         spans.push(Span::styled(format!("#{tag}"), style));
         spans.push(Span::styled(format!(" {n}   "), theme::dim()));
@@ -252,7 +252,7 @@ fn top_bar(p: &crate::picker::Picker, w: usize) -> Line<'static> {
 fn separator(w: usize) -> Line<'static> {
     Line::from(Span::styled(
         format!(" {}", "─".repeat(w.saturating_sub(2))),
-        theme::fg(BORDER),
+        theme::fg(theme::pal().border),
     ))
 }
 
@@ -292,7 +292,7 @@ fn help_lines(p: &crate::picker::Picker, w: usize) -> Vec<Line<'static>> {
     if let Some(problem) = p.query.problems.first() {
         out.push(Line::from(Span::styled(
             format!(" {problem}"),
-            theme::fg(ERR),
+            theme::fg(theme::pal().err),
         )));
     }
     let second = if p.source == Source::Machines {
@@ -313,29 +313,29 @@ fn help_lines(p: &crate::picker::Picker, w: usize) -> Vec<Line<'static>> {
 
 fn kind_color(kind: ItemKind) -> ratatui::style::Color {
     match kind {
-        ItemKind::Pin(PinKind::Folder) => theme::DIR,
-        ItemKind::Pin(PinKind::File) => FG,
-        ItemKind::Pin(PinKind::App) => OK,
-        ItemKind::Pin(PinKind::Web) | ItemKind::Tag => NET,
-        ItemKind::Pin(PinKind::Sync | PinKind::Backup) => theme::WARN,
-        ItemKind::Pin(PinKind::Machine) | ItemKind::Machine => ERR,
-        ItemKind::View => ACCENT,
-        ItemKind::StartMenu => OK,
-        ItemKind::Action | ItemKind::Command => ACCENT,
-        ItemKind::File => FG,
-        ItemKind::Dir => theme::DIR,
-        ItemKind::Binding => OK,
-        ItemKind::Backup => ACCENT,
+        ItemKind::Pin(PinKind::Folder) => theme::pal().dir,
+        ItemKind::Pin(PinKind::File) => theme::pal().fg,
+        ItemKind::Pin(PinKind::App) => theme::pal().ok,
+        ItemKind::Pin(PinKind::Web) | ItemKind::Tag => theme::pal().net,
+        ItemKind::Pin(PinKind::Sync | PinKind::Backup) => theme::pal().warn,
+        ItemKind::Pin(PinKind::Machine) | ItemKind::Machine => theme::pal().err,
+        ItemKind::View => theme::pal().accent,
+        ItemKind::StartMenu => theme::pal().ok,
+        ItemKind::Action | ItemKind::Command => theme::pal().accent,
+        ItemKind::File => theme::pal().fg,
+        ItemKind::Dir => theme::pal().dir,
+        ItemKind::Binding => theme::pal().ok,
+        ItemKind::Backup => theme::pal().accent,
     }
 }
 
 /// The reachability dot (pins with a place), or the chosen mark (tag picker).
 fn lead_mark(item: &PickItem, chosen: bool) -> Span<'static> {
     match (item.kind, chosen, item.reachable) {
-        (ItemKind::Tag, true, _) => Span::styled("✓", theme::bold(ACCENT)),
+        (ItemKind::Tag, true, _) => Span::styled("✓", theme::bold(theme::pal().accent)),
         (ItemKind::Tag, false, _) => Span::styled("·", theme::dim()),
-        (_, _, Some(true)) => Span::styled("●", theme::fg(OK)),
-        (_, _, Some(false)) => Span::styled("×", theme::fg(ERR)),
+        (_, _, Some(true)) => Span::styled("●", theme::fg(theme::pal().ok)),
+        (_, _, Some(false)) => Span::styled("×", theme::fg(theme::pal().err)),
         (ItemKind::Pin(PinKind::Folder | PinKind::File), _, None) => {
             Span::styled("○", theme::dim())
         }
@@ -353,7 +353,9 @@ fn result_line(
     gutter: Option<Span<'static>>,
 ) -> Line<'static> {
     let base = if is_cursor {
-        Style::new().bg(SEL_BG).add_modifier(Modifier::BOLD)
+        Style::new()
+            .bg(theme::pal().sel_bg)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::new()
     };
@@ -393,9 +395,9 @@ fn result_line(
     // Highlight the matched characters of the name (they come first in the haystack).
     for (i, c) in name.chars().enumerate() {
         let style = if hits.contains(&(i as u32)) {
-            base.fg(ACCENT).add_modifier(Modifier::BOLD)
+            base.fg(theme::pal().accent).add_modifier(Modifier::BOLD)
         } else {
-            base.fg(FG)
+            base.fg(theme::pal().fg)
         };
         spans.push(Span::styled(c.to_string(), style));
     }
@@ -403,15 +405,18 @@ fn result_line(
         " ".repeat(name_w.saturating_sub(width(&name)) + 1),
         base,
     ));
-    spans.push(Span::styled(format!("{key:<3}"), base.fg(ACCENT)));
+    spans.push(Span::styled(
+        format!("{key:<3}"),
+        base.fg(theme::pal().accent),
+    ));
     used += name_w + 1 + 3;
     let tags = truncate(&tags, w.saturating_sub(used + 2));
     let pad = w.saturating_sub(used + width(&tags) + 1);
     spans.push(Span::styled(" ".repeat(pad), base));
     let tags_style = if item.kind == ItemKind::Tag {
-        base.fg(theme::DIM)
+        base.fg(theme::pal().dim)
     } else {
-        base.fg(NET)
+        base.fg(theme::pal().net)
     };
     spans.push(Span::styled(tags, tags_style));
     spans.push(Span::styled(" ", base));
@@ -468,7 +473,10 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         ItemKind::Binding | ItemKind::Command => {
             let lines = vec![
                 Line::default(),
-                Line::from(Span::styled(format!(" {}", item.name), theme::bold(ACCENT))),
+                Line::from(Span::styled(
+                    format!(" {}", item.name),
+                    theme::bold(theme::pal().accent),
+                )),
                 Line::default(),
                 info_line(
                     if item.kind == ItemKind::Binding {
@@ -487,7 +495,10 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         ItemKind::Action => {
             let lines = vec![
                 Line::default(),
-                Line::from(Span::styled(format!(" {}", item.name), theme::bold(ACCENT))),
+                Line::from(Span::styled(
+                    format!(" {}", item.name),
+                    theme::bold(theme::pal().accent),
+                )),
                 Line::default(),
                 info_line("Also", item.detail.clone()),
                 Line::default(),
@@ -599,7 +610,7 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 tags
             },
-            theme::fg(NET),
+            theme::fg(theme::pal().net),
         ),
         Span::styled("   ^t edit tags", theme::dim()),
     ]));
@@ -619,13 +630,13 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::default());
     }
     lines.push(Line::from(vec![
-        Span::styled(" Enter", theme::bold(FG)),
+        Span::styled(" Enter", theme::bold(theme::pal().fg)),
         Span::styled(" open   ", theme::dim()),
-        Span::styled("^e", theme::bold(FG)),
+        Span::styled("^e", theme::bold(theme::pal().fg)),
         Span::styled(" edit   ", theme::dim()),
-        Span::styled("^t", theme::bold(FG)),
+        Span::styled("^t", theme::bold(theme::pal().fg)),
         Span::styled(" tags   ", theme::dim()),
-        Span::styled("^x", theme::bold(FG)),
+        Span::styled("^x", theme::bold(theme::pal().fg)),
         Span::styled(" delete", theme::dim()),
     ]));
     f.render_widget(Paragraph::new(lines), inner);
@@ -635,9 +646,9 @@ fn reach_line(app: &App, pin: &crate::pins::Pin) -> Option<Line<'static>> {
     let target = pin.target()?;
     let r = app.reach_of(&target)?;
     let (text, color) = if r.is_reachable() {
-        ("● reachable", OK)
+        ("● reachable", theme::pal().ok)
     } else if r.is_unreachable() {
-        ("× unreachable", ERR)
+        ("× unreachable", theme::pal().err)
     } else {
         return None;
     };
@@ -661,7 +672,10 @@ fn listing_lines(app: &App, pin: &crate::pins::Pin, h: usize, w: usize) -> Vec<L
         return vec![Line::from(Span::styled(" …", theme::dim()))];
     };
     if let Some(e) = &state.error {
-        return vec![Line::from(Span::styled(format!(" ⚠ {e}"), theme::fg(ERR)))];
+        return vec![Line::from(Span::styled(
+            format!(" ⚠ {e}"),
+            theme::fg(theme::pal().err),
+        ))];
     }
     let Some(listing) = &state.listing else {
         return vec![Line::from(Span::styled(
@@ -676,8 +690,8 @@ fn listing_lines(app: &App, pin: &crate::pins::Pin, h: usize, w: usize) -> Vec<L
         .take(h)
         .map(|e| {
             let (suffix, color) = match e.kind {
-                EntryKind::File => ("", FG),
-                _ => ("\\", theme::DIR),
+                EntryKind::File => ("", theme::pal().fg),
+                _ => ("\\", theme::pal().dir),
             };
             Line::from(Span::styled(
                 format!(" {}", truncate(&format!("{}{suffix}", e.name), w)),
@@ -686,7 +700,10 @@ fn listing_lines(app: &App, pin: &crate::pins::Pin, h: usize, w: usize) -> Vec<L
         })
         .collect();
     if out.is_empty() {
-        out.push(Line::from(Span::styled(" empty", theme::fg(DIM))));
+        out.push(Line::from(Span::styled(
+            " empty",
+            theme::fg(theme::pal().dim),
+        )));
     }
     out
 }
@@ -703,7 +720,7 @@ fn with_hints(
     }
     let mut spans = Vec::new();
     for (k, what) in hints {
-        spans.push(Span::styled(format!(" {k}"), theme::bold(FG)));
+        spans.push(Span::styled(format!(" {k}"), theme::bold(theme::pal().fg)));
         spans.push(Span::styled(format!(" {what}  "), theme::dim()));
     }
     lines.push(Line::from(spans));
@@ -758,7 +775,7 @@ fn draw_tag_preview(f: &mut Frame, inner: Rect, app: &App, item: &PickItem) {
     let mut lines = vec![
         Line::default(),
         Line::from(vec![
-            Span::styled(format!(" #{}", item.name), theme::bold(NET)),
+            Span::styled(format!(" #{}", item.name), theme::bold(theme::pal().net)),
             Span::styled(format!("  {}", item.detail), theme::dim()),
         ]),
         Line::default(),
@@ -769,7 +786,7 @@ fn draw_tag_preview(f: &mut Frame, inner: Rect, app: &App, item: &PickItem) {
                 format!(" {:<9}", format!("[{}]", p.kind.label())),
                 theme::dim(),
             ),
-            Span::styled(p.name.clone(), theme::fg(FG)),
+            Span::styled(p.name.clone(), theme::fg(theme::pal().fg)),
         ]));
     }
     let lines = with_hints(
@@ -789,7 +806,10 @@ fn draw_tag_preview(f: &mut Frame, inner: Rect, app: &App, item: &PickItem) {
 fn draw_backup_preview(f: &mut Frame, inner: Rect, app: &App, item: &PickItem) {
     let mut lines = vec![
         Line::default(),
-        Line::from(Span::styled(format!(" {}", item.name), theme::bold(ACCENT))),
+        Line::from(Span::styled(
+            format!(" {}", item.name),
+            theme::bold(theme::pal().accent),
+        )),
         Line::from(Span::styled(format!(" {}", item.detail), theme::dim())),
         Line::default(),
     ];
@@ -797,9 +817,9 @@ fn draw_backup_preview(f: &mut Frame, inner: Rect, app: &App, item: &PickItem) {
     match app.pin_backup(item.id).map(|l| &l.diff) {
         Some(Ok(d)) => {
             let groups: [(&str, &[String], ratatui::style::Color); 3] = [
-                ("comes back", &d.back, OK),
-                ("goes away (added since)", &d.gone, ERR),
-                ("changes back", &d.changed, theme::WARN),
+                ("comes back", &d.back, theme::pal().ok),
+                ("goes away (added since)", &d.gone, theme::pal().err),
+                ("changes back", &d.changed, theme::pal().warn),
             ];
             if groups.iter().all(|(_, names, _)| names.is_empty()) {
                 lines.push(Line::from(Span::styled(
@@ -818,7 +838,7 @@ fn draw_backup_preview(f: &mut Frame, inner: Rect, app: &App, item: &PickItem) {
                 for n in names {
                     lines.push(Line::from(Span::styled(
                         format!("   {}", truncate(n, w)),
-                        theme::fg(FG),
+                        theme::fg(theme::pal().fg),
                     )));
                 }
                 lines.push(Line::default());
@@ -826,7 +846,7 @@ fn draw_backup_preview(f: &mut Frame, inner: Rect, app: &App, item: &PickItem) {
         }
         Some(Err(e)) => lines.push(Line::from(Span::styled(
             format!(" doesn't load: {}", truncate(e, w)),
-            theme::fg(ERR),
+            theme::fg(theme::pal().err),
         ))),
         None => {}
     }
@@ -852,9 +872,9 @@ fn draw_machine_preview(f: &mut Frame, inner: Rect, app: &App, item: &PickItem) 
         lines.push(Line::default());
     }
     lines.push(Line::from(vec![
-        Span::styled(" Enter", theme::bold(FG)),
+        Span::styled(" Enter", theme::bold(theme::pal().fg)),
         Span::styled(" open   ", theme::dim()),
-        Span::styled("^a", theme::bold(FG)),
+        Span::styled("^a", theme::bold(theme::pal().fg)),
         Span::styled(" pin it", theme::dim()),
     ]));
     f.render_widget(Paragraph::new(lines), inner);
@@ -885,9 +905,9 @@ fn machine_lines(app: &App, item: &PickItem, vw: usize) -> Vec<Line<'static>> {
     }
     let (online, status) = app.machine_status(&host);
     let (mark, color) = match online {
-        Some(true) => ("● ", OK),
-        Some(false) => ("× ", ERR),
-        None => ("○ ", DIM),
+        Some(true) => ("● ", theme::pal().ok),
+        Some(false) => ("× ", theme::pal().err),
+        None => ("○ ", theme::pal().dim),
     };
     out.push(Line::from(vec![
         Span::styled(format!(" {:<10}", "Status"), theme::dim()),
@@ -906,5 +926,5 @@ fn machine_note(app: &App) -> Option<Line<'static>> {
     }
     app.machine_found_errors
         .first()
-        .map(|e| Line::from(Span::styled(format!(" ⚠ {e}"), theme::fg(ERR))))
+        .map(|e| Line::from(Span::styled(format!(" ⚠ {e}"), theme::fg(theme::pal().err))))
 }

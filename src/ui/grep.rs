@@ -3,7 +3,7 @@
 //! is on. Only the visible rows are turned into spans.
 
 use super::columns::info_line;
-use super::theme::{self, ACCENT, DIMMED, ERR, FG, ON_ACCENT};
+use super::theme;
 use super::{spinner, thousands, truncate, truncate_left};
 use crate::app::App;
 use crate::fs::Entry;
@@ -47,7 +47,10 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, e: &Entry) {
         }
         Some((_, Err(err))) => {
             let msg = format!(" ⚠ can't read it: {err}");
-            f.render_widget(Paragraph::new(Span::styled(msg, theme::fg(ERR))), body);
+            f.render_widget(
+                Paragraph::new(Span::styled(msg, theme::fg(theme::pal().err))),
+                body,
+            );
         }
         Some((_, Ok(p))) if p.matches.is_empty() => {
             let why = if p.binary {
@@ -107,16 +110,19 @@ fn draw_lines(f: &mut Frame, area: Rect, p: &MatchPreview, current: usize) {
         .skip(offset)
         .take(height)
         .map(|row| match row {
-            Row::Gap => Line::from(Span::styled(format!(" {:>num_w$}", "┈"), theme::fg(DIMMED))),
+            Row::Gap => Line::from(Span::styled(
+                format!(" {:>num_w$}", "┈"),
+                theme::fg(theme::pal().dimmed),
+            )),
             Row::Line(l, idx) => {
                 let is_current = *idx == Some(current);
                 let (mark, num_style) = match (is_current, idx.is_some()) {
-                    (true, _) => ("›", theme::bold(ACCENT)),
-                    (false, true) => (" ", theme::fg(ACCENT)),
-                    (false, false) => (" ", theme::fg(DIMMED)),
+                    (true, _) => ("›", theme::bold(theme::pal().accent)),
+                    (false, true) => (" ", theme::fg(theme::pal().accent)),
+                    (false, false) => (" ", theme::fg(theme::pal().dimmed)),
                 };
                 let mut spans = vec![
-                    Span::styled(mark, theme::bold(ACCENT)),
+                    Span::styled(mark, theme::bold(theme::pal().accent)),
                     Span::styled(format!("{:>num_w$} ", l.number), num_style),
                 ];
                 spans.extend(text_spans(l, text_w, is_current));
@@ -133,15 +139,15 @@ fn text_spans(l: &PreviewLine, w: usize, is_current: bool) -> Vec<Span<'static>>
     let base = if l.hits.is_empty() {
         theme::dim()
     } else {
-        theme::fg(FG)
+        theme::fg(theme::pal().fg)
     };
     let hit_style = if is_current {
         Style::new()
-            .bg(ACCENT)
-            .fg(ON_ACCENT)
+            .bg(theme::pal().accent)
+            .fg(theme::pal().on_accent)
             .add_modifier(Modifier::BOLD)
     } else {
-        theme::bold(ACCENT).add_modifier(Modifier::UNDERLINED)
+        theme::bold(theme::pal().accent).add_modifier(Modifier::UNDERLINED)
     };
     // (char, highlighted), tabs expanded.
     let mut cells: Vec<(char, bool)> = Vec::with_capacity(l.text.len());
@@ -164,7 +170,7 @@ fn text_spans(l: &PreviewLine, w: usize, is_current: bool) -> Vec<Span<'static>>
     let mut spans = Vec::new();
     let mut avail = w;
     if shift > 0 && avail > 0 {
-        spans.push(Span::styled("…", theme::fg(DIMMED)));
+        spans.push(Span::styled("…", theme::fg(theme::pal().dimmed)));
         avail -= 1;
     }
     let mut run = String::new();
@@ -197,9 +203,9 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, e: &Entry, summary: String)
         info_line("Matches", truncate(&summary, w)),
         info_line("Found in", truncate_left(&dir, w)),
         Line::from(vec![
-            Span::styled(" ]m [m", theme::bold(FG)),
+            Span::styled(" ]m [m", theme::bold(theme::pal().fg)),
             Span::styled(" step matches   ", theme::dim()),
-            Span::styled("gr", theme::bold(FG)),
+            Span::styled("gr", theme::bold(theme::pal().fg)),
             Span::styled(" go to this folder", theme::dim()),
         ]),
     ];

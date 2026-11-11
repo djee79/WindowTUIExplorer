@@ -2,7 +2,7 @@
 //! counts by kind of change, the list worth a look (deletions in mirror mode), and the
 //! keys. Mirror's deletions are red; nothing here is touched until Enter.
 
-use super::theme::{self, ACCENT, BORDER, DIM, ERR, FG, OK, PANEL_BG, WARN};
+use super::theme;
 use super::{human_size, spinner, thousands, truncate, truncate_left, width};
 use crate::app::{App, PreviewStatus};
 use crate::jobs::preset::{Change, SyncMode};
@@ -28,17 +28,17 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
         height: h,
     };
     let mode_color = match sp.mode {
-        SyncMode::Mirror => WARN,
-        SyncMode::Update => OK,
+        SyncMode::Mirror => theme::pal().warn,
+        SyncMode::Update => theme::pal().ok,
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(theme::fg(BORDER))
-        .style(Style::new().bg(PANEL_BG).fg(FG))
+        .border_style(theme::fg(theme::pal().border))
+        .style(Style::new().bg(theme::pal().panel_bg).fg(theme::pal().fg))
         .title(Line::from(vec![
-            Span::styled("─ ", theme::fg(BORDER)),
+            Span::styled("─ ", theme::fg(theme::pal().border)),
             Span::styled("Sync preview · ", theme::dim()),
-            Span::styled(sp.preset.name.clone(), theme::bold(ACCENT)),
+            Span::styled(sp.preset.name.clone(), theme::bold(theme::pal().accent)),
             Span::raw(" "),
         ]))
         .title(
@@ -65,12 +65,12 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
         field(
             "Source",
             truncate_left(&sp.preset.source.display(), vw),
-            theme::fg(theme::NET),
+            theme::fg(theme::pal().net),
         ),
         field(
             "Dest",
             truncate_left(&sp.preset.dest.display(), vw),
-            theme::fg(FG),
+            theme::fg(theme::pal().fg),
         ),
     ];
     let mut excl = Vec::new();
@@ -97,7 +97,7 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
         ),
         _ => format!("robocopy /L /MIR  ·  {:.1} s", took.as_secs_f64()),
     };
-    lines.push(field("Dry run", run, theme::fg(FG)));
+    lines.push(field("Dry run", run, theme::fg(theme::pal().fg)));
     lines.push(Line::default());
 
     let keys: Vec<(&str, String)> = match &sp.status {
@@ -111,12 +111,12 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
         PreviewStatus::Failed(e) => {
             lines.push(Line::from(Span::styled(
                 "  The dry run failed, so the sync can't run:",
-                theme::bold(ERR),
+                theme::bold(theme::pal().err),
             )));
             for chunk in wrap(e, iw.saturating_sub(6)) {
                 lines.push(Line::from(Span::styled(
                     format!("    {chunk}"),
-                    theme::fg(ERR),
+                    theme::fg(theme::pal().err),
                 )));
             }
             vec![("R", "Try again".into()), ("Esc", "Close".into())]
@@ -135,20 +135,28 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
             let (n, b) = pv.to_copy();
             let (r, rb) = pv.count(Change::Replace);
             let (x, xb) = pv.count(Change::Extra);
-            lines.push(count(n, "files to copy", Some(b), theme::bold(FG)));
+            lines.push(count(
+                n,
+                "files to copy",
+                Some(b),
+                theme::bold(theme::pal().fg),
+            ));
             if r > 0 {
                 lines.push(count(
                     r,
                     "of them replace a local copy (changed on the server)",
                     Some(rb),
-                    theme::fg(FG),
+                    theme::fg(theme::pal().fg),
                 ));
             }
             if x > 0 {
                 lines.push(match sp.mode {
-                    SyncMode::Mirror => {
-                        count(x, "local files will be DELETED", Some(xb), theme::bold(ERR))
-                    }
+                    SyncMode::Mirror => count(
+                        x,
+                        "local files will be DELETED",
+                        Some(xb),
+                        theme::bold(theme::pal().err),
+                    ),
                     SyncMode::Update => count(
                         x,
                         "local-only files, kept (update never deletes)",
@@ -162,7 +170,7 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
                     pv.extra_dirs.len() as u64,
                     "local folders will be DELETED",
                     None,
-                    theme::bold(ERR),
+                    theme::bold(theme::pal().err),
                 ));
             }
             lines.push(count(
@@ -177,16 +185,16 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
             if pv.is_noop(sp.mode) {
                 lines.push(Line::from(Span::styled(
                     "  Nothing to do: the local copy is up to date.",
-                    theme::bold(OK),
+                    theme::bold(theme::pal().ok),
                 )));
             } else if !rows.is_empty() {
                 lines.push(Line::from(Span::styled(
                     format!("  {title}"),
-                    theme::bold(FG),
+                    theme::bold(theme::pal().fg),
                 )));
                 lines.push(Line::from(Span::styled(
                     format!("  {}", "─".repeat(iw.saturating_sub(4))),
-                    theme::fg(BORDER),
+                    theme::fg(theme::pal().border),
                 )));
                 let room = (inner.height as usize).saturating_sub(lines.len() + FOOTER);
                 // `scroll` is the cursor (x / X act on that row); the window follows it.
@@ -194,10 +202,10 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
                 let start = (cursor + 1).saturating_sub(room.max(1));
                 for (i, row) in rows.iter().enumerate().skip(start).take(room) {
                     let style = match (row.change, sp.mode) {
-                        (Change::Extra, SyncMode::Mirror) => theme::fg(ERR),
+                        (Change::Extra, SyncMode::Mirror) => theme::fg(theme::pal().err),
                         (Change::Extra, SyncMode::Update) => theme::dim(),
-                        (Change::Replace, _) => theme::fg(WARN),
-                        (Change::New, _) => theme::fg(FG),
+                        (Change::Replace, _) => theme::fg(theme::pal().warn),
+                        (Change::New, _) => theme::fg(theme::pal().fg),
                     };
                     let size = human_size(row.size);
                     let pw = iw.saturating_sub(width(&size) + 8);
@@ -207,10 +215,10 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
                         Span::styled(format!("  {} ", row.change.sign()), style),
                         Span::styled(path, style),
                         Span::raw(" ".repeat(pad)),
-                        Span::styled(size, theme::fg(DIM)),
+                        Span::styled(size, theme::fg(theme::pal().dim)),
                     ]);
                     lines.push(if i == cursor {
-                        line.style(ratatui::style::Style::new().bg(theme::SEL_BG))
+                        line.style(ratatui::style::Style::new().bg(theme::pal().sel_bg))
                     } else {
                         line
                     });
@@ -275,10 +283,10 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
         let Some(spans) = rows.last_mut() else {
             break;
         };
-        spans.push(Span::styled("[ ", theme::fg(BORDER)));
-        spans.push(Span::styled(k, theme::bold(ACCENT)));
-        spans.push(Span::styled(format!(" {what}"), theme::fg(FG)));
-        spans.push(Span::styled(" ]   ", theme::fg(BORDER)));
+        spans.push(Span::styled("[ ", theme::fg(theme::pal().border)));
+        spans.push(Span::styled(k, theme::bold(theme::pal().accent)));
+        spans.push(Span::styled(format!(" {what}"), theme::fg(theme::pal().fg)));
+        spans.push(Span::styled(" ]   ", theme::fg(theme::pal().border)));
     }
     let two = rows.len() > 1;
     for spans in rows {
