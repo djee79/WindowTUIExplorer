@@ -648,8 +648,10 @@ fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Drawn>
             };
             // Overlays (help, pickers) cover the column: no picture under them. An
             // iTerm2 picture is written after the frame and would cover them. The
-            // which-key popup and the `O` menu stay clear of the picture when they
-            // can: the picture is then left alone (sending it again is slow).
+            // which-key popup, the `O` menu and yes/no dialogs stay clear of the
+            // picture when they can: the picture is then left alone (sending it again
+            // is slow). A popup drawn over a picture that stays would leave a hole in
+            // it once closed, so one that can't keep clear takes the picture down.
             let under = |popup: Option<Rect>| popup.is_none_or(|a| a.intersects(rect));
             let covered = matches!(
                 app.mode,
@@ -666,6 +668,10 @@ fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Drawn>
                         app.body
                             .and_then(|b| super::openwith::area(b, app, Some(rect))),
                     ))
+                || (app.mode == Mode::Prompt
+                    && app.dialog_view().is_some_and(|d| {
+                        under(app.body.map(|b| super::dialog::area(b, &d, Some(rect))))
+                    }))
                 || (app.which_key_visible()
                     && under(app.body.map(|b| super::whichkey::area(b, app, Some(rect)))));
             if !covered && size.width <= area.width && size.height <= area.height {

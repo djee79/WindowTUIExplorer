@@ -9,7 +9,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
 use std::time::Duration;
 
-pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(300);
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(150);
 const FILE_NAME: &str = "keymap.toml";
 
 // ------------------------------------------------------------------------------- keys

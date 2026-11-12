@@ -78,7 +78,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.mode == Mode::Prompt
         && let Some(d) = app.dialog_view()
     {
-        dialog::draw(f, body, &d);
+        dialog::draw(f, body, &d, app.image_drawn);
     }
     if app.which_key_visible() {
         whichkey::draw(f, body, app);

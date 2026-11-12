@@ -33,15 +33,22 @@ fn wrap(s: &str, w: usize) -> Vec<String> {
     out
 }
 
-pub fn draw(f: &mut Frame, body: Rect, d: &DialogView) {
-    let w = 64.min(body.width.saturating_sub(4)).max(30);
-    let iw = (w as usize).saturating_sub(4);
-    let color = if d.danger {
+/// The popup's width in `body`.
+fn width_in(body: Rect) -> u16 {
+    64.min(body.width.saturating_sub(4)).max(30)
+}
+
+fn color(d: &DialogView) -> ratatui::style::Color {
+    if d.danger {
         theme::pal().err
     } else {
         theme::pal().accent
-    };
+    }
+}
 
+/// The popup's lines, for an inner width of `iw` cells.
+fn lines(d: &DialogView, iw: usize) -> Vec<Line<'static>> {
+    let color = color(d);
     let mut lines: Vec<Line> = vec![Line::default()];
     for l in wrap(&d.message, iw) {
         lines.push(Line::from(Span::styled(
@@ -94,14 +101,27 @@ pub fn draw(f: &mut Frame, body: Rect, d: &DialogView) {
         button(no, !d.yes, false),
     ]));
     lines.push(Line::default());
+    lines
+}
 
-    let h = (lines.len() as u16 + 2).min(body.height);
-    let area = Rect {
+/// The popup's box in `body`: centered, or left of the previewed `picture` when it
+/// would cover it and fits there (`super::clear_of`).
+pub fn area(body: Rect, d: &DialogView, picture: Option<Rect>) -> Rect {
+    let w = width_in(body);
+    let h = (lines(d, (w as usize).saturating_sub(4)).len() as u16 + 2).min(body.height);
+    let centered = Rect {
         x: body.x + (body.width.saturating_sub(w)) / 2,
         y: body.y + (body.height.saturating_sub(h)) / 3,
         width: w,
         height: h,
     };
+    super::clear_of(body, centered, picture)
+}
+
+pub fn draw(f: &mut Frame, body: Rect, d: &DialogView, picture: Option<Rect>) {
+    let area = area(body, d, picture);
+    let lines = lines(d, (area.width as usize).saturating_sub(4));
+    let color = color(d);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(theme::fg(if d.danger {

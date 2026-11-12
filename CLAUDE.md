@@ -1203,7 +1203,7 @@ filters) · `dialog` (confirmations, sync preview).
 ### which-key popup
 
 When a prefix key is pending (`<leader>`, `g`, `y`, `d`, `z`, `'`, `m`) and no second key
-arrives within **300 ms** (configurable), show a which-key popup at the bottom listing every
+arrives within **150 ms** (configurable), show a which-key popup at the bottom listing every
 continuation with its description. The `'` popup lists every pin with its key, so it doubles
 as a quick pin menu. Pressing a listed key runs the action. `Esc` cancels. Bindings carry a
 `desc` so the popup and `<leader>sk` stay in sync with the keymap.
@@ -1219,7 +1219,7 @@ switches to normal mode with a small vi subset: `h l w b e 0 $ x`, `i a I A`, `d
 
 ```toml
 leader = " "
-timeout_ms = 300
+timeout_ms = 150
 
 [normal]
 prepend = [

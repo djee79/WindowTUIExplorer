@@ -183,7 +183,7 @@ Keymap pass:
   `timeout_ms`, `[normal] prepend/append/keymap`; problems go to the status bar + log;
   tables for later modes such as `[picker.insert]` are ignored). Loaded by the worker under
   the network timeout (APPDATA may be redirected to a share).
-- `src/app/keys.rs`: sequence dispatch with counts, which-key after 300 ms (`Esc` cancels,
+- `src/app/keys.rs`: sequence dispatch with counts, which-key after 150 ms (`Esc` cancels,
   Backspace backs up a level), all actions, prompts, search, history, completion.
 - `src/prompt.rs`: the line editor (readline basics in insert, `h l w b e 0 $ x i a I A dw
   cw ciw C D u` in normal).
