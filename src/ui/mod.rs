@@ -18,7 +18,7 @@ mod whichkey;
 
 use crate::app::{App, Mode};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
@@ -40,6 +40,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         f.area(),
     );
     statusbar::draw_header(f, header, app);
+    // The preview keeps its picture when the popup that is up can stay clear of it.
+    app.body = Some(body);
     if app.mode == Mode::Preview {
         columns::draw_fullscreen(f, body, app);
     } else if app.at_root() {
@@ -80,6 +82,24 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.which_key_visible() {
         whichkey::draw(f, body, app);
+    }
+}
+
+/// A popup's box `area` in `body`, moved clear of the previewed `picture` when it would
+/// cover it and fits to its left (centered in the columns left of the preview). A
+/// covered picture is taken off the screen and sent again afterwards, which is slow.
+pub(crate) fn clear_of(body: Rect, area: Rect, picture: Option<Rect>) -> Rect {
+    let Some(picture) = picture.filter(|p| p.intersects(area)) else {
+        return area;
+    };
+    // Up to the preview panel's border (the picture sits a margin inside it).
+    let left = picture.x.saturating_sub(body.x + 2);
+    if left < area.width {
+        return area;
+    }
+    Rect {
+        x: body.x + (left - area.width) / 2,
+        ..area
     }
 }
 
@@ -157,6 +177,24 @@ pub(crate) fn thousands(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn popups_move_clear_of_a_picture_when_they_fit_beside_it() {
+        let body = Rect::new(0, 1, 200, 50);
+        let menu = Rect::new(66, 12, 68, 14);
+        assert_eq!(clear_of(body, menu, None), menu);
+        // Beside the menu, or above it: it stays centered.
+        assert_eq!(clear_of(body, menu, Some(Rect::new(140, 2, 50, 40))), menu);
+        assert_eq!(clear_of(body, menu, Some(Rect::new(118, 2, 50, 8))), menu);
+        // Under it: centered in the 116 columns left of the preview.
+        let picture = Rect::new(118, 2, 70, 40);
+        let moved = clear_of(body, menu, Some(picture));
+        assert_eq!(moved, Rect::new(24, 12, 68, 14));
+        assert!(!moved.intersects(picture));
+        // No room there: where it was (the picture is taken down instead).
+        let near = Rect::new(60, 2, 120, 40);
+        assert_eq!(clear_of(body, menu, Some(near)), menu);
+    }
 
     #[test]
     fn sizes() {

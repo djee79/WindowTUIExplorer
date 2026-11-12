@@ -12,21 +12,28 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 
-pub fn draw(f: &mut Frame, body: Rect, app: &App) {
-    let Some(m) = app.open_menu.as_ref() else {
-        return;
-    };
-    let shown = m.shown();
+/// The menu's box in `body` (None: no menu): centered, or left of the previewed
+/// `picture` when it would cover it and fits there (`super::clear_of`).
+pub fn area(body: Rect, app: &App, picture: Option<Rect>) -> Option<Rect> {
+    let m = app.open_menu.as_ref()?;
     let w = 68.min(body.width);
     let sections = 4;
-    let h =
-        (shown.len() as u16 + 4 + sections + u16::from(!m.filter.is_empty())).clamp(6, body.height);
-    let area = Rect {
+    let h = (m.shown().len() as u16 + 4 + sections + u16::from(!m.filter.is_empty()))
+        .clamp(6, body.height);
+    let centered = Rect {
         x: body.x + (body.width - w) / 2,
         y: body.y + (body.height.saturating_sub(h)) / 3,
         width: w,
         height: h,
     };
+    Some(super::clear_of(body, centered, picture))
+}
+
+pub fn draw(f: &mut Frame, body: Rect, app: &App) {
+    let (Some(m), Some(area)) = (app.open_menu.as_ref(), area(body, app, app.image_drawn)) else {
+        return;
+    };
+    let shown = m.shown();
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(theme::fg(theme::pal().border))

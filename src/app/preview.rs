@@ -1,8 +1,8 @@
 //! The picture preview (CLAUDE.md section 11) in the app: which picture the preview wants,
 //! asking the worker for it, the in-memory cache, preloading, and the full-screen view.
 //!
-//! - Asked only after the cursor has been still for [`IMAGE_STILL`], so holding `j` doesn't
-//!   decode every file it passes.
+//! - A single step asks at once. While keys stream in (holding `j`), only after the
+//!   cursor has been still for [`IMAGE_STILL`], so not every file passed is decoded.
 //! - The box comes from the UI's last frame ([`App::image_area`]); when it changes (window
 //!   resized, full screen) the picture is fitted again.
 //! - Answers for a picture the cursor has left are dropped (the key differs), but kept in
@@ -23,7 +23,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Cursor stillness before a picture is read.
+/// Cursor stillness before a picture is read, while keys stream in.
 pub const IMAGE_STILL: Duration = Duration::from_millis(60);
 /// How far the preloader looks for the previous / next previewable file.
 const PRELOAD_SCAN: usize = 20;
@@ -95,7 +95,7 @@ impl App {
     /// From `tick`: once the cursor has been still long enough, make sure the picture the
     /// preview wants is shown or on its way.
     pub(super) fn image_tick(&mut self, now: Instant) {
-        if now.duration_since(self.moved_at) < IMAGE_STILL {
+        if now < self.image_due {
             return;
         }
         let Some(key) = self.image_target() else {

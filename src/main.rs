@@ -39,7 +39,7 @@ use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
     supports_keyboard_enhancement,
 };
-use ratatui::{DefaultTerminal, Terminal, backend::CrosstermBackend};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -417,7 +417,7 @@ fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
 /// Set when the kitty keyboard protocol was pushed, so teardown pops it.
 static KEYBOARD_ENHANCED: AtomicBool = AtomicBool::new(false);
 
-fn setup_terminal() -> Result<DefaultTerminal> {
+fn setup_terminal() -> Result<app::Term> {
     enable_raw_mode().context("enabling raw mode")?;
     if let Err(e) = execute!(std::io::stdout(), EnterAlternateScreen) {
         restore_terminal();
@@ -428,7 +428,9 @@ fn setup_terminal() -> Result<DefaultTerminal> {
         keyboard_enhancement = KEYBOARD_ENHANCED.load(Ordering::Relaxed),
         "terminal ready"
     );
-    match Terminal::new(CrosstermBackend::new(std::io::stdout())) {
+    // Room for a whole frame (a full repaint of a big window is well under this).
+    let out = std::io::BufWriter::with_capacity(1 << 18, std::io::stdout());
+    match Terminal::new(CrosstermBackend::new(out)) {
         Ok(t) => Ok(t),
         Err(e) => {
             restore_terminal();
@@ -520,6 +522,12 @@ fn spawn_input_thread(tx: event::EventTx) {
                 }
                 match ratatui::crossterm::event::read() {
                     Ok(ev) => {
+                        // Presses only: Windows also sends each key's release.
+                        if let ratatui::crossterm::event::Event::Key(k) = &ev
+                            && !k.is_release()
+                        {
+                            event::mark_input();
+                        }
                         if tx.send(AppEvent::Term(ev)).is_err() {
                             return; // UI is gone
                         }

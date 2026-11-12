@@ -11,9 +11,10 @@ use crate::preview::image::ImagePreview;
 use crate::search::content::MatchPreview;
 use crate::search::walk::Hit;
 use ratatui::crossterm::event::Event as TermEvent;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 pub type EventTx = mpsc::Sender<AppEvent>;
 pub type EventRx = mpsc::Receiver<AppEvent>;
@@ -248,4 +249,45 @@ pub enum AppEvent {
 
 pub fn channel() -> (EventTx, EventRx) {
     mpsc::channel()
+}
+
+/// Key-to-frame latency (`SENTIER_LOG=latency=debug`): when the oldest key not yet on
+/// screen was read, in µs since [`START`] plus one (0: none waiting). The input thread
+/// marks, the UI loop takes; nothing ever blocks on it.
+static INPUT_AT: AtomicU64 = AtomicU64::new(0);
+static START: OnceLock<Instant> = OnceLock::new();
+
+fn micros_now() -> u64 {
+    let since = START.get_or_init(Instant::now).elapsed();
+    u64::try_from(since.as_micros()).unwrap_or(u64::MAX - 1) + 1
+}
+
+/// The input thread read a key (before it is sent). An older waiting key keeps its time.
+pub fn mark_input() {
+    let _ = INPUT_AT.compare_exchange(0, micros_now(), Ordering::Relaxed, Ordering::Relaxed);
+}
+
+/// How long ago the oldest waiting key was read, if one is waiting; none waits after.
+pub fn take_input() -> Option<Duration> {
+    match INPUT_AT.swap(0, Ordering::Relaxed) {
+        0 => None,
+        at => Some(Duration::from_micros(micros_now().saturating_sub(at))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The one test that touches the mark (it is process-wide).
+    #[test]
+    fn the_oldest_key_keeps_its_time() {
+        let _ = take_input();
+        assert_eq!(take_input(), None);
+        mark_input();
+        std::thread::sleep(Duration::from_millis(5));
+        mark_input();
+        assert!(take_input().is_some_and(|d| d >= Duration::from_millis(5)));
+        assert_eq!(take_input(), None, "taken once");
+    }
 }

@@ -94,7 +94,8 @@ fn locations_delete_desc(app: &App) -> &'static str {
     }
 }
 
-pub fn draw(f: &mut Frame, body: Rect, app: &App) {
+/// The popup's rows: the continuations of the pending keys, then the pin keys.
+fn rows(app: &App) -> Vec<Continuation> {
     let mut rows = if app.mark_prefix.is_some() {
         Vec::new()
     } else {
@@ -126,15 +127,50 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
             group: false,
         });
     }
-    let inner_w = (body.width as usize).saturating_sub(2);
-    let cols = (inner_w / COL_W).clamp(1, rows.len().max(1));
-    let per_col = rows.len().div_ceil(cols).max(1);
+    rows
+}
+
+/// `n` rows in a popup `width` wide at the bottom of `body`: its box, columns, and rows
+/// per column.
+fn layout(body: Rect, width: u16, n: usize) -> (Rect, usize, usize) {
+    let inner_w = (width as usize).saturating_sub(2);
+    let cols = (inner_w / COL_W).clamp(1, n.max(1));
+    let per_col = n.div_ceil(cols).max(1);
     let h = (per_col as u16 + 2).min(body.height);
     let area = Rect {
         y: body.y + body.height - h,
         height: h,
+        width,
         ..body
     };
+    (area, cols, per_col)
+}
+
+/// The popup's box, columns and rows per column. It spans the body, unless that would
+/// cover the previewed `picture`: then it keeps to the left of the preview column when
+/// there is room for a column of keys. Covering a picture means taking it off the
+/// screen and sending it again afterwards, which is what makes a prefix key feel slow.
+fn placed(body: Rect, n: usize, picture: Option<Rect>) -> (Rect, usize, usize) {
+    let full = layout(body, body.width, n);
+    let Some(picture) = picture.filter(|p| p.intersects(full.0)) else {
+        return full;
+    };
+    // Up to the preview panel's border (the picture sits a margin inside it).
+    let left = picture.x.saturating_sub(body.x + 2);
+    if (left as usize) < COL_W + 2 {
+        return full;
+    }
+    layout(body, left, n)
+}
+
+/// Where the popup goes in `body` when `picture` is on screen (see [`placed`]).
+pub fn area(body: Rect, app: &App, picture: Option<Rect>) -> Rect {
+    placed(body, rows(app).len(), picture).0
+}
+
+pub fn draw(f: &mut Frame, body: Rect, app: &App) {
+    let rows = rows(app);
+    let (area, cols, per_col) = placed(body, rows.len(), app.image_drawn);
 
     let lines: Vec<Line> = (0..per_col)
         .map(|r| {
@@ -190,4 +226,30 @@ pub fn draw(f: &mut Frame, body: Rect, app: &App) {
         );
     f.render_widget(Clear, area);
     f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_popup_keeps_clear_of_a_picture() {
+        let body = Rect::new(0, 1, 200, 50);
+        // Nothing previewed: the whole width, at the bottom.
+        let (full, cols, per_col) = placed(body, 4, None);
+        assert_eq!((full.x, full.width, full.bottom()), (0, 200, 51));
+        assert_eq!((cols, per_col, full.height), (4, 1, 3));
+        // A picture that ends above the popup is no reason to move.
+        let short = Rect::new(118, 2, 80, 20);
+        assert_eq!(placed(body, 4, Some(short)).0, full);
+        // A tall one: the popup stays left of the preview column, with more rows.
+        let tall = Rect::new(118, 2, 60, 48);
+        let (narrow, cols, per_col) = placed(body, 4, Some(tall));
+        assert!(!narrow.intersects(tall));
+        assert_eq!((narrow.x, narrow.width, narrow.bottom()), (0, 116, 51));
+        assert_eq!((cols, per_col), (2, 2));
+        // No room beside it (the full-screen preview): over the picture, as before.
+        let wide = Rect::new(2, 2, 190, 48);
+        assert_eq!(placed(body, 4, Some(wide)).0, full);
+    }
 }

@@ -43,7 +43,6 @@ use crate::fs::{Entry, EntryKind, Listing};
 use crate::keymap::{Action, Key, Keymap};
 use crate::platform::DiskSpace;
 use crate::ui;
-use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{Event, KeyEventKind};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -54,9 +53,16 @@ use std::time::{Duration, Instant, SystemTime};
 const FRAME: Duration = Duration::from_millis(16);
 /// Spinner frame rate, only while something is in flight.
 pub const SPINNER_TICK: Duration = Duration::from_millis(80);
-/// Wait this long after the cursor stops before listing the previewed directory, so
-/// holding `j` doesn't fire a request per row.
+/// While keys stream in (holding `j`), wait this long after the cursor stops before
+/// listing the previewed directory, so there isn't a request per row.
 const PREVIEW_DELAY: Duration = Duration::from_millis(40);
+/// Moves closer together than this are a stream (key repeat is ~33 ms apart). A move
+/// after a longer rest is a single step: its preview is asked for at once.
+const PREVIEW_BURST: Duration = Duration::from_millis(80);
+/// The terminal: stdout behind a buffer, so a frame goes out in as few writes as
+/// possible (std's stdout alone flushes every 1 KB).
+pub type Term =
+    ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::BufWriter<std::io::Stdout>>>;
 const STATUS_TTL: Duration = Duration::from_secs(4);
 /// Listings kept in memory for instant back/forward navigation.
 const MAX_CACHED: usize = 256;
@@ -274,6 +280,10 @@ pub struct App {
         crate::preview::Lru<crate::preview::ImageKey, Arc<crate::preview::image::ImagePreview>>,
     /// Set by the UI each frame: the box a picture may fill, and where one was drawn.
     pub image_area: Option<ratatui::layout::Rect>,
+    /// The body of this frame (between the header and the status line), where popups
+    /// go. Set by the UI before the columns, so the preview knows whether its picture
+    /// stays clear of the one that is up.
+    pub body: Option<ratatui::layout::Rect>,
     pub image_drawn: Option<ratatui::layout::Rect>,
     /// An iTerm2 picture for the UI loop to write at `image_drawn` after the frame.
     pub image_place: Option<Arc<crate::preview::image::ImagePreview>>,
@@ -281,8 +291,11 @@ pub struct App {
     pub image_resized: bool,
     /// `<C-l>`: clear the terminal and draw it all again on the next frame.
     pub redraw: bool,
-    /// When the cursor last moved (pictures wait for it to be still).
+    /// When the cursor last moved (a move soon after is part of a stream).
     moved_at: Instant,
+    /// From when the picture under the cursor may be read: at once after a single step,
+    /// after [`preview::IMAGE_STILL`] while keys stream in.
+    image_due: Instant,
     /// The page shown for each PDF previewed (0-based), so coming back keeps the page.
     pdf_pages: HashMap<Loc, u32>,
     /// Pictures Windows has none of / that failed (not retried), and requests on their way.
@@ -460,11 +473,13 @@ impl App {
             image: None,
             image_cache: crate::preview::Lru::new(crate::preview::CACHE_ENTRIES),
             image_area: None,
+            body: None,
             image_drawn: None,
             image_place: None,
             image_resized: false,
             redraw: false,
             moved_at: Instant::now(),
+            image_due: Instant::now(),
             pdf_pages: HashMap::new(),
             image_misses: crate::preview::Lru::new(256),
             image_inflight: HashSet::new(),
@@ -993,7 +1008,15 @@ impl App {
 
     fn schedule_preview(&mut self) {
         let now = Instant::now();
-        self.preview_due = Some(now + PREVIEW_DELAY);
+        // A single step shows its preview at once; only a stream of moves waits for
+        // the cursor to stop.
+        let stream = now.duration_since(self.moved_at) < PREVIEW_BURST;
+        self.preview_due = Some(if stream { now + PREVIEW_DELAY } else { now });
+        self.image_due = if stream {
+            now + preview::IMAGE_STILL
+        } else {
+            now
+        };
         self.moved_at = now;
         // Another file: zoom and pan start over.
         self.pview = crate::preview::View::default();
@@ -1396,9 +1419,8 @@ impl App {
             wake = wake.min(due.saturating_duration_since(now));
         }
         // Wake when the cursor has been still long enough for a picture.
-        let still = self.moved_at + preview::IMAGE_STILL;
-        if still > now {
-            wake = wake.min(still - now);
+        if self.image_due > now {
+            wake = wake.min(self.image_due - now);
         }
         if let Some(t) = self.keys_since.filter(|_| !self.which_key) {
             wake = wake.min((t + self.keymap.timeout).saturating_duration_since(now));
@@ -1432,12 +1454,17 @@ pub fn visible_indices(listing: &Listing, show_hidden: bool, filter: &str) -> Ve
 /// The UI loop: drain events, tick, draw when dirty (capped at ~60 fps), sleep until the
 /// next event or the next time-driven change. Returns how the user quit.
 pub fn run(
-    terminal: &mut DefaultTerminal,
+    terminal: &mut Term,
     app: &mut App,
     rx: &EventRx,
     term: &dyn Suspend,
 ) -> anyhow::Result<Quit> {
+    // The frame cap allows two frames per `FRAME`, not one: the answer to a key (a
+    // listing, "copied the path") arrives a moment after the key's own frame and is
+    // shown at once instead of a frame later. A stream of changes still settles at
+    // two draws per 16 ms.
     let mut last_draw = Instant::now() - FRAME;
+    let mut draw_before = last_draw;
     // Where the last frame put a picture, and which one (by address).
     let mut last_image: Option<ratatui::layout::Rect> = None;
     let mut last_picture: usize = 0;
@@ -1445,7 +1472,11 @@ pub fn run(
     loop {
         let now = Instant::now();
         app.tick(now);
-        if app.dirty && now.duration_since(last_draw) >= FRAME {
+        if !app.dirty {
+            // The keys handled changed nothing on screen: no frame to time them by.
+            let _ = crate::event::take_input();
+        }
+        if app.dirty && now.duration_since(draw_before) >= FRAME {
             app.image_drawn = None;
             app.image_place = None;
             let frame = terminal.draw(|f| ui::draw(f, app))?;
@@ -1490,7 +1521,18 @@ pub fn run(
             last_picture = picture;
             app.image_resized = false;
             app.dirty = false;
+            draw_before = last_draw;
             last_draw = Instant::now();
+            // `SENTIER_LOG=latency=debug`: from the key being read to its frame handed
+            // to the terminal, and the part of that spent building and writing it.
+            if let Some(key_to_frame) = crate::event::take_input() {
+                tracing::debug!(
+                    target: "latency",
+                    key_to_frame_ms = key_to_frame.as_secs_f64() * 1e3,
+                    draw_ms = last_draw.duration_since(now).as_secs_f64() * 1e3,
+                    "frame"
+                );
+            }
         }
         if let Some(q) = app.quit {
             return Ok(q);
@@ -1499,7 +1541,7 @@ pub fn run(
         let mut wait = app.next_wake(now);
         if app.dirty {
             // Something changed but we're inside the frame cap: draw as soon as allowed.
-            wait = wait.min((last_draw + FRAME).saturating_duration_since(now));
+            wait = wait.min((draw_before + FRAME).saturating_duration_since(now));
         }
         match rx.recv_timeout(wait) {
             Ok(ev) => app.handle(ev),
@@ -1633,6 +1675,23 @@ mod tests {
         );
         app.rebuild_view();
         (app, rt)
+    }
+
+    #[test]
+    fn a_single_step_previews_at_once_a_stream_waits() {
+        let (mut app, _rt) = fixture();
+        // The cursor has been resting: the preview of the next row is due now.
+        app.moved_at = Instant::now() - Duration::from_secs(1);
+        press(&mut app, "j");
+        let now = Instant::now();
+        assert!(app.preview_due.is_some_and(|due| due <= now), "at once");
+        assert!(app.image_due <= now, "the picture too");
+        // The next move follows within a key repeat: wait for the cursor to stop.
+        press(&mut app, "j");
+        let now = Instant::now();
+        assert!(app.preview_due.is_some_and(|due| due > now), "debounced");
+        assert!(app.image_due > now);
+        assert!(app.next_wake(now) <= PREVIEW_DELAY, "and woken for it");
     }
 
     #[test]
@@ -3700,11 +3759,22 @@ mod preview_tests {
         assert!(app.image_place.is_some(), "handed to the UI loop");
         assert!(!screen.contains("1337"), "not in ratatui's buffer");
 
-        // The which-key popup would be covered by a picture written after the frame.
+        // The which-key popup keeps to the left of the picture, which stays as it is
+        // (taking it away and sending it again is what made a prefix key feel slow).
+        let before = app.image_drawn;
         press(&mut app, "g");
         app.tick(Instant::now() + app.keymap.timeout + Duration::from_millis(1));
-        render(&mut app, 120, 30);
-        assert!(app.image_drawn.is_none() && app.image_place.is_none());
+        let screen = render(&mut app, 120, 30);
+        assert!(app.which_key_visible() && screen.contains("Esc cancel"));
+        assert!(before.is_some());
+        assert_eq!(app.image_drawn, before, "the picture stays");
+        assert!(app.image_place.is_some());
+
+        // So does the `O` menu, moved to the left of the preview.
+        press(&mut app, "<Esc>O");
+        let screen = render(&mut app, 120, 30);
+        assert!(app.mode == Mode::OpenWith && screen.contains("type to filter"));
+        assert_eq!(app.image_drawn, before, "the picture stays");
     }
 
     #[test]

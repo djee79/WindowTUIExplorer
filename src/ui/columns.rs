@@ -29,8 +29,8 @@ const DATE_W: usize = 16;
 pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     let [parent, current, preview] = Layout::horizontal([
         Constraint::Fill(15),
-        Constraint::Fill(31),
-        Constraint::Fill(34),
+        Constraint::Fill(36),
+        Constraint::Fill(29),
     ])
     .areas(area);
     draw_parent(f, parent, app);
@@ -641,8 +641,16 @@ fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Drawn>
                 ),
             };
             let size = p.picture.size();
-            // Overlays (help, pickers, which-key) cover the column: no picture under
-            // them. An iTerm2 picture is written after the frame and would cover them.
+            let rect = Rect {
+                width: size.width,
+                height: size.height,
+                ..area
+            };
+            // Overlays (help, pickers) cover the column: no picture under them. An
+            // iTerm2 picture is written after the frame and would cover them. The
+            // which-key popup and the `O` menu stay clear of the picture when they
+            // can: the picture is then left alone (sending it again is slow).
+            let under = |popup: Option<Rect>| popup.is_none_or(|a| a.intersects(rect));
             let covered = matches!(
                 app.mode,
                 Mode::Help
@@ -650,17 +658,17 @@ fn draw_image(f: &mut Frame, inner: Rect, app: &App, e: &Entry) -> Option<Drawn>
                     | Mode::Credentials
                     | Mode::NetList
                     | Mode::SyncPreview
-                    | Mode::OpenWith
                     | Mode::Rename
                     | Mode::Jobs
             ) || app.rename_panel.is_some() // its confirm prompt is a Prompt
-                || app.which_key_visible();
+                || (app.mode == Mode::OpenWith
+                    && under(
+                        app.body
+                            .and_then(|b| super::openwith::area(b, app, Some(rect))),
+                    ))
+                || (app.which_key_visible()
+                    && under(app.body.map(|b| super::whichkey::area(b, app, Some(rect)))));
             if !covered && size.width <= area.width && size.height <= area.height {
-                let rect = Rect {
-                    width: size.width,
-                    height: size.height,
-                    ..area
-                };
                 drawn = Some(Drawn { rect, place: None });
                 match &p.picture {
                     // The UI loop writes it after the frame (crate::preview docs).

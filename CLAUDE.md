@@ -675,8 +675,10 @@ The preview column (and the picker preview pane) renders **real images** in the 
 #### Performance rules (rule 1 applies: nothing on the UI thread)
 
 - Decode, PDF render and shell thumbnails run on the blocking pool. A cursor move cancels
-  the in-flight render (generation counter: stale results are dropped). Wait ~60 ms of cursor
-  stillness before starting a render, so holding `j` doesn't render every file.
+  the in-flight render (generation counter: stale results are dropped). A single step
+  (the cursor rested ≥ 80 ms before it) asks for its preview at once. While keys stream in
+  (holding `j`), wait for stillness first (40 ms for a listing or text, 60 ms for a
+  render), so not every file passed is read.
 - **Cache:**
   - in memory: an LRU of rendered images keyed by `(path, mtime, size, page, pane px size)`,
     ~64 entries
@@ -1318,6 +1320,9 @@ Development happens on **Windows 11** (WezTerm + PowerShell, Rust via rustup).
    `SENTIER_LOG=debug`. Tail it in a second WezTerm pane
    (`Get-Content -Wait -Tail 50`) while the TUI runs. `sentier run` and the CLI work
    headless, so most job bugs can be reproduced without the TUI.
+   `SENTIER_LOG=latency=debug` logs one line per key that changed the screen:
+   `key_to_frame_ms` (key read → frame handed to the terminal) and `draw_ms` (building
+   and writing it).
 
 ## Working agreements for Claude Code
 

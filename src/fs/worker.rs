@@ -1540,8 +1540,18 @@ impl Worker {
 
     fn blocking_ran(&self, what: String, f: impl FnOnce() -> Result<(), String> + Send + 'static) {
         let tx = self.tx.clone();
+        let asked = std::time::Instant::now();
         self.rt.spawn_blocking(move || {
+            let started = asked.elapsed();
             let result = f();
+            // `SENTIER_LOG=latency=debug`: the wait for a thread, then the call itself.
+            tracing::debug!(
+                target: "latency",
+                what,
+                queued_ms = started.as_secs_f64() * 1e3,
+                total_ms = asked.elapsed().as_secs_f64() * 1e3,
+                "ran"
+            );
             let _ = tx.send(AppEvent::Ran { what, result });
         });
     }
