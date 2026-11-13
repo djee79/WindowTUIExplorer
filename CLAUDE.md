@@ -193,6 +193,12 @@ src/
   (unset names stay as typed: `50% off` is a folder name). Tab completes folders, and
   `%APP` + Tab the variable's name. Completion also runs in the worker. Variables work in
   pins, presets and the CLI too.
+- **Live folders** (Yazi's idea, `fs/watch.rs`): the cwd, and the previewed folder once the
+  cursor rests on it, are watched (`FindFirstChangeNotificationW`, one thread each, local
+  and SMB). When another program adds, removes, renames or writes something there, the
+  folder re-lists by itself: old rows stay until the new ones arrive, the cursor keeps
+  its file. A burst settles first (150 ms quiet, at most 1 s; on a share 400 ms / 3 s).
+  A folder that failed to list isn't watched (a dead share isn't poked); `R` still works.
 - Status bar: path, item count, selection count, free space (async), share reachability,
   and the sort order.
 - **Sorting** (Yazi's `,` keys): `,n` name (natural), `,m` date modified, `,c` date
@@ -867,6 +873,8 @@ use   = ["default", "notepadpp", "reveal"]
     selected (`/select`): what sentier shows. `gx` opens the current folder itself.
   - `terminal-here` → `wezterm cli spawn --cwd` in the folder you're looking at (`gw`: the
     current folder)
+  - `powershell-here` → a new PowerShell window (`pwsh` when installed, else Windows
+    PowerShell) in the folder you're looking at. Offered in every `O` menu.
   - `copy-path` / `copy-unc`
   - `enter` → navigate into a directory
 - **Modes:**

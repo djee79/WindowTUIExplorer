@@ -1,4 +1,3 @@
-
 //! The credential flow without a server: listing errors and connection results are
 //! injected as events (the test runtime is never driven, so nothing really connects).
 use super::tests::{fixture, press, render};

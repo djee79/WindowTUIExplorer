@@ -60,6 +60,8 @@ pub enum AppEvent {
     PinsSaveFailed(String),
     /// A picker's matcher has new results.
     Wake,
+    /// Something changed in a watched folder (another program wrote there).
+    DirChanged(Loc),
     /// A file operation finished (rename, new, delete…).
     FileOpDone {
         op: crate::fs::ops::FileOp,

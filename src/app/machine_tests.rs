@@ -1,4 +1,3 @@
-
 //! Machines without a network: probe and user lookups are injected as events (the
 //! test runtime is never driven).
 use super::tests::{fixture, press, render};

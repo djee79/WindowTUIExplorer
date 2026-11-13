@@ -3,6 +3,7 @@
 pub mod ops;
 pub mod path;
 pub mod sort;
+pub mod watch;
 pub mod worker;
 
 use crate::platform::{Attrs, DriveKind};

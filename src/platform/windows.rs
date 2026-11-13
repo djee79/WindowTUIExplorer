@@ -1043,6 +1043,81 @@ pub fn locale_names() -> Option<([String; 12], [String; 12], [String; 7], [Strin
     ))
 }
 
+/// Watches the folder `path` (not its subfolders) until `stop` is set, calling
+/// `on_change` after something in it was added, removed, renamed or written. Several
+/// changes close together are one call: after the first, it waits for `settle` of
+/// quiet (at most `max_wait`), so a copy dropping hundreds of files re-lists a few
+/// times, not hundreds. Blocks: run it on its own thread.
+///
+/// `FindFirstChangeNotificationW` works on local disks and SMB shares alike; the handle
+/// shares delete access, so it never stops the folder from being renamed or removed.
+pub fn watch_dir(
+    path: &str,
+    stop: &std::sync::atomic::AtomicBool,
+    settle: std::time::Duration,
+    max_wait: std::time::Duration,
+    mut on_change: impl FnMut(),
+) -> io::Result<()> {
+    use std::sync::atomic::Ordering;
+    use std::time::Instant;
+    use windows::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0};
+    use windows::Win32::Storage::FileSystem::{
+        FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME,
+        FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE, FindCloseChangeNotification,
+        FindFirstChangeNotificationW, FindNextChangeNotification,
+    };
+    use windows::Win32::System::Threading::WaitForSingleObject;
+    // How often the stop flag is looked at while nothing happens.
+    const POLL_MS: u32 = 250;
+    let wide = HSTRING::from(path);
+    let filter = FILE_NOTIFY_CHANGE_FILE_NAME
+        | FILE_NOTIFY_CHANGE_DIR_NAME
+        | FILE_NOTIFY_CHANGE_SIZE
+        | FILE_NOTIFY_CHANGE_LAST_WRITE
+        | FILE_NOTIFY_CHANGE_ATTRIBUTES;
+    // SAFETY: `wide` is a NUL-terminated wide string that outlives the call.
+    let handle = unsafe { FindFirstChangeNotificationW(&wide, false, filter) }
+        .map_err(|e| io::Error::from_raw_os_error(e.code().0 & 0xFFFF))?;
+    let wait = |ms: u32| {
+        // SAFETY: `handle` is a live change-notification handle until closed below.
+        unsafe { WaitForSingleObject(handle, ms) }
+    };
+    let rearm = || {
+        // SAFETY: as above.
+        unsafe { FindNextChangeNotification(handle) }
+    };
+    let result = (|| {
+        while !stop.load(Ordering::Relaxed) {
+            let w = wait(POLL_MS);
+            if w == WAIT_FAILED {
+                return Err(io::Error::last_os_error());
+            }
+            if w != WAIT_OBJECT_0 {
+                continue; // timed out: look at the flag again
+            }
+            // Something changed: let the burst settle first.
+            let first = Instant::now();
+            loop {
+                rearm().map_err(|e| io::Error::from_raw_os_error(e.code().0 & 0xFFFF))?;
+                let left = max_wait.saturating_sub(first.elapsed());
+                if left.is_zero() || stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let ms = settle.min(left).as_millis() as u32;
+                if wait(ms) != WAIT_OBJECT_0 {
+                    break; // quiet for `settle`
+                }
+            }
+            if !stop.load(Ordering::Relaxed) {
+                on_change();
+            }
+        }
+        Ok(())
+    })();
+    // SAFETY: closed once, after the last use.
+    let _ = unsafe { FindCloseChangeNotification(handle) };
+    result
+}
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;

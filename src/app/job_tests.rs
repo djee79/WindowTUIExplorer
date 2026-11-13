@@ -1,4 +1,3 @@
-
 use super::tests::{fixture, press, render};
 use super::*;
 use crate::fs::worker::Timeouts;
@@ -1729,10 +1728,17 @@ fn open_with_first_opener_and_the_menu() {
     l.goto("a.txt");
     press(&mut l.app, "O");
     assert_eq!(l.app.mode, Mode::OpenWith);
+    // Notepad++ and VS Code show only where they're installed: not part of the check.
     let ids = |app: &App| -> Vec<String> {
         app.open_menu
             .as_ref()
-            .map(|m| m.items.iter().map(|i| i.id.clone()).collect())
+            .map(|m| {
+                m.items
+                    .iter()
+                    .map(|i| i.id.clone())
+                    .filter(|id| id != "notepadpp" && id != "vscode")
+                    .collect()
+            })
             .unwrap_or_default()
     };
     assert_eq!(
@@ -1743,6 +1749,7 @@ fn open_with_first_opener_and_the_menu() {
             "default",
             "copy-path",
             "editor",
+            "powershell-here",
             "compress",
             "assoc:np",
             "openwith",
@@ -1771,7 +1778,7 @@ fn open_with_first_opener_and_the_menu() {
             ],
         },
     });
-    assert_eq!(ids(&l.app)[7], "assoc:code");
+    assert_eq!(ids(&l.app)[8], "assoc:code");
     assert_eq!(l.app.open_menu.as_ref().map(|m| m.cursor), Some(2));
     press(&mut l.app, "<Up><Up>");
     // The missing one can't run: the menu stays.
@@ -1782,7 +1789,13 @@ fn open_with_first_opener_and_the_menu() {
     type_text(&mut l.app, "ech");
     assert_eq!(l.app.open_menu.as_ref().map(|m| m.shown().len()), Some(1));
     press(&mut l.app, "<Esc>");
-    assert_eq!(l.app.open_menu.as_ref().map(|m| m.shown().len()), Some(10));
+    assert!(
+        l.app
+            .open_menu
+            .as_ref()
+            .is_some_and(|m| m.shown().len() == m.items.len()),
+        "every row again"
+    );
     // 1 picks Echo, and it's remembered for .txt.
     press(&mut l.app, "1");
     assert_eq!(l.app.mode, Mode::Normal);

@@ -110,6 +110,7 @@ pub fn build_menu(
                         "reveal" => "explorer /select".to_string(),
                         "openwith" => "Windows dialog".to_string(),
                         "terminal-here" => "wezterm cli spawn".to_string(),
+                        "powershell-here" => "new window".to_string(),
                         _ => String::new(),
                     },
                     false,
@@ -140,12 +141,15 @@ pub fn build_menu(
         .filter(|id| !matches!(id.as_str(), "openwith" | "properties"))
         .map(|id| item(id, Section::Configured))
         .collect();
-    // The editor is always on offer, whatever the rules say; so are Notepad++ and VS
-    // Code for files when they're installed. Not installed (or not looked up yet): hidden.
+    // The editor and a PowerShell window in the item's folder are always on offer,
+    // whatever the rules say; so are Notepad++ and VS Code for files when they're
+    // installed. Not installed (or not looked up yet): hidden.
     let found = |id: &str| resolved.get(id).is_some_and(|r| r.is_some());
     items.retain(|m| !cfg.optional.contains(&m.id) || found(&m.id));
-    if !items.iter().any(|m| m.id == "editor") {
-        items.push(item("editor", Section::Configured));
+    for id in ["editor", "powershell-here"] {
+        if !items.iter().any(|m| m.id == id) {
+            items.push(item(id, Section::Configured));
+        }
     }
     if !is_dir {
         for id in &cfg.optional {
@@ -266,6 +270,7 @@ mod tests {
                 "reveal",
                 "copy-unc",
                 "editor",
+                "powershell-here",
                 r"assoc:C:\x\msedge.exe",
                 "assoc:foxit",
                 "openwith",
@@ -277,18 +282,23 @@ mod tests {
         assert_eq!(m[1].detail, "Adobe Acrobat", "the default app's name");
         assert_eq!(m[2].hint, "gR");
         assert_eq!(
-            (m[5].section, m[5].label.as_str()),
+            (m[6].section, m[6].label.as_str()),
             (Section::Windows, "Microsoft Edge")
         );
-        assert_eq!(m[8].section, Section::System);
+        assert_eq!(m[9].section, Section::System);
+        assert_eq!(
+            (m[5].label.as_str(), m[5].detail.as_str()),
+            ("PowerShell window in this folder", "new window"),
+            "PowerShell is always offered"
+        );
         assert_eq!(
             (m[4].label.as_str(), m[4].detail.as_str()),
             ("Editor", "nvim · this terminal"),
             "the editor is always offered"
         );
         assert_eq!(filter(&m, "REV"), [0, 2]);
-        assert_eq!(filter(&m, "foxit"), [6]);
-        assert_eq!(filter(&m, "").len(), 9);
+        assert_eq!(filter(&m, "foxit"), [7]);
+        assert_eq!(filter(&m, "").len(), 10);
 
         // Still looking: one greyed row in the Windows section.
         let m = build_menu(&c, "notes.txt", false, None, &resolved, None, "nvim");

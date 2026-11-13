@@ -1,4 +1,3 @@
-
 //! The picture preview without a terminal: the worker's answer is injected (the test
 //! runtime is never driven), the frame is drawn into a TestBackend.
 use super::tests::{entry, fixture, listing, press, render};

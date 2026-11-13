@@ -1212,6 +1212,26 @@ impl Worker {
         });
     }
 
+    /// Watches a folder on screen for changes made by other programs.
+    pub fn watch(&self, loc: Loc) -> Option<super::watch::Watch> {
+        super::watch::watch(loc, self.tx.clone())
+    }
+
+    /// A new PowerShell window in `dir`: PowerShell 7 (`pwsh`) when installed, else
+    /// Windows PowerShell. Started through the shell, so it gets its own console window
+    /// instead of sharing (and writing over) this one.
+    pub fn powershell_in(&self, dir: String) {
+        self.blocking_ran(format!("PowerShell in {dir}"), move || {
+            let exe =
+                crate::open::run::resolve("pwsh").unwrap_or_else(|| "powershell.exe".to_string());
+            let args = crate::open::rules::powershell_args(&dir);
+            if cfg!(test) {
+                return Ok(());
+            }
+            crate::platform::shell_execute(&exe, &args, &dir).map_err(|e| e.to_string())
+        });
+    }
+
     /// An app or web pin, or typed text: ShellExecute with `%ENV%` expanded. A browser
     /// (`find`) is located through PATH / App Paths first.
     pub fn launch(&self, what: String, l: crate::launcher::Launch) {

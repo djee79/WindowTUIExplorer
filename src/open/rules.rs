@@ -6,7 +6,7 @@
 //! desc = "Neovim (this terminal)"
 //! run  = ["nvim", "{paths}"]
 //! mode = "inline"          # inline | detached | tab (= detached)
-//! for  = "all"             # all: one process for the selection · each: one per file
+//! for  = "all"             # all: one process for the selection Â· each: one per file
 //!
 //! [[open.rule]]
 //! match = "*.{pml,txt}"    # a glob on the file name, or "dir" for folders
@@ -14,7 +14,7 @@
 //!
 //! [open]
 //! remember = true          # the last opener used for an extension goes to the top of O
-//! o_uses_last = false      # … and `o` runs it
+//! o_uses_last = false      # â¦ and `o` runs it
 //! ```
 //!
 //! Built-in openers need no config: `default`, `reveal`, `openwith`, `properties`,
@@ -31,10 +31,11 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ("default", "Default app"),
     ("editor", "Editor"),
     ("reveal", "Reveal in Explorer"),
-    ("openwith", "Open with… (Windows dialog)"),
+    ("openwith", "Open withâ¦ (Windows dialog)"),
     ("properties", "Properties"),
     ("explorer", "This folder in Explorer"),
     ("terminal-here", "WezTerm tab in this folder"),
+    ("powershell-here", "PowerShell window in this folder"),
     ("copy-path", "Copy path"),
     ("copy-unc", "Copy UNC path"),
     ("enter", "Enter"),
@@ -44,7 +45,7 @@ pub const BUILTINS: &[(&str, &str)] = &[
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
-    /// Suspend the TUI and run in this terminal (Neovim, less…).
+    /// Suspend the TUI and run in this terminal (Neovim, lessâ¦).
     Inline,
     /// Start and forget (GUI apps, a new WezTerm tab).
     Detached,
@@ -113,6 +114,7 @@ impl Default for OpenConfig {
                     "enter",
                     "explorer",
                     "terminal-here",
+                    "powershell-here",
                     "editor",
                     "copy-path",
                     "copy-unc",
@@ -203,6 +205,22 @@ pub fn terminal_editor(program: &str) -> bool {
         stem,
         "nvim" | "vim" | "vi" | "nano" | "micro" | "hx" | "helix" | "kak" | "emacs" | "ne" | "edit"
     )
+}
+
+/// Arguments for a PowerShell that starts in `dir` and stays open. The folder is a
+/// single-quoted literal, so `$`, backticks and brackets in names mean nothing; a `'`
+/// is doubled, as are the typographic ones PowerShell also takes for quotes (`â`).
+/// (`"` can't be in a Windows path.)
+pub fn powershell_args(dir: &str) -> String {
+    let mut quoted = String::with_capacity(dir.len() + 2);
+    for c in dir.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+            quoted.push(c);
+        }
+        quoted.push(c);
+    }
+    let dir = quoted;
+    format!("-NoExit -NoLogo -Command \"Set-Location -LiteralPath '{dir}'\"")
 }
 
 pub fn is_builtin(name: &str) -> bool {
@@ -342,7 +360,7 @@ impl OpenConfig {
             .unwrap_or_else(|| vec![if is_dir { "enter" } else { "default" }.to_string()])
     }
 
-    /// The rule's pattern that applies (shown in the menu: `*.pdf · open.toml`).
+    /// The rule's pattern that applies (shown in the menu: `*.pdf Â· open.toml`).
     pub fn pattern_for(&self, name: &str, is_dir: bool) -> Option<&str> {
         self.rules
             .iter()
@@ -351,7 +369,7 @@ impl OpenConfig {
     }
 }
 
-/// `.PDF` → `pdf`; folders and files without one → "".
+/// `.PDF` â `pdf`; folders and files without one â "".
 pub fn ext_of(name: &str, is_dir: bool) -> String {
     if is_dir {
         return String::new();
@@ -492,6 +510,22 @@ pub fn split_args(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn powershell_args_quote_the_folder() {
+        let pre = r#"-NoExit -NoLogo -Command "Set-Location -LiteralPath "#;
+        let cases = [
+            (r"C:\", r#"'C:\'""#),
+            (
+                r"\\srv01\aveva\O'Neil $x [1]",
+                r#"'\\srv01\aveva\O''Neil $x [1]'""#,
+            ),
+            ("D:\\it\u{2019}s", "'D:\\it\u{2019}\u{2019}s'\""),
+        ];
+        for (dir, want) in cases {
+            assert_eq!(powershell_args(dir), format!("{pre}{want}"), "{dir}");
+        }
+    }
 
     const SAMPLE: &str = r#"
         [opener.nvim]

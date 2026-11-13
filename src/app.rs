@@ -188,6 +188,10 @@ pub struct App {
     pub cwd: Loc,
     pub dirs: HashMap<Loc, DirState>,
     pending: HashMap<Loc, Request>,
+    /// Folders on screen being watched for changes by other programs (the cwd and the
+    /// previewed folder), and those that changed while a listing was in flight.
+    watches: Vec<crate::fs::watch::Watch>,
+    relist: std::collections::HashSet<Loc>,
     /// Last selected name per directory, so going back lands where you were.
     remembered: HashMap<Loc, String>,
 
@@ -420,6 +424,8 @@ impl App {
             cwd: Loc::Root,
             dirs: HashMap::new(),
             pending: HashMap::new(),
+            watches: Vec::new(),
+            relist: Default::default(),
             remembered: HashMap::new(),
             view_listing: None,
             view: Vec::new(),
@@ -1157,6 +1163,7 @@ impl App {
                 self.set_status(format!("couldn't save the shares list: {e}"), true);
             }
             AppEvent::Wake => {}
+            AppEvent::DirChanged(loc) => self.on_dir_changed(loc),
             AppEvent::ConfigLoaded(result) => match result {
                 Ok(config) => {
                     self.config = *config;
@@ -1298,6 +1305,8 @@ impl App {
             return; // cancelled or superseded
         }
         self.pending.remove(&loc);
+        // It changed again while this listing was on its way: once more.
+        let again = self.relist.remove(&loc);
         // `:e <file>` or a file as the start path: show it in its directory instead.
         if loc == self.cwd
             && matches!(result, Err(ListError::NotADirectory))
@@ -1338,7 +1347,56 @@ impl App {
         }
         self.completion_listed(&loc);
         self.evict_cache();
+        if again {
+            self.request(loc, true);
+        }
         self.dirty = true;
+    }
+
+    /// Watches the folders on screen: the cwd, and the previewed folder once the cursor
+    /// rests on it. Only folders that listed fine (a dead share isn't poked again).
+    fn sync_watches(&mut self) {
+        let listed = |l: &Loc| {
+            self.dirs
+                .get(l)
+                .is_some_and(|s| s.listing.is_some() && s.error.is_none())
+        };
+        let mut want: Vec<Loc> = Vec::with_capacity(2);
+        if self.cwd.as_fs().is_some() && listed(&self.cwd) {
+            want.push(self.cwd.clone());
+        }
+        if self.preview_due.is_none()
+            && let Some(p) = self.preview_loc().filter(|p| p.as_fs().is_some())
+            && listed(&p)
+            && !want.contains(&p)
+        {
+            want.push(p);
+        }
+        if self.watches.len() == want.len() && self.watches.iter().all(|w| want.contains(&w.loc)) {
+            return;
+        }
+        // Dropping a watch stops its thread.
+        self.watches.retain(|w| want.contains(&w.loc));
+        for loc in want {
+            if !self.watches.iter().any(|w| w.loc == loc)
+                && let Some(w) = self.worker.watch(loc)
+            {
+                self.watches.push(w);
+            }
+        }
+    }
+
+    /// Another program changed a watched folder: list it again, quietly (the old rows
+    /// stay until the new ones arrive, the cursor keeps its file).
+    fn on_dir_changed(&mut self, loc: Loc) {
+        if !self.watches.iter().any(|w| w.loc == loc) {
+            return; // no longer on screen
+        }
+        if self.pending.contains_key(&loc) {
+            self.relist.insert(loc);
+        } else {
+            self.request(loc, true);
+        }
     }
 
     /// Time-driven work: spinner frames, debounced preview, status expiry.
@@ -1361,6 +1419,7 @@ impl App {
             self.worker.save_usage(self.usage.clone());
         }
         self.finders_tick(now);
+        self.sync_watches();
         self.apply_pending_pins();
         if self.is_busy() {
             let frame = self.spinner_frame(now);

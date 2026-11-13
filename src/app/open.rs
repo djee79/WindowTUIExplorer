@@ -340,6 +340,7 @@ impl App {
             // sentier shows, cursor included.
             "explorer" => self.worker.reveal(first.path.clone()),
             "terminal-here" => self.terminal_in(folder(&first)),
+            "powershell-here" => self.worker.powershell_in(folder(&first)),
             "copy-path" => self
                 .worker
                 .copy_text(many("copied the path of"), paths, false),

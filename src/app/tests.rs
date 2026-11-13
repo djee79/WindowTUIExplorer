@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::fs::worker::Timeouts;
 use crate::fs::{EntryKind, sort_entries};
